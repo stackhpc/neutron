@@ -726,6 +726,12 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         return objects
 
     def _get_network_mtu(self, network_db, validate=True):
+        # FIXME: This fudge is to work around the Ironic Python Agent ramdisk
+        # failing to boot with an MTU less than 1500. It's wrong on many levels
+        # but shouldn't be here for long.
+        if network_db['name'] == 'provision-net':
+            return 1500
+
         mtus = []
         try:
             segments = network_db['segments']
