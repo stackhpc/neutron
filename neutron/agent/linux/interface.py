@@ -525,3 +525,65 @@ class BridgeInterfaceDriver(LinuxInterfaceDriver):
             tap_name, device_name, namespace2=namespace)
         root_dev.link.set_mtu(mtu)
         ns_dev.link.set_mtu(mtu)
+
+
+class FlatIBDriver(NullDriver):
+
+    def init_l3(self, device_name, ip_cidrs, namespace=None,
+                preserve_ips=None, clean_connections=False):
+        # Force namespace == None for now.
+        return super(FlatIBDriver, self).init_l3(device_name, ip_cidrs, None,
+                                                 preserve_ips,
+                                                 clean_connections)
+
+    def init_router_port(self,
+                         device_name,
+                         ip_cidrs,
+                         namespace,
+                         preserve_ips=None,
+                         extra_subnets=None,
+                         clean_connections=False):
+        raise NotImplementedError
+
+    def add_ipv6_addr(self, device_name, v6addr, namespace, scope='global'):
+        raise NotImplementedError
+
+    def delete_ipv6_addr(self, device_name, v6addr, namespace):
+        raise NotImplementedError
+
+    def delete_ipv6_addr_with_prefix(self, device_name, prefix, namespace):
+        raise NotImplementedError
+
+    def get_ipv6_llas(self, device_name, namespace):
+        raise NotImplementedError
+
+    def check_bridge_exists(self, bridge):
+        raise NotImplementedError
+
+    def get_device_name(self, port):
+        return 'ib0'
+
+    @staticmethod
+    def configure_ipv6_ra(namespace, dev_name, value):
+        raise NotImplementedError
+
+    @staticmethod
+    def configure_ipv6_forwarding(namespace, dev_name, enabled):
+        raise NotImplementedError
+
+    def plug(self, network_id, port_id, device_name, mac_address,
+             bridge=None, namespace=None, prefix=None, mtu=None):
+        # Force namespace == None for now.
+        device = ip_lib.IPDevice(device_name, namespace=None)
+
+        if mtu:
+            self.set_mtu(device_name, mtu, namespace=None, prefix=prefix)
+        else:
+            LOG.warning("No MTU configured for port %s", port_id)
+
+        device.link.set_up()
+
+    def set_mtu(self, device_name, mtu, namespace=None, prefix=None):
+        # Force namespace == None for now.
+        device = ip_lib.IPDevice(device_name, namespace=None)
+        device.link.set_mtu(mtu)
