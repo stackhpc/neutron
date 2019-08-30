@@ -1092,25 +1092,33 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # called inside of a transaction.
         return super(Ml2Plugin, self).delete_network(context, id)
 
-    @registry.receives(resources.NETWORK, [events.PRECOMMIT_DELETE])
-    def _network_delete_precommit_handler(self, rtype, event, trigger,
-                                          context, network_id, **kwargs):
+    @registry.receives(resources.NETWORK, [events.BEFORE_DELETE])
+    def _network_delete_before_delete_handler(self, rtype, event, trigger,
+                                              context, network_id, **kwargs):
+        # NOTE(mgoddard): get a copy of the network before precommit because
+        # during precommit we can race with the segments handler's precommit
+        # handler which deletes segments. See
+        # https://bugs.launchpad.net/neutron/+bug/1841967.
         network = self.get_network(context, network_id)
         mech_context = driver_context.NetworkContext(self,
                                                      context,
                                                      network)
         # TODO(kevinbenton): move this mech context into something like
         # a 'delete context' so it's not polluting the real context object
-        setattr(context, '_mech_context', mech_context)
+        setattr(context, '_network_mech_context', mech_context)
+
+    @registry.receives(resources.NETWORK, [events.PRECOMMIT_DELETE])
+    def _network_delete_precommit_handler(self, rtype, event, trigger,
+                                          context, network_id, **kwargs):
         self.mechanism_manager.delete_network_precommit(
-            mech_context)
+            context._network_mech_context)
 
     @registry.receives(resources.NETWORK, [events.AFTER_DELETE])
     def _network_delete_after_delete_handler(self, rtype, event, trigger,
                                              context, network, **kwargs):
         try:
             self.mechanism_manager.delete_network_postcommit(
-                context._mech_context)
+                context._network_mech_context)
         except ml2_exc.MechanismDriverError:
             # TODO(apech) - One or more mechanism driver failed to
             # delete the network.  Ideally we'd notify the caller of
@@ -1203,9 +1211,13 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
         # called inside of a transaction.
         return super(Ml2Plugin, self).delete_subnet(context, id)
 
-    @registry.receives(resources.SUBNET, [events.PRECOMMIT_DELETE])
-    def _subnet_delete_precommit_handler(self, rtype, event, trigger,
-                                         context, subnet_id, **kwargs):
+    @registry.receives(resources.SUBNET, [events.BEFORE_DELETE])
+    def _subnet_delete_before_delete_handler(self, rtype, event, trigger,
+                                             context, subnet_id, **kwargs):
+        # NOTE(mgoddard): get a copy of the subnet before precommit because
+        # during precommit we could race with another handler's precommit
+        # handler which deletes subresources. See
+        # https://bugs.launchpad.net/neutron/+bug/1841967.
         subnet_obj = self._get_subnet_object(context, subnet_id)
         subnet = self._make_subnet_dict(subnet_obj, context=context)
         network = self.get_network(context, subnet['network_id'])
@@ -1213,15 +1225,20 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                                     subnet, network)
         # TODO(kevinbenton): move this mech context into something like
         # a 'delete context' so it's not polluting the real context object
-        setattr(context, '_mech_context', mech_context)
-        self.mechanism_manager.delete_subnet_precommit(mech_context)
+        setattr(context, '_subnet_mech_context', mech_context)
+
+    @registry.receives(resources.SUBNET, [events.PRECOMMIT_DELETE])
+    def _subnet_delete_precommit_handler(self, rtype, event, trigger,
+                                         context, subnet_id, **kwargs):
+        self.mechanism_manager.delete_subnet_precommit(
+            context._subnet_mech_context)
 
     @registry.receives(resources.SUBNET, [events.AFTER_DELETE])
     def _subnet_delete_after_delete_handler(self, rtype, event, trigger,
                                             context, subnet, **kwargs):
         try:
             self.mechanism_manager.delete_subnet_postcommit(
-                context._mech_context)
+                context._subnet_mech_context)
         except ml2_exc.MechanismDriverError:
             # TODO(apech) - One or more mechanism driver failed to
             # delete the subnet.  Ideally we'd notify the caller of
