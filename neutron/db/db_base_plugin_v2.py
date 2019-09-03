@@ -1048,6 +1048,8 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         self._delete_subnet(context, subnet)
 
     def _delete_subnet(self, context, subnet):
+        registry.notify(resources.SUBNET, events.BEFORE_DELETE,
+                        self, context=context, subnet_id=subnet.id)
         with lib_db_api.exc_to_retry(sql_exc.IntegrityError), \
                 db_api.context_manager.writer.using(context):
             registry.notify(resources.SUBNET, events.PRECOMMIT_DELETE,
