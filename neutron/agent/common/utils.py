@@ -70,25 +70,55 @@ def is_agent_down(heart_beat_time):
                                    cfg.CONF.agent_down_time)
 
 
+def get_hypervisor_hostname():
+    """Get hypervisor hostname
+
+    This logic is implemented following the logic of virGetHostnameImpl
+    in libvirt.
+    """
+    hypervisor_hostname = socket.gethostname()
+    if (hypervisor_hostname.startswith('localhost') or
+            '.' in hypervisor_hostname):
+        return hypervisor_hostname
+
+    try:
+        addrinfo = socket.getaddrinfo(host=hypervisor_hostname,
+                                      port=None,
+                                      family=socket.AF_UNSPEC,
+                                      flags=socket.AI_CANONNAME)
+        # getaddrinfo returns a list of 5-tuples with;
+        #     (family, type, proto, canonname, sockaddr)
+        if (addrinfo and addrinfo[0][3] and
+                not addrinfo[0][3].startswith('localhost')):
+            return addrinfo[0][3]
+    except OSError:
+        pass
+
+    return hypervisor_hostname
+
+
 # TODO(bence romsics): rehome this to neutron_lib.placement.utils
-def default_rp_hypervisors(hypervisors, device_mappings):
+def default_rp_hypervisors(hypervisors, device_mappings,
+                           default_hypervisor=None):
     """Fill config option 'resource_provider_hypervisors' with defaults.
 
-    Default hypervisor names to socket.gethostname(). Since libvirt knows
-    itself by the same name, the default is good for libvirt.
+    Default hypervisor names to socket.gethostname() unless default_hypervisor
+    is set.
 
     :param hypervisors: Config option 'resource_provider_hypervisors'
         as parsed by oslo.config, that is a dict with keys of physical devices
         and values of hypervisor names.
     :param device_mappings: Device mappings standardized to the list-valued
         format.
+    :param default_hypervisor: Default hypervisor hostname.
     """
-    default_hypervisor = socket.gethostname()
+    _default_hypervisor = default_hypervisor or get_hypervisor_hostname()
+
     rv = {}
     for _physnet, devices in device_mappings.items():
         for device in devices:
             if device in hypervisors:
                 rv[device] = hypervisors[device]
             else:
-                rv[device] = default_hypervisor
+                rv[device] = _default_hypervisor
     return rv
