@@ -1316,7 +1316,7 @@ class OVNClient(object):
                     cms_bmaps.append(chassis)
                 else:
                     bmaps.append(chassis)
-        candidates = cms_bmaps or bmaps
+        candidates = cms_bmaps or bmaps or cms
 
         # Filter for availability zones
         if availability_zone_hints:
@@ -1330,7 +1330,7 @@ class OVNClient(object):
         if not cms_bmaps:
             LOG.debug("No eligible chassis with external connectivity"
                       " through ovn-cms-options for %s", physnet)
-        LOG.debug("Chassis candidates with external connectivity: %s",
+        LOG.debug("Chassis candidates for scheduling gateway router ports: %s",
                   candidates)
         return candidates
 
@@ -1588,7 +1588,7 @@ class OVNClient(object):
         physnet = segment.get(segment_def.PHYSICAL_NETWORK)
         options = {'network_name': physnet,
                    ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true',
-                   ovn_const.LSP_OPTIONS_MCAST_FLOOD: 'true'}
+                   ovn_const.LSP_OPTIONS_MCAST_FLOOD: 'false'}
         cmd = self._nb_idl.create_lswitch_port(
             lport_name=utils.ovn_provnet_port_name(segment['id']),
             lswitch_name=utils.ovn_name(network_id),

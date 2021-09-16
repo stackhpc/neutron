@@ -88,6 +88,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import exc as sa_exc
 
 from neutron._i18n import _
+from neutron.agent import rpc as agent_rpc
 from neutron.agent import securitygroups_rpc as sg_rpc
 from neutron.api.rpc.agentnotifiers import dhcp_rpc_agent_api
 from neutron.api.rpc.handlers import dhcp_rpc
@@ -324,8 +325,19 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             LOG.debug("Port %s is administratively disabled so it will "
                       "not transition to active.", port_id)
             return
-        self.update_port_status(
-            payload.context, port_id, const.PORT_STATUS_ACTIVE)
+
+        host_migrating = agent_rpc.migrating_to_host(
+            getattr(port, 'port_bindings', []))
+        if (host_migrating and cfg.CONF.nova.live_migration_events and
+                self.nova_notifier):
+            send_nova_event = bool(trigger ==
+                                   provisioning_blocks.L2_AGENT_ENTITY)
+            with self.nova_notifier.context_enabled(send_nova_event):
+                self.update_port_status(payload.context, port_id,
+                                        const.PORT_STATUS_ACTIVE)
+        else:
+            self.update_port_status(payload.context, port_id,
+                                    const.PORT_STATUS_ACTIVE)
 
     @log_helpers.log_method_call
     def _start_rpc_notifiers(self):
@@ -1189,8 +1201,12 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                        priority=0)
     def _network_delete_precommit_handler(self, rtype, event, trigger,
                                           context, network_id, **kwargs):
-        network = (kwargs.get('network') or
-                   self.get_network(context, network_id))
+        if 'network' in kwargs:
+            network = kwargs['network']
+            self.type_manager.extend_network_dict_provider(context, network)
+        else:
+            network = self.get_network(context, network_id)
+
         mech_context = driver_context.NetworkContext(self,
                                                      context,
                                                      network)
@@ -1243,7 +1259,8 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     def _after_create_subnet(self, context, result, mech_context):
         # db base plugin post commit ops
-        self._create_subnet_postcommit(context, result)
+        self._create_subnet_postcommit(context, result,
+            network=mech_context.network.current)
 
         # add network to subnet dict to save a DB call on dhcp notification
         result['network'] = mech_context.network.current
@@ -1300,11 +1317,11 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
     @registry.receives(resources.SUBNET, [events.PRECOMMIT_DELETE], priority=0)
     def _subnet_delete_precommit_handler(self, rtype, event, trigger,
                                          context, subnet_id, **kwargs):
-        subnet_obj = self._get_subnet_object(context, subnet_id)
+        subnet_obj = (kwargs.get('subnet_obj') or
+                      self._get_subnet_object(context, subnet_id))
         subnet = self._make_subnet_dict(subnet_obj, context=context)
-        network = self.get_network(context, subnet['network_id'])
         mech_context = driver_context.SubnetContext(self, context,
-                                                    subnet, network)
+                                                    subnet, network=None)
         # TODO(kevinbenton): move this mech context into something like
         # a 'delete context' so it's not polluting the real context object
         setattr(context, '_mech_context', mech_context)
