@@ -400,7 +400,8 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         nb_idl = self.fake_ovn_client._nb_idl
         lsp0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': 'lsp0',
-                   'options': {'mcast_flood_reports': 'true'},
+                   'options': {
+                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'},
                    'type': ""})
         lsp1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': 'lsp1', 'options': {}, 'type': ""})
@@ -415,20 +416,106 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
                    'type': "router"})
         lsp5 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': 'lsp5', 'options': {}, 'type': 'localnet'})
+        lsp6 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp6',
+                   'options': {
+                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true',
+                       constants.LSP_OPTIONS_MCAST_FLOOD: 'true'},
+                   'type': 'localnet'})
+        lsp7 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp7',
+                   'options': {
+                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true',
+                       constants.LSP_OPTIONS_MCAST_FLOOD: 'false'},
+                   'type': 'localnet'})
 
         nb_idl.lsp_list.return_value.execute.return_value = [
-            lsp0, lsp1, lsp2, lsp3, lsp4, lsp5]
+            lsp0, lsp1, lsp2, lsp3, lsp4, lsp5, lsp6, lsp7]
 
         # Invoke the periodic method, it meant to run only once at startup
         # so NeverAgain will be raised at the end
         self.assertRaises(periodics.NeverAgain,
                           self.periodic.check_for_mcast_flood_reports)
 
-        # Assert only lsp1 and lsp5 were called because they are the only
-        # ones meeting the criteria ("mcast_flood_reports" not yet set,
-        # and type "" or localnet)
+        # Assert only lsp1, lsp5 and lsp6 were called because they are the
+        # only ones meeting the criteria
         expected_calls = [
             mock.call('lsp1', mcast_flood_reports='true'),
-            mock.call('lsp5', mcast_flood_reports='true', mcast_flood='false')]
+            mock.call('lsp5', mcast_flood_reports='true', mcast_flood='false'),
+            mock.call('lsp6', mcast_flood_reports='true', mcast_flood='false')]
 
         nb_idl.lsp_set_options.assert_has_calls(expected_calls)
+
+    def test_check_router_mac_binding_options(self):
+        nb_idl = self.fake_ovn_client._nb_idl
+        lr0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lr0',
+                   'options': {'always_learn_from_arp_request': 'false',
+                               'dynamic_neigh_routers': 'true'}})
+        lr1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lr1', 'options': {}})
+        lr2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lr2', 'options': {}})
+        nb_idl.lr_list.return_value.execute.return_value = [lr0, lr1, lr2]
+
+        # Invoke the periodic method, it meant to run only once at startup
+        # so NeverAgain will be raised at the end
+        self.assertRaises(periodics.NeverAgain,
+                          self.periodic.check_router_mac_binding_options)
+
+        # Assert lr1 and lr2 had their options updated since the values
+        # were not set
+        expected_calls = [
+            mock.call('lr1',
+                      options={'always_learn_from_arp_request': 'false',
+                               'dynamic_neigh_routers': 'true'}),
+            mock.call('lr2',
+                      options={'always_learn_from_arp_request': 'false',
+                               'dynamic_neigh_routers': 'true'})]
+        nb_idl.update_lrouter.assert_has_calls(expected_calls)
+
+    def _test_check_vlan_distributed_ports(self, opt_value=None):
+        fake_net0 = {'id': 'net0'}
+        fake_net1 = {'id': 'net1'}
+        fake_port0 = {'id': 'port0'}
+        fake_port1 = {'id': 'port1'}
+
+        self.fake_ovn_client._plugin.get_networks.return_value = [
+            fake_net0, fake_net1]
+        self.fake_ovn_client._plugin.get_ports.return_value = [
+            fake_port0, fake_port1]
+
+        fake_lrp = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                'name': 'lrp',
+                'options': {constants.LRP_OPTIONS_RESIDE_REDIR_CH: opt_value}})
+        self.fake_ovn_client._nb_idl.get_lrouter_port.return_value = fake_lrp
+
+        # Invoke the periodic method, it meant to run only once at startup
+        # so NeverAgain will be raised at the end
+        self.assertRaises(periodics.NeverAgain,
+                          self.periodic.check_vlan_distributed_ports)
+
+    def test_check_vlan_distributed_ports_expected_value(self):
+        cfg.CONF.set_override('enable_distributed_floating_ip', 'False',
+                              group='ovn')
+        self._test_check_vlan_distributed_ports(opt_value='true')
+
+        # If the "reside-on-redirect-chassis" option value do match
+        # the expected value, assert we do not update the database
+        self.assertFalse(
+            self.fake_ovn_client._nb_idl.db_set.called)
+
+    def test_check_vlan_distributed_ports_non_expected_value(self):
+        cfg.CONF.set_override('enable_distributed_floating_ip', 'False',
+                              group='ovn')
+        self._test_check_vlan_distributed_ports(opt_value='false')
+
+        # If the "reside-on-redirect-chassis" option value does not match
+        # the expected value, assert we update the database
+        opt = {constants.LRP_OPTIONS_RESIDE_REDIR_CH: 'true'}
+        expected_calls = [
+            mock.call('Logical_Router_Port', 'lrp-port0', ('options', opt)),
+            mock.call('Logical_Router_Port', 'lrp-port1', ('options', opt))]
+        self.fake_ovn_client._nb_idl.db_set.assert_has_calls(
+            expected_calls)

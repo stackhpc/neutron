@@ -40,7 +40,7 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver):
     def consume_api(self, agent_api):
         self.agent_api = agent_api
 
-    def _minimum_bandwidth_initialize(self):
+    def _qos_bandwidth_initialize(self):
         """Clear QoS setting at agent restart.
 
         This is for clearing stale settings (such as ports and QoS tables
@@ -49,12 +49,13 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver):
         rebuild. There is no performance impact however the QoS feature will
         be down until the QoS rules are rebuilt.
         """
-        self.br_int.clear_minimum_bandwidth_qos()
+        self.br_int.clear_bandwidth_qos()
+        self.br_int.set_queue_for_ingress_bandwidth_limit()
 
     def initialize(self):
         self.br_int = self.agent_api.request_int_br()
         self.cookie = self.br_int.default_cookie
-        self._minimum_bandwidth_initialize()
+        self._qos_bandwidth_initialize()
 
     def create_bandwidth_limit(self, port, rule):
         self.update_bandwidth_limit(port, rule)
@@ -171,6 +172,10 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver):
 
         self.ports[port['port_id']][(qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH,
                                      rule.direction)] = port
+        if rule.direction == constants.INGRESS_DIRECTION:
+            LOG.debug('Minimum bandwidth ingress rule was updated/created for '
+                      'port %s and rule %s.', port['port_id'], rule.id)
+            return
 
         # queue_num is used to identify the port which traffic come from,
         # it needs to be unique across br-int. It is convenient to use ofport
@@ -184,7 +189,9 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver):
             egress_port_names.extend(ports)
         qos_id = self.br_int.update_minimum_bandwidth_queue(
             port['port_id'], egress_port_names, vif_port.ofport, rule.min_kbps)
-        LOG.debug('Minimum bandwidth rule was updated/created for port '
+        for phy_br in self.agent_api.request_phy_brs():
+            phy_br.set_queue_for_minimum_bandwidth(vif_port.ofport)
+        LOG.debug('Minimum bandwidth egress rule was updated/created for port '
                   '%(port_id)s and rule %(rule_id)s. QoS ID: %(qos_id)s. '
                   'Egress ports with QoS applied: %(ports)s',
                   {'port_id': port['port_id'], 'rule_id': rule.id,

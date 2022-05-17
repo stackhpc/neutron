@@ -129,6 +129,24 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
             lib_constants.SNAT_INT_DEV_PREFIX,
             mtu=sn_port.get('mtu'))
 
+    def _set_snat_interfce_mtu(self, port):
+        if not self._is_this_snat_host():
+            return
+
+        sn_port = self.get_snat_port_for_internal_port(port)
+        if not sn_port:
+            return
+
+        ns_name = dvr_snat_ns.SnatNamespace.get_snat_ns_name(self.router['id'])
+        interface_name = self._get_snat_int_device_name(sn_port['id'])
+        self.driver.set_mtu(interface_name, port['mtu'], namespace=ns_name,
+                            prefix=lib_constants.SNAT_INT_DEV_PREFIX)
+
+    def internal_network_updated(self, port):
+        super(DvrEdgeRouter, self).internal_network_updated(port)
+        if port:
+            self._set_snat_interfce_mtu(port)
+
     def _dvr_internal_network_removed(self, port):
         super(DvrEdgeRouter, self)._dvr_internal_network_removed(port)
 
@@ -381,7 +399,10 @@ class DvrEdgeRouter(dvr_local_router.DvrLocalRouter):
 
     def process_floating_ip_nat_rules(self):
         if self._is_this_snat_host():
-            self.process_floating_ip_nat_rules_for_centralized_floatingip()
+            if not self.snat_iptables_manager:
+                LOG.debug("DVR router: no snat rules to be handled")
+            else:
+                self.process_floating_ip_nat_rules_for_centralized_floatingip()
 
         # Cover mixed dvr_snat and compute node, aka a dvr_snat node has both
         # centralized and distributed floating IPs.

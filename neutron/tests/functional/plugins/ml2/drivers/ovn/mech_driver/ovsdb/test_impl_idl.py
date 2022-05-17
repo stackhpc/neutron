@@ -53,7 +53,7 @@ class TestSbApi(BaseOvnIdlTest):
                 {'external_ids': {'ovn-bridge-mappings':
                                   'public:br-ex,private:br-0'}},
                 {'external_ids': {'ovn-bridge-mappings':
-                                  'public:br-ex,public2:br-ex'}},
+                                  'public:br-ex,public2:br-ex2'}},
                 {'external_ids': {'ovn-bridge-mappings':
                                   'public:br-ex'}},
             ]
@@ -98,6 +98,15 @@ class TestSbApi(BaseOvnIdlTest):
         self.assertLessEqual(len(self.data['chassis']), len(mapping))
         self.assertGreaterEqual(set(mapping.keys()),
                                 {c['name'] for c in self.data['chassis']})
+
+    def test_multiple_physnets_in_one_bridge(self):
+        self.data = {
+            'chassis': [
+                {'external_ids': {'ovn-bridge-mappings': 'p1:br-ex,p2:br-ex'}}
+            ]
+        }
+        self.load_test_data()
+        self.assertRaises(ValueError, self.api.get_chassis_and_physnets)
 
     def _add_switch_port(self, chassis_name, type='localport'):
         sname, pname = (utils.get_rand_device_name(prefix=p)
@@ -158,8 +167,10 @@ class TestSbApi(BaseOvnIdlTest):
         chassis, switch, port, binding = self._add_switch_port(
             self.data['chassis'][0]['name'])
         self.api.lsp_bind(port.name, chassis.name).execute(check_error=True)
+        network_id = binding.datapath.external_ids['name'].replace(
+            'neutron-', '')
         self.assertEqual(
-            (chassis.name, str(binding.datapath.uuid)),
+            (chassis.name, network_id),
             self.api.get_logical_port_chassis_and_datapath(port.name))
 
 

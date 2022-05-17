@@ -47,6 +47,7 @@ WRONG_IP = '0.0.0.0'
 TEST_IP = '240.0.0.1'
 TEST_IP_NEIGH = '240.0.0.2'
 TEST_IP_SECONDARY = '240.0.0.3'
+TEST_IP6_VXLAN_GROUP = 'ff00::1'
 
 
 class IpLibTestFramework(functional_base.BaseSudoTestCase):
@@ -232,9 +233,26 @@ class IpLibTestCase(IpLibTestFramework):
         attr = self.generate_device_details()
         ip = ip_lib.IPWrapper(namespace=attr.namespace)
         ip.netns.add(attr.namespace)
+        ip.add_dummy('dummy_device')
         self.addCleanup(ip.netns.delete, attr.namespace)
         self.assertFalse(ip_lib.vxlan_in_use(9999, namespace=attr.namespace))
-        device = ip.add_vxlan(attr.name, 9999)
+        device = ip.add_vxlan(attr.name, 9999, 'dummy_device')
+        self.addCleanup(self._safe_delete_device, device)
+        self.assertTrue(ip_lib.vxlan_in_use(9999, namespace=attr.namespace))
+        device.link.delete()
+        self.assertFalse(ip_lib.vxlan_in_use(9999, namespace=attr.namespace))
+
+    def test_ipv6_vxlan_exists(self):
+        attr = self.generate_device_details(
+            name='test_device', ip_cidrs=["%s/24" % TEST_IP, 'fd00::1/64']
+        )
+        self.manage_device(attr)
+        ip = ip_lib.IPWrapper(namespace=attr.namespace)
+        ip.netns.add(attr.namespace)
+        self.addCleanup(ip.netns.delete, attr.namespace)
+        self.assertFalse(ip_lib.vxlan_in_use(9999, namespace=attr.namespace))
+        device = ip.add_vxlan('test_vxlan_device', 9999, local='fd00::1',
+            group=TEST_IP6_VXLAN_GROUP, dev='test_device')
         self.addCleanup(self._safe_delete_device, device)
         self.assertTrue(ip_lib.vxlan_in_use(9999, namespace=attr.namespace))
         device.link.delete()
@@ -660,10 +678,16 @@ class NamespaceTestCase(functional_base.BaseSudoTestCase):
         ip_lib.delete_network_namespace(self.namespace)
 
     def test_network_namespace_exists_ns_exists(self):
-        self.assertTrue(ip_lib.network_namespace_exists(self.namespace))
+        for use_helper_for_ns_read in (True, False):
+            cfg.CONF.set_override('use_helper_for_ns_read',
+                                  use_helper_for_ns_read, 'AGENT')
+            self.assertTrue(ip_lib.network_namespace_exists(self.namespace))
 
     def test_network_namespace_exists_ns_doesnt_exists(self):
-        self.assertFalse(ip_lib.network_namespace_exists('another_ns'))
+        for use_helper_for_ns_read in (True, False):
+            cfg.CONF.set_override('use_helper_for_ns_read',
+                                  use_helper_for_ns_read, 'AGENT')
+            self.assertFalse(ip_lib.network_namespace_exists('another_ns'))
 
     def test_network_namespace_exists_ns_exists_try_is_ready(self):
         self.assertTrue(ip_lib.network_namespace_exists(self.namespace,
@@ -1094,3 +1118,14 @@ class GetDevicesWithIpTestCase(functional_base.BaseSudoTestCase):
             ip_addresses = self._remove_loopback_interface(ip_addresses)
             ip_addresses = self._remove_ipv6_scope_link(ip_addresses)
             self.assertEqual(0, len(ip_addresses))
+
+
+class IpLinkCommandTestCase(IpLibTestFramework):
+
+    def test_set_netns(self):
+        device_name = ('int_' + uuidutils.generate_uuid())[
+                      :constants.DEVICE_NAME_MAX_LEN]
+        device = ip_lib.IPDevice(device_name, kind='dummy')
+        device.link.create()
+        namespace = self.useFixture(net_helpers.NamespaceFixture())
+        device.link.set_netns(namespace.name)

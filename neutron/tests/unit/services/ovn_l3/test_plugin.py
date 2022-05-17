@@ -538,7 +538,8 @@ class TestOVNL3RouterPlugin(test_mech_driver.Ml2PluginV2TestCase):
                         ovn_const.OVN_ROUTER_AZ_HINTS_EXT_ID_KEY: ''}
         self.l3_inst._ovn.create_lrouter.assert_called_once_with(
             'neutron-router-id', external_ids=external_ids,
-            enabled=True, options={})
+            enabled=True, options={'always_learn_from_arp_request': 'false',
+                                   'dynamic_neigh_routers': 'true'})
         self.l3_inst._ovn.add_lrouter_port.assert_called_once_with(
             **self.fake_ext_gw_port_assert)
         expected_calls = [
@@ -1338,12 +1339,14 @@ class TestOVNL3RouterPlugin(test_mech_driver.Ml2PluginV2TestCase):
                 'ovn_client.OVNClient.update_router_port')
     def test_port_update_postcommit(self, update_rp_mock):
         kwargs = {'port': {'device_owner': 'foo'},
+                  'original_port': '',
                   'context': 'fake_context'}
         self.l3_inst._port_update(resources.PORT, events.AFTER_UPDATE, None,
                                   **kwargs)
         update_rp_mock.assert_not_called()
 
         kwargs = {'port': {'device_owner': constants.DEVICE_OWNER_ROUTER_INTF},
+                  'original_port': '',
                   'context': 'fake_context'}
         self.l3_inst._port_update(resources.PORT, events.AFTER_UPDATE, None,
                                   **kwargs)
@@ -1351,6 +1354,26 @@ class TestOVNL3RouterPlugin(test_mech_driver.Ml2PluginV2TestCase):
         update_rp_mock.assert_called_once_with(kwargs['context'],
                                                kwargs['port'],
                                                if_exists=True)
+
+    def test_port_update_before_update_router_port_without_ip(self):
+        context = 'fake_context'
+        og_port = {'device_owner': constants.DEVICE_OWNER_ROUTER_INTF,
+                'fixed_ips': ['10.0.0.10'],
+                'id': 'port-id'}
+        port = {'device_owner': constants.DEVICE_OWNER_ROUTER_INTF,
+                'fixed_ips': [],
+                'id': 'port-id'}
+        kwargs = {'original_port': og_port,
+                  'port': port,
+                  'context': context}
+        self.assertRaises(
+            n_exc.ServicePortInUse,
+            self.l3_inst._port_update,
+            resources.PORT,
+            events.BEFORE_UPDATE,
+            None,
+            **kwargs,
+        )
 
     @mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.update_port_status')
     @mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.update_port')
@@ -1482,20 +1505,28 @@ class TestOVNL3RouterPlugin(test_mech_driver.Ml2PluginV2TestCase):
         self.nb_idl().get_unhosted_gateways.assert_called_once_with(
             {'foo-1': 'physnet1'}, mock.ANY, mock.ANY)
 
-    @mock.patch('neutron.db.db_base_plugin_v2.NeutronDbPluginV2.get_network')
+    @mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.get_network')
+    @mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.get_networks')
     @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.'
                 'ovn_client.OVNClient._get_router_ports')
     @mock.patch('neutron.db.l3_db.L3_NAT_dbonly_mixin.add_router_interface')
-    def test_add_router_interface_need_to_frag_enabled(self, ari, grps, gn):
+    def test_add_router_interface_need_to_frag_enabled(
+            self, ari, grps, gns, gn):
         config.cfg.CONF.set_override(
             'ovn_emit_need_to_frag', True, group='ovn')
         router_id = 'router-id'
-        interface_info = {'port_id': 'router-port-id'}
+        interface_info = {'port_id': 'router-port-id',
+                'network_id': 'priv-net'}
         ari.return_value = self.fake_router_interface_info
+        grps.return_value = [interface_info]
         self.get_router.return_value = self.fake_router_with_ext_gw
-        gn.return_value = self.fake_network
+        network_attrs = {'id': 'prov-net', 'mtu': 1200}
+        prov_net = fake_resources.FakeNetwork.create_one_network(
+                attrs=network_attrs).info()
         self.fake_router_port['device_owner'] = (
             constants.DEVICE_OWNER_ROUTER_GW)
+        gn.return_value = prov_net
+        gns.return_value = [self.fake_network]
 
         self.l3_inst.add_router_interface(self.context, router_id,
                                           interface_info)
@@ -1505,7 +1536,7 @@ class TestOVNL3RouterPlugin(test_mech_driver.Ml2PluginV2TestCase):
         fake_router_port_assert['gateway_chassis'] = mock.ANY
         fake_router_port_assert['options'] = {
             ovn_const.OVN_ROUTER_PORT_GW_MTU_OPTION:
-            str(self.fake_network['mtu'])}
+            str(prov_net['mtu'])}
 
         self.l3_inst._ovn.add_lrouter_port.assert_called_once_with(
             **fake_router_port_assert)
@@ -1520,6 +1551,52 @@ class TestOVNL3RouterPlugin(test_mech_driver.Ml2PluginV2TestCase):
         self.bump_rev_p.assert_called_with(
             mock.ANY, self.fake_router_port,
             ovn_const.TYPE_ROUTER_PORTS)
+
+    @mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.get_network')
+    @mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.get_networks')
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.'
+                'ovn_client.OVNClient._get_router_ports')
+    @mock.patch('neutron.db.l3_db.L3_NAT_dbonly_mixin.add_router_interface')
+    def test_add_router_interface_need_to_frag_enabled_then_remove(
+            self, ari, grps, gns, gn):
+        config.cfg.CONF.set_override(
+            'ovn_emit_need_to_frag', True, group='ovn')
+        router_id = 'router-id'
+        interface_info = {'port_id': 'router-port-id',
+                'network_id': 'priv-net'}
+        ari.return_value = self.fake_router_interface_info
+        # If we remove the router halfway the return value of
+        # _get_routers_ports will be RouterNotFound
+        grps.side_effect = l3_exc.RouterNotFound(router_id=router_id)
+        self.get_router.return_value = self.fake_router_with_ext_gw
+        network_attrs = {'id': 'prov-net', 'mtu': 1200}
+        prov_net = fake_resources.FakeNetwork.create_one_network(
+                attrs=network_attrs).info()
+        self.fake_router_port['device_owner'] = (
+            constants.DEVICE_OWNER_ROUTER_GW)
+        gn.return_value = prov_net
+        gns.return_value = [self.fake_network]
+
+        self.l3_inst.add_router_interface(self.context, router_id,
+                                          interface_info)
+
+        # Make sure that the "gateway_mtu" option was set to the router port
+        fake_router_port_assert = self.fake_router_port_assert
+        fake_router_port_assert['gateway_chassis'] = mock.ANY
+        fake_router_port_assert['options'] = {}
+
+        self.l3_inst._ovn.add_lrouter_port.assert_called_once_with(
+            **fake_router_port_assert)
+        # Since if_exists = True it will safely return
+        self.l3_inst._ovn.update_lrouter_port(
+            name='lrp-router-port-id', if_exists=True,
+            options=fake_router_port_assert)
+        # If no if_exists is provided, it is defaulted to true, so this
+        # operation is safe.
+        self.l3_inst._ovn.set_lrouter_port_in_lswitch_port.\
+            assert_called_once_with(
+                'router-port-id', 'lrp-router-port-id', is_gw_port=True,
+                lsp_address=ovn_const.DEFAULT_ADDR_FOR_LSP_WITH_PEER)
 
     def _test_get_router_availability_zones(self, azs, expected):
         lr = fake_resources.FakeOvsdbRow.create_one_ovsdb_row(

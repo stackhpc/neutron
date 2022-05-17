@@ -12,8 +12,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import functools
+import re
 from unittest import mock
+
+import netaddr
 
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
@@ -22,14 +26,27 @@ from oslo_utils import uuidutils
 from ovsdbapp.backend.ovs_idl import event
 from ovsdbapp.tests.functional import base as ovs_base
 
+from neutron.agent.linux import utils as linux_utils
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
 from neutron.common import utils as n_utils
+from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron.plugins.ml2.drivers.ovn.mech_driver import mech_driver
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import impl_idl_ovn
+from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_client
 from neutron.tests import base as tests_base
 from neutron.tests.functional import base
+
+VHU_MODE = 'server'
+OVS_VIF_DETAILS = {
+    portbindings.CAP_PORT_FILTER: True,
+    portbindings.VIF_DETAILS_CONNECTIVITY: portbindings.CONNECTIVITY_L2}
+VHOSTUSER_VIF_DETAILS = {
+    portbindings.CAP_PORT_FILTER: False,
+    'vhostuser_mode': VHU_MODE,
+    'vhostuser_ovs_plug': True,
+    portbindings.VIF_DETAILS_CONNECTIVITY: portbindings.CONNECTIVITY_L2}
 
 
 class TestPortBinding(base.TestOVNFunctionalBase):
@@ -39,7 +56,6 @@ class TestPortBinding(base.TestOVNFunctionalBase):
         self.ovs_host = 'ovs-host'
         self.dpdk_host = 'dpdk-host'
         self.invalid_dpdk_host = 'invalid-host'
-        self.vhu_mode = 'server'
         self.add_fake_chassis(self.ovs_host)
         self.add_fake_chassis(
             self.dpdk_host,
@@ -96,12 +112,10 @@ class TestPortBinding(base.TestOVNFunctionalBase):
     def test_port_binding_create_port(self):
         port_id = self._create_or_update_port(hostname=self.ovs_host)
         self._verify_vif_details(port_id, self.ovs_host, 'ovs',
-                                 {'port_filter': True})
+                                 OVS_VIF_DETAILS)
 
         port_id = self._create_or_update_port(hostname=self.dpdk_host)
-        expected_vif_details = {'port_filter': False,
-                                'vhostuser_mode': self.vhu_mode,
-                                'vhostuser_ovs_plug': True}
+        expected_vif_details = copy.deepcopy(VHOSTUSER_VIF_DETAILS)
         expected_vif_details['vhostuser_socket'] = (
             utils.ovn_vhu_sockpath(cfg.CONF.ovn.vhost_sock_dir, port_id))
         self._verify_vif_details(port_id, self.dpdk_host, 'vhostuser',
@@ -109,7 +123,7 @@ class TestPortBinding(base.TestOVNFunctionalBase):
 
         port_id = self._create_or_update_port(hostname=self.invalid_dpdk_host)
         self._verify_vif_details(port_id, self.invalid_dpdk_host, 'ovs',
-                                 {'port_filter': True})
+                                 OVS_VIF_DETAILS)
 
     def test_port_binding_update_port(self):
         port_id = self._create_or_update_port()
@@ -117,13 +131,11 @@ class TestPortBinding(base.TestOVNFunctionalBase):
         port_id = self._create_or_update_port(port_id=port_id,
                                               hostname=self.ovs_host)
         self._verify_vif_details(port_id, self.ovs_host, 'ovs',
-                                 {'port_filter': True})
+                                 OVS_VIF_DETAILS)
 
         port_id = self._create_or_update_port(port_id=port_id,
                                               hostname=self.dpdk_host)
-        expected_vif_details = {'port_filter': False,
-                                'vhostuser_mode': self.vhu_mode,
-                                'vhostuser_ovs_plug': True}
+        expected_vif_details = copy.deepcopy(VHOSTUSER_VIF_DETAILS)
         expected_vif_details['vhostuser_socket'] = (
             utils.ovn_vhu_sockpath(cfg.CONF.ovn.vhost_sock_dir, port_id))
         self._verify_vif_details(port_id, self.dpdk_host, 'vhostuser',
@@ -132,7 +144,7 @@ class TestPortBinding(base.TestOVNFunctionalBase):
         port_id = self._create_or_update_port(port_id=port_id,
                                               hostname=self.invalid_dpdk_host)
         self._verify_vif_details(port_id, self.invalid_dpdk_host, 'ovs',
-                                 {'port_filter': True})
+                                 OVS_VIF_DETAILS)
 
 
 class TestPortBindingOverTcp(TestPortBinding):
@@ -743,17 +755,103 @@ class TestProvnetPorts(base.TestOVNFunctionalBase):
         self.assertIsNone(ovn_localnetport)
 
 
+class TestMetadataPorts(base.TestOVNFunctionalBase):
+
+    def setUp(self, *args, **kwargs):
+        super().setUp(*args, **kwargs)
+        self._ovn_client = self.mech_driver._ovn_client
+        self.meta_regex = re.compile(r'%s,(\d+\.\d+\.\d+\.\d+)' %
+                                     constants.METADATA_V4_CIDR)
+
+    def _create_network_ovn(self, metadata_enabled=True):
+        self.mock_is_ovn_metadata_enabled = mock.patch.object(
+            ovn_conf, 'is_ovn_metadata_enabled').start()
+        self.mock_is_ovn_metadata_enabled.return_value = metadata_enabled
+        self.n1 = self._make_network(self.fmt, 'n1', True)
+        self.n1_id = self.n1['network']['id']
+
+    def _create_subnet_ovn(self, cidr, enable_dhcp=True):
+        _cidr = netaddr.IPNetwork(cidr)
+        res = self._create_subnet(self.fmt, self.n1_id, cidr,
+                                  enable_dhcp=enable_dhcp,
+                                  ip_version=_cidr.version)
+        return self.deserialize(self.fmt, res)['subnet']
+
+    def _list_ports_ovn(self, net_id=None):
+        res = self._list_ports(self.fmt, net_id=net_id)
+        return self.deserialize(self.fmt, res)['ports']
+
+    def _check_metadata_port(self, net_id, fixed_ip):
+        for port in self._list_ports_ovn(net_id=net_id):
+            if ovn_client.OVNClient.is_metadata_port(port):
+                self.assertEqual(net_id, port['network_id'])
+                if fixed_ip:
+                    self.assertIn(fixed_ip, port['fixed_ips'])
+                else:
+                    self.assertEqual([], port['fixed_ips'])
+                return port['id']
+
+        self.fail('Metadata port is not present in network %s or data is not '
+                  'correct' % self.n1_id)
+
+    def _check_subnet_dhcp_options(self, subnet_id, cidr):
+        # This method checks the DHCP options CIDR and returns, if exits, the
+        # metadata port IP address, included in the classless static routes.
+        dhcp_opts = self._ovn_client._nb_idl.get_subnet_dhcp_options(subnet_id)
+        self.assertEqual(cidr, dhcp_opts['subnet']['cidr'])
+        routes = dhcp_opts['subnet']['options'].get('classless_static_route')
+        if not routes:
+            return
+
+        match = self.meta_regex.search(routes)
+        if match:
+            return match.group(1)
+
+    def test_subnet_ipv4(self):
+        self._create_network_ovn(metadata_enabled=True)
+        subnet = self._create_subnet_ovn('10.0.0.0/24')
+        metatada_ip = self._check_subnet_dhcp_options(subnet['id'],
+                                                      '10.0.0.0/24')
+        fixed_ip = {'subnet_id': subnet['id'], 'ip_address': metatada_ip}
+        port_id = self._check_metadata_port(self.n1_id, fixed_ip)
+
+        # Update metatada port IP address to 10.0.0.5
+        data = {'port': {'fixed_ips': [{'subnet_id': subnet['id'],
+                                        'ip_address': '10.0.0.5'}]}}
+        req = self.new_update_request('ports', data, port_id)
+        req.get_response(self.api)
+        metatada_ip = self._check_subnet_dhcp_options(subnet['id'],
+                                                      '10.0.0.0/24')
+        self.assertEqual('10.0.0.5', metatada_ip)
+        fixed_ip = {'subnet_id': subnet['id'], 'ip_address': metatada_ip}
+        self._check_metadata_port(self.n1_id, fixed_ip)
+
+    def test_subnet_ipv4_no_metadata(self):
+        self._create_network_ovn(metadata_enabled=False)
+        subnet = self._create_subnet_ovn('10.0.0.0/24')
+        self.assertIsNone(self._check_subnet_dhcp_options(subnet['id'],
+                                                          '10.0.0.0/24'))
+        self.assertEqual([], self._list_ports_ovn(self.n1_id))
+
+    def test_subnet_ipv6(self):
+        self._create_network_ovn(metadata_enabled=True)
+        subnet = self._create_subnet_ovn('2001:db8::/64')
+        self.assertIsNone(self._check_subnet_dhcp_options(subnet['id'],
+                                                          '2001:db8::/64'))
+        self._check_metadata_port(self.n1_id, [])
+
+
 class AgentWaitEvent(event.WaitEvent):
     """Wait for a list of Chassis to be created"""
 
     ONETIME = False
 
-    def __init__(self, driver, chassis_names):
+    def __init__(self, driver, chassis_names, events=None, timeout=None):
         table = driver.agent_chassis_table
-        events = (self.ROW_CREATE,)
+        events = events or (self.ROW_CREATE,)
         self.chassis_names = chassis_names
-        super().__init__(events, table, None)
-        self.event_name = 'AgentWaitEvent'
+        super().__init__(events, table, None, timeout=timeout)
+        self.event_name = "AgentWaitEvent"
 
     def match_fn(self, event, row, old):
         return row.name in self.chassis_names
@@ -810,3 +908,69 @@ class TestAgentApi(base.TestOVNFunctionalBase):
         agent_ids = [a['id'] for a in self.plugin.get_agents(
             self.context, filters={'host': self.host})]
         self.assertCountEqual(list(self.agent_types.values()), agent_ids)
+
+        # "ovn-controller" ends without deleting "Chassis" and
+        # "Chassis_Private" registers. If "Chassis" register is deleted,
+        # then Chassis_Private.chassis = []; both metadata and controller
+        # agents will still be present in the agent list.
+        agent_event = AgentWaitEvent(self.mech_driver, [self.chassis],
+                                     events=(event.RowEvent.ROW_UPDATE,),
+                                     timeout=1)
+        self.sb_api.idl.notify_handler.watch_event(agent_event)
+        self.sb_api.chassis_del(self.chassis, if_exists=True).execute(
+            check_error=False)
+        agent_event.wait()
+        agent_ids = [a['id'] for a in self.plugin.get_agents(
+            self.context, filters={'host': self.host})]
+        self.assertCountEqual(list(self.agent_types.values()), agent_ids)
+
+
+class ConnectionInactivityProbeSetEvent(event.WaitEvent):
+    """Wait for a Connection (NB/SB) to have the inactivity probe set"""
+
+    ONETIME = False
+
+    def __init__(self, target, inactivity_probe):
+        table = 'Connection'
+        events = (self.ROW_UPDATE,)
+        super().__init__(events, table, None)
+        self.event_name = "ConnectionEvent"
+        self.target = target
+        self.inactivity_probe = inactivity_probe
+
+    def match_fn(self, event, row, old):
+        return row.target in self.target
+
+    def run(self, event, row, old):
+        if (row.inactivity_probe and
+                row.inactivity_probe[0] == self.inactivity_probe):
+            self.event.set()
+
+
+class TestSetInactivityProbe(base.TestOVNFunctionalBase):
+
+    def setUp(self):
+        super().setUp()
+        self.dbs = [(ovn_conf.get_ovn_nb_connection(), 'ptcp:1000:1.2.3.4'),
+                    (ovn_conf.get_ovn_sb_connection(), 'ptcp:1001:1.2.3.4')]
+        linux_utils.execute(
+            ['ovn-nbctl', '--db=%s' % self.dbs[0][0],
+             'set-connection', self.dbs[0][1]], run_as_root=True)
+        linux_utils.execute(
+            ['ovn-sbctl', '--db=%s' % self.dbs[1][0],
+             'set-connection', self.dbs[1][1]], run_as_root=True)
+
+    def test_1(self):
+        mock.patch.object(ovn_conf, 'get_ovn_ovsdb_probe_interval',
+                          return_value='2500').start()
+        nb_connection = ConnectionInactivityProbeSetEvent(self.dbs[0][1], 2500)
+        sb_connection = ConnectionInactivityProbeSetEvent(self.dbs[1][1], 2500)
+        self.nb_api.idl.notify_handler.watch_event(nb_connection)
+        self.sb_api.idl.notify_handler.watch_event(sb_connection)
+        with mock.patch.object(utils, 'connection_config_to_target_string') \
+                as mock_target:
+            mock_target.side_effect = [self.dbs[0][1], self.dbs[1][1]]
+            self.mech_driver._set_inactivity_probe()
+
+        self.assertTrue(nb_connection.wait())
+        self.assertTrue(sb_connection.wait())

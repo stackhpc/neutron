@@ -628,20 +628,20 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             # NOTE(salv-orlando): There is slight chance of a race, when
             # a subnet-update and a router-interface-add operation are
             # executed concurrently
-            if cur_subnet and not ipv6_utils.is_ipv6_pd_enabled(s):
+            s_gateway_ip = netaddr.IPAddress(s['gateway_ip'])
+            if (cur_subnet and
+                    s_gateway_ip != cur_subnet['gateway_ip'] and
+                    not ipv6_utils.is_ipv6_pd_enabled(s)):
+                gateway_ip = str(cur_subnet['gateway_ip'])
                 with db_api.CONTEXT_READER.using(context):
-                    # TODO(electrocucaracha): Look a solution for Join in OVO
-                    ipal = models_v2.IPAllocation
-                    alloc_qry = context.session.query(ipal.port_id)
-                    alloc_qry = alloc_qry.join("port", "routerport")
-                    gateway_ip = str(cur_subnet['gateway_ip'])
-                    allocated = alloc_qry.filter(
-                        ipal.ip_address == gateway_ip,
-                        ipal.subnet_id == cur_subnet['id']).first()
-                if allocated and allocated.port_id:
+                    alloc = port_obj.IPAllocation.get_alloc_routerports(
+                        context, cur_subnet['id'], gateway_ip=gateway_ip,
+                        first=True)
+
+                if alloc and alloc.port_id:
                     raise exc.GatewayIpInUse(
                         ip_address=gateway_ip,
-                        port_id=allocated.port_id)
+                        port_id=alloc.port_id)
 
         if validators.is_attr_set(s.get('dns_nameservers')):
             if len(s['dns_nameservers']) > cfg.CONF.max_dns_nameservers:
@@ -1495,13 +1495,6 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                     old_port_db=db_port,
                     old_port=self._make_port_dict(db_port),
                     new_port=new_port)
-            except ipam_exc.IpAddressAllocationNotFound as e:
-                # If a port update and a subnet delete interleave, there is a
-                # chance that the IPAM update operation raises this exception.
-                # Rather than throwing that up to the user under some sort of
-                # conflict, bubble up a retry instead that should bring things
-                # back to sanity.
-                raise os_db_exc.RetryRequest(e)
             except ipam_exc.IPAddressChangeNotAllowed as e:
                 raise exc.BadRequest(resource='ports', msg=e)
         return self._make_port_dict(db_port)

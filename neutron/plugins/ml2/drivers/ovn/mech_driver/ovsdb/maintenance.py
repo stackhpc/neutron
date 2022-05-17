@@ -14,11 +14,13 @@
 #    under the License.
 
 import abc
+import copy
 import inspect
 import threading
 
 from futurist import periodics
 from neutron_lib.api.definitions import external_net
+from neutron_lib.api.definitions import provider_net as pnet
 from neutron_lib.api.definitions import segment as segment_def
 from neutron_lib import constants as n_const
 from neutron_lib import context as n_context
@@ -40,7 +42,6 @@ from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
 CONF = cfg.CONF
 LOG = log.getLogger(__name__)
 
-DB_CONSISTENCY_CHECK_INTERVAL = 300  # 5 minutes
 INCONSISTENCY_TYPE_CREATE_UPDATE = 'create/update'
 INCONSISTENCY_TYPE_DELETE = 'delete'
 
@@ -327,7 +328,7 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         _log(create_update_inconsistencies, INCONSISTENCY_TYPE_CREATE_UPDATE)
         _log(delete_inconsistencies, INCONSISTENCY_TYPE_DELETE)
 
-    @periodics.periodic(spacing=DB_CONSISTENCY_CHECK_INTERVAL,
+    @periodics.periodic(spacing=ovn_const.DB_CONSISTENCY_CHECK_INTERVAL,
                         run_immediately=True)
     def check_for_inconsistencies(self):
         # Only the worker holding a valid lock within OVSDB will run
@@ -383,6 +384,9 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 if row.resource_type == ovn_const.TYPE_SUBNETS:
                     self._ovn_client.delete_subnet(admin_context,
                                                    row.resource_uuid)
+                elif row.resource_type == ovn_const.TYPE_PORTS:
+                    self._ovn_client.delete_port(admin_context,
+                                                 row.resource_uuid)
                 else:
                     self._fix_delete(admin_context, row)
             except Exception:
@@ -661,7 +665,7 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                     txn.add(cmd)
         raise periodics.NeverAgain()
 
-    # TODO(lucasagomes): Remove this in the Y cycle
+    # TODO(lucasagomes): Remove this in the Z cycle
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
     @periodics.periodic(spacing=600, run_immediately=True)
@@ -676,13 +680,16 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 continue
 
             options = port.options
-            if ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS in options:
+            if port_type == ovn_const.LSP_TYPE_LOCALNET:
+                mcast_flood_value = options.get(
+                    ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS)
+                if mcast_flood_value == 'false':
+                    continue
+                options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD: 'false'})
+            elif ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS in options:
                 continue
 
             options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'})
-            if port_type == ovn_const.LSP_TYPE_LOCALNET:
-                options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD: 'false'})
-
             cmds.append(self._nb_idl.lsp_set_options(port.name, **options))
 
         if cmds:
@@ -690,6 +697,66 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 for cmd in cmds:
                     txn.add(cmd)
 
+        raise periodics.NeverAgain()
+
+    # TODO(lucasagomes): Remove this in the Z cycle
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @periodics.periodic(spacing=600, run_immediately=True)
+    def check_router_mac_binding_options(self):
+        if not self.has_lock:
+            return
+
+        cmds = []
+        for router in self._nb_idl.lr_list().execute(check_error=True):
+            if (router.options.get('always_learn_from_arp_request') and
+                    router.options.get('dynamic_neigh_routers')):
+                continue
+
+            opts = copy.deepcopy(router.options)
+            opts.update({'always_learn_from_arp_request': 'false',
+                         'dynamic_neigh_routers': 'true'})
+            cmds.append(self._nb_idl.update_lrouter(router.name, options=opts))
+
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+        raise periodics.NeverAgain()
+
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @periodics.periodic(spacing=600, run_immediately=True)
+    def check_vlan_distributed_ports(self):
+        """Check VLAN distributed ports
+        Check for the option "reside-on-redirect-chassis" value for
+        distributed VLAN ports.
+        """
+        if not self.has_lock:
+            return
+        context = n_context.get_admin_context()
+        cmds = []
+        # Get router ports belonging to VLAN networks
+        vlan_nets = self._ovn_client._plugin.get_networks(
+            context, {pnet.NETWORK_TYPE: [n_const.TYPE_VLAN]})
+        vlan_net_ids = [vn['id'] for vn in vlan_nets]
+        router_ports = self._ovn_client._plugin.get_ports(
+            context, {'network_id': vlan_net_ids,
+                      'device_owner': n_const.ROUTER_PORT_OWNERS})
+        expected_value = ('false' if ovn_conf.is_ovn_distributed_floating_ip()
+                          else 'true')
+        for rp in router_ports:
+            lrp_name = utils.ovn_lrouter_port_name(rp['id'])
+            lrp = self._nb_idl.get_lrouter_port(lrp_name)
+            if lrp.options.get(
+                    ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH) != expected_value:
+                opt = {ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH: expected_value}
+                cmds.append(self._nb_idl.db_set(
+                    'Logical_Router_Port', lrp_name, ('options', opt)))
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
         raise periodics.NeverAgain()
 
 

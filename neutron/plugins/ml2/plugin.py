@@ -1447,14 +1447,43 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
         return bound_context.current
 
+    def allocate_ips_for_ports(self, context, ports):
+        for port in ports:
+            port['port']['id'] = (
+                port['port'].get('id') or uuidutils.generate_uuid())
+
+            # Call IPAM to allocate IP addresses
+            try:
+                port['ipams'] = self.ipam.allocate_ips_for_port(context, port)
+
+                port['ip_allocation'] = (ipalloc_apidef.
+                                         IP_ALLOCATION_IMMEDIATE)
+            except ipam_exc.DeferIpam:
+                port['ip_allocation'] = (ipalloc_apidef.
+                                         IP_ALLOCATION_DEFERRED)
+        return ports
+
     @utils.transaction_guard
-    @db_api.retry_if_session_inactive()
     def create_port_bulk(self, context, ports):
-        # TODO(njohnston): Break this up into smaller functions.
         port_list = ports.get('ports')
         for port in port_list:
             self._before_create_port(context, port)
 
+        port_list = self.allocate_ips_for_ports(context, port_list)
+
+        try:
+            return self._create_port_bulk(context, port_list)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                # If any issue happened allocated IP addresses needs to be
+                # deallocated now
+                for port in port_list:
+                    self.ipam.deallocate_ips_from_port(
+                        context, port, port['ipams'])
+
+    @db_api.retry_if_session_inactive()
+    def _create_port_bulk(self, context, port_list):
+        # TODO(njohnston): Break this up into smaller functions.
         port_data = []
         network_cache = dict()
         macs = self._generate_macs(len(port_list))
@@ -1506,31 +1535,25 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 # Create the Port object
                 db_port_obj = ports_obj.Port(context,
                                             mac_address=eui_mac_address,
-                                            id=uuidutils.generate_uuid(),
+                                            id=port['port']['id'],
                                             **bulk_port_data)
                 db_port_obj.create()
 
-                # Call IPAM to allocate IP addresses
-                try:
-                    # TODO(njohnston): IPAM allocation needs to be revamped to
-                    # be bulk-friendly.
-                    ips = self.ipam.allocate_ips_for_port_and_store(
-                            context, port, db_port_obj['id'])
-                    ipam_fixed_ips = []
-                    for ip in ips:
-                        fixed_ip = ports_obj.IPAllocation(
-                                port_id=db_port_obj['id'],
-                                subnet_id=ip['subnet_id'],
-                                network_id=network_id,
-                                ip_address=ip['ip_address'])
-                        ipam_fixed_ips.append(fixed_ip)
+                # Call IPAM to store allocated IP addresses
+                ipams = port.pop("ipams")
+                self.ipam.store_ip_allocation_for_port(
+                    context, ipams, network_id, port)
+                ipam_fixed_ips = []
+                for ip in ipams:
+                    fixed_ip = ports_obj.IPAllocation(
+                            port_id=db_port_obj['id'],
+                            subnet_id=ip['subnet_id'],
+                            network_id=network_id,
+                            ip_address=ip['ip_address'])
+                    ipam_fixed_ips.append(fixed_ip)
 
-                    db_port_obj['fixed_ips'] = ipam_fixed_ips
-                    db_port_obj['ip_allocation'] = (ipalloc_apidef.
-                                                IP_ALLOCATION_IMMEDIATE)
-                except ipam_exc.DeferIpam:
-                    db_port_obj['ip_allocation'] = (ipalloc_apidef.
-                                                IP_ALLOCATION_DEFERRED)
+                db_port_obj['fixed_ips'] = ipam_fixed_ips
+                db_port_obj['ip_allocation'] = port.pop('ip_allocation')
 
                 fixed_ips = pdata.get('fixed_ips')
                 if validators.is_attr_set(fixed_ips) and not fixed_ips:
@@ -2266,8 +2289,9 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     def check_segment_for_agent(self, segment, agent):
         for mech_driver in self.mechanism_manager.ordered_mech_drivers:
-            driver_agent_type = getattr(mech_driver.obj, 'agent_type', None)
-            if driver_agent_type and driver_agent_type == agent['agent_type']:
+            # TODO(ralonsoh): add "check_segment_for_agent" method to ABC
+            # "MechanismDriver", returning False by default.
+            if hasattr(mech_driver.obj, 'check_segment_for_agent'):
                 if mech_driver.obj.check_segment_for_agent(segment, agent):
                     return True
         return False

@@ -14,6 +14,7 @@
 #    under the License.
 
 import errno
+from os import path
 import re
 import threading
 import time
@@ -35,6 +36,7 @@ from neutron._i18n import _
 from neutron.agent.common import utils
 from neutron.common import utils as common_utils
 from neutron.privileged.agent.linux import ip_lib as privileged
+from neutron.privileged.agent.linux import utils as priv_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -274,11 +276,20 @@ class IPWrapper(SubProcessBase):
                                     vlan_id=vlan_id)
         return IPDevice(name, namespace=self.namespace)
 
-    def add_vxlan(self, name, vni, group=None, dev=None, ttl=None, tos=None,
+    def add_vxlan(self, name, vni, dev, group=None, ttl=None, tos=None,
                   local=None, srcport=None, dstport=None, proxy=False):
-        kwargs = {'vxlan_id': vni}
+        kwargs = {'vxlan_id': vni,
+                  'physical_interface': dev}
         if group:
-            kwargs['vxlan_group'] = group
+            try:
+                ip_version = common_utils.get_ip_version(group)
+                if ip_version == constants.IP_VERSION_6:
+                    kwargs['vxlan_group6'] = group
+                else:
+                    kwargs['vxlan_group'] = group
+            except netaddr.core.AddrFormatError:
+                err_msg = _("Invalid group address: %s") % group
+                raise exceptions.InvalidInput(error_message=err_msg)
         if dev:
             kwargs['physical_interface'] = dev
         if ttl:
@@ -286,7 +297,15 @@ class IPWrapper(SubProcessBase):
         if tos:
             kwargs['vxlan_tos'] = tos
         if local:
-            kwargs['vxlan_local'] = local
+            try:
+                ip_version = common_utils.get_ip_version(local)
+                if ip_version == constants.IP_VERSION_6:
+                    kwargs['vxlan_local6'] = local
+                else:
+                    kwargs['vxlan_local'] = local
+            except netaddr.core.AddrFormatError:
+                err_msg = _("Invalid local address: %s") % local
+                raise exceptions.InvalidInput(error_message=err_msg)
         if proxy:
             kwargs['vxlan_proxy'] = proxy
         # tuple: min,max
@@ -454,6 +473,8 @@ class IpLinkCommand(IpDeviceCommandBase):
         privileged.set_link_attribute(
             self.name, self._parent.namespace, net_ns_fd=namespace)
         self._parent.namespace = namespace
+        common_utils.wait_until_true(lambda: self.exists, timeout=5,
+                                     sleep=0.5)
 
     def set_name(self, name):
         privileged.set_link_attribute(
@@ -931,9 +952,16 @@ def network_namespace_exists(namespace, try_is_ready=False, **kwargs):
                          is ready to be operated.
     :param kwargs: Callers add any filters they use as kwargs
     """
+    if not namespace:
+        return False
+
     if not try_is_ready:
-        output = list_network_namespaces(**kwargs)
-        return namespace in output
+        nspath = kwargs.get('nspath') or netns.NETNS_RUN_DIR
+        nspath += '/' + namespace
+        if cfg.CONF.AGENT.use_helper_for_ns_read:
+            return priv_utils.path_exists(nspath)
+        else:
+            return path.exists(nspath)
 
     try:
         privileged.open_namespace(namespace)
@@ -958,8 +986,8 @@ def ensure_device_is_ready(device_name, namespace=None):
         # Ensure the device has a MAC address and is up, even if it is already
         # up.
         if not dev.link.exists or not dev.link.address:
-            LOG.error("Device %s cannot be used as it has no MAC "
-                      "address", device_name)
+            LOG.info("Device %s cannot be used as it has no MAC "
+                     "address", device_name)
             return False
         dev.link.set_up()
     except RuntimeError:

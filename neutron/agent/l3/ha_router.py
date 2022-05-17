@@ -322,21 +322,23 @@ class HaRouter(router.RouterInfo):
                 return False
         return True
 
-    def _disable_ipv6_addressing_on_interface(self, interface_name):
+    def _disable_ipv6_addressing_on_interface(self, interface_name,
+                                              namespace=None):
         """Disable IPv6 link local addressing on the device and add it as
         a VIP to keepalived. This means that the IPv6 link local address
         will only be present on the primary.
         """
-        device = ip_lib.IPDevice(interface_name, namespace=self.ha_namespace)
+        namespace = namespace or self.ha_namespace
+        device = ip_lib.IPDevice(interface_name, namespace=namespace)
         ipv6_lladdr = ip_lib.get_ipv6_lladdr(device.link.address)
 
         if self._should_delete_ipv6_lladdr(ipv6_lladdr):
-            self.driver.configure_ipv6_ra(self.ha_namespace, interface_name,
+            self.driver.configure_ipv6_ra(namespace, interface_name,
                                           n_consts.ACCEPT_RA_DISABLED)
             device.addr.flush(n_consts.IP_VERSION_6)
         else:
             self.driver.configure_ipv6_ra(
-                self.ha_namespace, interface_name,
+                namespace, interface_name,
                 n_consts.ACCEPT_RA_WITHOUT_FORWARDING)
 
         self._remove_vip(ipv6_lladdr)
@@ -359,7 +361,10 @@ class HaRouter(router.RouterInfo):
         if device.addr.list(to=to):
             super(HaRouter, self).remove_floating_ip(device, ip_cidr)
 
-    def internal_network_updated(self, interface_name, ip_cidrs, mtu):
+    def internal_network_updated(self, port):
+        interface_name = self.get_internal_device_name(port['id'])
+        ip_cidrs = common_utils.fixed_ip_cidrs(port['fixed_ips'])
+        mtu = port['mtu']
         self.driver.set_mtu(interface_name, mtu, namespace=self.ns_name,
                             prefix=router.INTERNAL_DEV_PREFIX)
         self._clear_vips(interface_name)
@@ -544,11 +549,8 @@ class HaRouter(router.RouterInfo):
         if ex_gw_port_id:
             interface_name = self.get_external_device_name(ex_gw_port_id)
             ns_name = self.get_gw_ns_name()
-            if (not self.driver.set_link_status(
-                    interface_name, namespace=ns_name, link_up=link_up) and
-                    link_up):
-                LOG.error('Gateway interface for router %s was not set up; '
-                          'router will not work properly', self.router_id)
+            self.driver.set_link_status(interface_name, ns_name,
+                                        link_up=link_up)
             if link_up and set_gw:
                 preserve_ips = self.get_router_preserve_ips()
                 self._external_gateway_settings(ex_gw_port, interface_name,

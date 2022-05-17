@@ -1472,6 +1472,11 @@ class OvsDhcpAgentNotifierTestCase(test_agent.AgentDBTestMixIn,
 
         self._remove_network_from_dhcp_agent(hosta_id,
                                              network_id)
+        # Call it second time, it should be already deleted so should 409 be
+        # returned this time
+        self._remove_network_from_dhcp_agent(
+            hosta_id, network_id,
+            expected_code=exc.HTTPConflict.code)
         self.dhcp_notifier_cast.assert_called_with(
                 mock.ANY, 'network_delete_end',
                 {'network_id': network_id,
@@ -1601,10 +1606,16 @@ class OvsDhcpAgentNotifierTestCase(test_agent.AgentDBTestMixIn,
         payload = events.DBEventPayload(
             ctx,
             metadata={'host': 'HOST A',
-                      'current_segment_ids': set(['segment-1'])})
+                      'current_segment_ids': set([
+                          'segment-1', 'segment-2', 'segment-3'])})
         segments_plugin = mock.Mock()
         segments_plugin.get_segments.return_value = [
-            {'id': 'segment-1', 'hosts': ['HOST A']}]
+            {'id': 'segment-1', 'hosts': ['HOST A'],
+             'network_id': 'net-1'},
+            {'id': 'segment-2', 'hosts': ['HOST A', 'HOST B'],
+             'network_id': 'net-1'},
+            {'id': 'segment-3', 'hosts': ['HOST A', 'HOST C'],
+             'network_id': 'net-2'}]
         dhcp_notifier = mock.Mock()
         dhcp_mixin = agentschedulers_db.DhcpAgentSchedulerDbMixin()
         with mock.patch(
@@ -1624,9 +1635,14 @@ class OvsDhcpAgentNotifierTestCase(test_agent.AgentDBTestMixIn,
                 resources.SEGMENT_HOST_MAPPING, events.AFTER_CREATE,
                 ctx, payload)
             if subnet_on_segment:
-                schedule_network.assert_called_once_with(
-                    ctx, subnet_on_segment.network_id,
-                    dhcp_notifier, candidate_hosts=['HOST A'])
+                self.assertEqual(schedule_network.mock_calls, [
+                    mock.call(
+                        ctx, subnet_on_segment.network_id,
+                        dhcp_notifier, candidate_hosts=['HOST A']),
+                    mock.call(
+                        ctx, subnet_on_segment.network_id,
+                        dhcp_notifier, candidate_hosts=['HOST A', 'HOST B'])
+                        ])
             else:
                 schedule_network.assert_not_called()
 

@@ -40,6 +40,8 @@ from ovsdbapp import constants as ovsdbapp_const
 from neutron._i18n import _
 from neutron.common.ovn import constants
 from neutron.common.ovn import exceptions as ovn_exc
+from neutron.common import utils as common_utils
+from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 
 LOG = log.getLogger(__name__)
 
@@ -157,7 +159,12 @@ def get_lsp_dhcp_opts(port, ip_version):
     # in OVN.
     lsp_dhcp_disabled = False
     lsp_dhcp_opts = {}
-    if is_network_device_port(port):
+    vnic_type = port.get(portbindings.VNIC_TYPE, portbindings.VNIC_NORMAL)
+
+    # NOTE(lucasagomes): Baremetal does not yet work with OVN's built-in
+    # DHCP server, disable it for now
+    if (is_network_device_port(port) or
+            vnic_type == portbindings.VNIC_BAREMETAL):
         lsp_dhcp_disabled = True
     else:
         mapping = constants.SUPPORTED_DHCP_OPTS_MAPPING[ip_version]
@@ -416,7 +423,31 @@ def get_system_dns_resolvers(resolver_file=DNS_RESOLVER_FILE):
             ipv4 = re.search(r'^(?:[0-9]{1,3}\.){3}[0-9]{1,3}', line)
             if ipv4:
                 resolvers.append(ipv4.group(0))
+            elif netutils.is_valid_ipv6(line):
+                resolvers.append(line)
+
     return resolvers
+
+
+def get_dhcp_dns_servers(subnet, ip_version=const.IP_VERSION_4):
+    """Retrieve the DHCP option DNS servers
+
+    The DHCP should not announce any DNS resolver at all on the subnet if any
+    configured DNS server is "0.0.0.0" (IPv4) or "::" (IPv6).
+    https://docs.openstack.org/neutron/latest/admin/config-dns-res.html
+    """
+    def filter_ips(ips, ip_version=const.IP_VERSION_4):
+        return [ip for ip in ips
+                if netaddr.IPAddress(ip).version == ip_version]
+
+    dns_servers = (subnet.get('dns_nameservers') or
+                   filter_ips(ovn_conf.get_dns_servers(), ip_version) or
+                   filter_ips(get_system_dns_resolvers(), ip_version))
+
+    if common_utils.is_dns_servers_any_address(dns_servers, ip_version):
+        return []
+
+    return dns_servers
 
 
 def get_port_subnet_ids(port):
@@ -568,3 +599,23 @@ def parse_ovn_lb_port_forwarding(ovn_rtr_lb_pfs):
 
 def get_network_name_from_datapath(datapath):
     return datapath.external_ids['name'].replace('neutron-', '')
+
+
+def connection_config_to_target_string(connection_config):
+    """Converts the Neutron NB/SB connection parameter to the OVN target string
+
+    :param connection_config: Neutron OVN config parameter for the OVN NB or SB
+                              database. See "ovn_sb_connection" or
+                              "ovn_nb_connection" params.
+    :returns: (String) OVN NB/SB ``connection.target`` column value.
+    """
+    regex = re.compile(r'^(?P<proto>\w+)\:((?P<ip>.+)\:(?P<port>\d+)|'
+                       r'(?P<file>[\w\/\.]+))')
+    m = regex.match(connection_config)
+    if m:
+        _dict = m.groupdict()
+        if _dict['ip'] and _dict['port']:
+            return ('p' + _dict['proto'] + ':' + _dict['port'] + ':' +
+                    _dict['ip'])
+        elif _dict['file']:
+            return 'p' + _dict['proto'] + ':' + _dict['file']

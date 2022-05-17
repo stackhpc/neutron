@@ -34,6 +34,7 @@ from neutron._i18n import _
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import exceptions as ovn_exc
 from neutron.common.ovn import utils
+from neutron.common import utils as n_utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf as cfg
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import commands as cmd
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovsdb_monitor
@@ -139,6 +140,10 @@ class Backend(ovs_idl.Backend):
 
     _tables = tables
 
+    @n_utils.classproperty
+    def connection_string(cls):
+        raise NotImplementedError()
+
     def is_table_present(self, table_name):
         return table_name in self._tables
 
@@ -199,6 +204,10 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
     def __init__(self, connection):
         super(OvsdbNbOvnIdl, self).__init__(connection)
 
+    @n_utils.classproperty
+    def connection_string(cls):
+        return cfg.get_ovn_nb_connection()
+
     @classmethod
     def from_worker(cls, worker_class, driver=None):
         args = (cfg.get_ovn_nb_connection(), 'OVN_Northbound')
@@ -227,11 +236,14 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
         This method is just a wrapper around the ovsdbapp transaction
         to handle revision conflicts correctly.
         """
+        revision_mismatch_raise = kwargs.pop('revision_mismatch_raise', False)
         try:
             with super(OvsdbNbOvnIdl, self).transaction(*args, **kwargs) as t:
                 yield t
         except ovn_exc.RevisionConflict as e:
             LOG.info('Transaction aborted. Reason: %s', e)
+            if revision_mismatch_raise:
+                raise e
 
     def create_lswitch_port(self, lport_name, lswitch_name, may_exist=True,
                             **columns):
@@ -519,7 +531,7 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
                 'external_ids': ext_ids, 'uuid': row.uuid}
 
     def get_subnet_dhcp_options(self, subnet_id, with_ports=False):
-        subnet = None
+        subnet = {}
         ports = []
         for row in self._tables['DHCP_Options'].rows.values():
             external_ids = getattr(row, 'external_ids', {})
@@ -792,6 +804,10 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
     def __init__(self, connection):
         super(OvsdbSbOvnIdl, self).__init__(connection)
 
+    @n_utils.classproperty
+    def connection_string(cls):
+        return cfg.get_ovn_sb_connection()
+
     @classmethod
     def from_worker(cls, worker_class, driver=None):
         args = (cfg.get_ovn_sb_connection(), 'OVN_Southbound')
@@ -804,8 +820,7 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
 
     def _get_chassis_physnets(self, chassis):
         bridge_mappings = chassis.external_ids.get('ovn-bridge-mappings', '')
-        mapping_dict = helpers.parse_mappings(bridge_mappings.split(','),
-                                              unique_values=False)
+        mapping_dict = helpers.parse_mappings(bridge_mappings.split(','))
         return list(mapping_dict.keys())
 
     def chassis_exists(self, hostname):
@@ -860,7 +875,12 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
 
     def get_chassis_metadata_networks(self, chassis_name):
         """Return a list with the metadata networks the chassis is hosting."""
-        chassis = self.lookup('Chassis', chassis_name)
+        try:
+            chassis = self.lookup('Chassis', chassis_name)
+        except idlutils.RowNotFound:
+            LOG.warning("Couldn't find Chassis named %s in OVN while looking "
+                        "for metadata networks", chassis_name)
+            return []
         proxy_networks = chassis.external_ids.get(
             'neutron-metadata-proxy-networks', None)
         return proxy_networks.split(',') if proxy_networks else []
@@ -917,6 +937,7 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
     def get_logical_port_chassis_and_datapath(self, name):
         for port in self._tables['Port_Binding'].rows.values():
             if port.logical_port == name:
-                datapath = str(port.datapath.uuid)
+                network_id = utils.get_network_name_from_datapath(
+                    port.datapath)
                 chassis = port.chassis[0].name if port.chassis else None
-                return chassis, datapath
+                return chassis, network_id

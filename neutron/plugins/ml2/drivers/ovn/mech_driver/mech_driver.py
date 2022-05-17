@@ -32,6 +32,8 @@ from neutron_lib import context as n_context
 from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
+from neutron_lib.utils import helpers
+from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_db import exception as os_db_exc
 from oslo_log import log
@@ -41,6 +43,7 @@ from ovsdbapp.backend.ovs_idl import idlutils
 from neutron._i18n import _
 from neutron.common.ovn import acl as ovn_acl
 from neutron.common.ovn import constants as ovn_const
+from neutron.common.ovn import exceptions as ovn_exceptions
 from neutron.common.ovn import utils as ovn_utils
 from neutron.common import utils as n_utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
@@ -158,17 +161,28 @@ class OVNMechanismDriver(api.MechanismDriver):
         self.supported_vnic_types = [portbindings.VNIC_NORMAL,
                                      portbindings.VNIC_DIRECT,
                                      portbindings.VNIC_DIRECT_PHYSICAL,
-                                     portbindings.VNIC_MACVTAP]
+                                     portbindings.VNIC_MACVTAP,
+                                     portbindings.VNIC_BAREMETAL,
+                                     ]
         self.vif_details = {
             portbindings.VIF_TYPE_OVS: {
-                portbindings.CAP_PORT_FILTER: self.sg_enabled
+                portbindings.CAP_PORT_FILTER: self.sg_enabled,
+                portbindings.VIF_DETAILS_CONNECTIVITY:
+                    portbindings.CONNECTIVITY_L2,
             },
             portbindings.VIF_TYPE_VHOST_USER: {
                 portbindings.CAP_PORT_FILTER: False,
                 portbindings.VHOST_USER_MODE:
                 portbindings.VHOST_USER_MODE_SERVER,
-                portbindings.VHOST_USER_OVS_PLUG: True
+                portbindings.VHOST_USER_OVS_PLUG: True,
+                portbindings.VIF_DETAILS_CONNECTIVITY:
+                    portbindings.CONNECTIVITY_L2,
             },
+            # NOTE(ralonsoh): for stable releases, this parameter is left here
+            # to allow "_check_drivers_connectivity" to check the OVN mech
+            # driver connectivity correctly. This addresses LP#1959125, that
+            # in master branch ("Y") was solved by adding a "connectivity"
+            # property to the "MechanismDriver" class.
             portbindings.VIF_DETAILS_CONNECTIVITY:
                 portbindings.CONNECTIVITY_L2,
         }
@@ -224,6 +238,7 @@ class OVNMechanismDriver(api.MechanismDriver):
         atexit.register(self._clean_hash_ring)
         signal.signal(signal.SIGTERM, self._clean_hash_ring)
         self._create_neutron_pg_drop()
+        self._set_inactivity_probe()
 
     def _create_neutron_pg_drop(self):
         """Create neutron_pg_drop Port Group.
@@ -240,6 +255,15 @@ class OVNMechanismDriver(api.MechanismDriver):
                 impl_idl_ovn.OvsdbNbOvnIdl, idl) as pre_ovn_nb_api:
             try:
                 create_default_drop_port_group(pre_ovn_nb_api)
+            except KeyError:
+                # Due to a bug in python-ovs, we can send transactions before
+                # the initial OVSDB is populated in memory. This can break
+                # the AddCommand post_commit method which tries to return a
+                # row looked up by the newly commited row's uuid. Since we
+                # don't care about the return value from the PgAddCommand, we
+                # can just catch the KeyError and continue. This can be
+                # removed when the python-ovs bug is resolved.
+                pass
             except RuntimeError as re:
                 if pre_ovn_nb_api.get_port_group(
                         ovn_const.OVN_DROP_PORT_GROUP_NAME):
@@ -250,6 +274,28 @@ class OVNMechanismDriver(api.MechanismDriver):
                             'error': re})
                 else:
                     raise
+
+    def _set_inactivity_probe(self):
+        """Set 'connection.inactivity_probe' in NB and SB databases"""
+        inactivity_probe = ovn_conf.get_ovn_ovsdb_probe_interval()
+        dbs = [(ovn_conf.get_ovn_nb_connection(), 'OVN_Northbound',
+                impl_idl_ovn.OvsdbNbOvnIdl),
+               (ovn_conf.get_ovn_sb_connection(), 'OVN_Southbound',
+                impl_idl_ovn.OvsdbSbOvnIdl)]
+        for connection, schema, klass in dbs:
+            target = ovn_utils.connection_config_to_target_string(connection)
+            if not target:
+                continue
+
+            idl = ovsdb_monitor.BaseOvnIdl.from_server(connection, schema)
+            with ovsdb_monitor.short_living_ovsdb_api(klass, idl) as idl_api:
+                conn = idlutils.row_by_value(idl_api, 'Connection', 'target',
+                                             target, None)
+                if conn:
+                    idl_api.db_set(
+                        'Connection', target,
+                        ('inactivity_probe', int(inactivity_probe))).execute(
+                        check_error=True)
 
     @staticmethod
     def should_post_fork_initialize(worker_class):
@@ -663,6 +709,32 @@ class OVNMechanismDriver(api.MechanismDriver):
                     'device_owner': original_port['device_owner']})
             raise OVNPortUpdateError(resource='port', msg=msg)
 
+    def _ovn_update_port(self, plugin_context, port, original_port,
+                         retry_on_revision_mismatch):
+        try:
+            self._ovn_client.update_port(plugin_context, port,
+                                         port_object=original_port)
+        except ovn_exceptions.RevisionConflict:
+            if retry_on_revision_mismatch:
+                # NOTE(slaweq): I know this is terrible hack but there is no
+                # other way to workaround possible race between port update
+                # event from the OVN (port down on the src node) and API
+                # request from nova-compute to activate binding of the port on
+                # the dest node.
+                original_port_migrating_to = original_port.get(
+                    portbindings.PROFILE, {}).get('migrating_to')
+                port_host_id = port.get(portbindings.HOST_ID)
+                if (original_port_migrating_to is not None and
+                        original_port_migrating_to == port_host_id):
+                    LOG.debug("Revision number of the port %s has changed "
+                              "probably during live migration. Retrying "
+                              "update port in OVN.", port)
+                    db_port = self._plugin.get_port(plugin_context,
+                                                    port['id'])
+                    port['revision_number'] = db_port['revision_number']
+                    self._ovn_update_port(plugin_context, port, original_port,
+                                          retry_on_revision_mismatch=False)
+
     def create_port_postcommit(self, context):
         """Create a port.
 
@@ -753,8 +825,8 @@ class OVNMechanismDriver(api.MechanismDriver):
             # will fail that OVN has port with bigger revision.
             return
 
-        self._ovn_client.update_port(context._plugin_context, port,
-                                     port_object=original_port)
+        self._ovn_update_port(context._plugin_context, port, original_port,
+                              retry_on_revision_mismatch=True)
         self._notify_dhcp_updated(port['id'])
 
     def delete_port_postcommit(self, context):
@@ -1022,10 +1094,19 @@ class OVNMechanismDriver(api.MechanismDriver):
 
     def delete_mac_binding_entries(self, external_ip):
         """Delete all MAC_Binding entries associated to this IP address"""
-        mac_binds = self._sb_ovn.db_find_rows(
-            'MAC_Binding', ('ip', '=', external_ip)).execute() or []
-        for entry in mac_binds:
-            self._sb_ovn.db_destroy('MAC_Binding', entry.uuid).execute()
+        cmd = ['ovsdb-client', 'transact', ovn_conf.get_ovn_sb_connection(),
+               '--timeout', str(ovn_conf.get_ovn_ovsdb_timeout())]
+
+        if ovn_conf.get_ovn_sb_private_key():
+            cmd += ['-p', ovn_conf.get_ovn_sb_private_key(), '-c',
+                    ovn_conf.get_ovn_sb_certificate(), '-C',
+                    ovn_conf.get_ovn_sb_ca_cert()]
+
+        cmd += ['["OVN_Southbound", {"op": "delete", "table": "MAC_Binding", '
+                '"where": [["ip", "==", "%s"]]}]' % external_ip]
+
+        return processutils.execute(*cmd,
+                                    log_errors=processutils.LOG_FINAL_ERROR)
 
     def update_segment_host_mapping(self, host, phy_nets):
         """Update SegmentHostMapping in DB"""
@@ -1140,6 +1221,20 @@ class OVNMechanismDriver(api.MechanismDriver):
             alive = self.agent_alive(agent, update_db)
             agent_dict[agent.agent_id] = agent.as_dict(alive)
         return agent_dict
+
+    def check_segment_for_agent(self, segment, agent):
+        """Check if the OVN controller agent br mappings has segment physnet
+
+        Only segments on physical networks (flat or vlan) can be associated
+        to a host.
+        """
+        if agent['agent_type'] not in ovn_const.OVN_CONTROLLER_TYPES:
+            return False
+
+        br_map = agent.get('configurations', {}).get('bridge-mappings', '')
+        mapping_dict = helpers.parse_mappings(br_map.split(','),
+                                              unique_values=False)
+        return segment['physical_network'] in mapping_dict
 
     def patch_plugin_merge(self, method_name, new_fn, op=operator.add):
         old_method = getattr(self._plugin, method_name)

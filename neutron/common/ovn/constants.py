@@ -51,10 +51,12 @@ OVN_PORT_BINDING_PROFILE_PARAMS = [{'parent_name': str,
                                    {'vtep-physical-switch': str,
                                     'vtep-logical-switch': str}]
 MIGRATING_ATTR = 'migrating_to'
-OVN_ROUTER_PORT_OPTION_KEYS = ['router-port', 'nat-addresses']
+OVN_ROUTER_PORT_OPTION_KEYS = ['router-port', 'nat-addresses',
+                               'exclude-lb-vips-from-garp']
 OVN_GATEWAY_CHASSIS_KEY = 'redirect-chassis'
 OVN_CHASSIS_REDIRECT = 'chassisredirect'
 OVN_GATEWAY_NAT_ADDRESSES_KEY = 'nat-addresses'
+OVN_ROUTER_PORT_EXCLUDE_LB_VIPS_GARP = 'exclude-lb-vips-from-garp'
 OVN_DROP_PORT_GROUP_NAME = 'neutron_pg_drop'
 OVN_ROUTER_PORT_GW_MTU_OPTION = 'gateway_mtu'
 
@@ -68,6 +70,9 @@ OVN_AGENT_METADATA_ID_KEY = 'neutron:ovn-metadata-id'
 OVN_CONTROLLER_AGENT = 'OVN Controller agent'
 OVN_CONTROLLER_GW_AGENT = 'OVN Controller Gateway agent'
 OVN_METADATA_AGENT = 'OVN Metadata agent'
+OVN_CONTROLLER_TYPES = (OVN_CONTROLLER_AGENT,
+                        OVN_CONTROLLER_GW_AGENT,
+                        )
 
 # OVN ACLs have priorities.  The highest priority ACL that matches is the one
 # that takes effect.  Our choice of priority numbers is arbitrary, but it
@@ -219,6 +224,8 @@ _TYPES_PRIORITY_ORDER = (
     TYPE_FLOATINGIPS,
     TYPE_SECURITY_GROUP_RULES)
 
+DB_CONSISTENCY_CHECK_INTERVAL = 300  # 5 minutes
+
 # The order in which the resources should be created or updated by the
 # maintenance task: Root ones first and leafs at the end.
 MAINTENANCE_CREATE_UPDATE_TYPE_ORDER = {
@@ -277,6 +284,12 @@ LSP_OPTIONS_VIRTUAL_IP_KEY = 'virtual-ip'
 LSP_OPTIONS_MCAST_FLOOD_REPORTS = 'mcast_flood_reports'
 LSP_OPTIONS_MCAST_FLOOD = 'mcast_flood'
 
+LRP_OPTIONS_RESIDE_REDIR_CH = 'reside-on-redirect-chassis'
+
+# Port Binding types
+PB_TYPE_PATCH = 'patch'
+PB_TYPE_VIRTUAL = 'virtual'
+
 HA_CHASSIS_GROUP_DEFAULT_NAME = 'default_ha_chassis_group'
 HA_CHASSIS_GROUP_HIGHEST_PRIORITY = 32767
 
@@ -286,7 +299,9 @@ MCAST_FLOOD_UNREGISTERED = 'mcast_flood_unregistered'
 
 EXTERNAL_PORT_TYPES = (portbindings.VNIC_DIRECT,
                        portbindings.VNIC_DIRECT_PHYSICAL,
-                       portbindings.VNIC_MACVTAP)
+                       portbindings.VNIC_MACVTAP,
+                       portbindings.VNIC_BAREMETAL,
+                       )
 
 NEUTRON_AVAILABILITY_ZONES = 'neutron-availability-zones'
 OVN_CMS_OPTIONS = 'ovn-cms-options'

@@ -1149,10 +1149,8 @@ class Dnsmasq(DhcpLocalProcess):
                  addr_mode == constants.IPV6_SLAAC)):
                 continue
             if subnet.dns_nameservers:
-                if ((subnet.ip_version == 4 and
-                     subnet.dns_nameservers == ['0.0.0.0']) or
-                    (subnet.ip_version == 6 and
-                     subnet.dns_nameservers == ['::'])):
+                if common_utils.is_dns_servers_any_address(
+                        subnet.dns_nameservers, subnet.ip_version):
                     # Special case: Do not announce DNS servers
                     options.append(
                         self._format_option(
@@ -1311,6 +1309,7 @@ class Dnsmasq(DhcpLocalProcess):
     def _format_option(self, ip_version, tag, option, *args):
         """Format DHCP option by option name or code."""
         option = str(option)
+        option = option.split("\n", 1)[0]
         pattern = "(tag:(.*),)?(.*)$"
         matches = re.match(pattern, option)
         extra_tag = matches.groups()[0]

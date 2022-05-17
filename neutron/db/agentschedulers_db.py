@@ -405,9 +405,9 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
     def remove_network_from_dhcp_agent(self, context, id, network_id,
                                        notify=True):
         agent = self._get_agent(context, id)
-        binding_obj = network.NetworkDhcpAgentBinding.get_object(
+        deleted_bindings = network.NetworkDhcpAgentBinding.delete_objects(
             context, network_id=network_id, dhcp_agent_id=id)
-        if not binding_obj:
+        if not deleted_bindings:
             raise das_exc.NetworkNotHostedByDhcpAgent(
                 network_id=network_id, agent_id=id)
 
@@ -426,7 +426,6 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
             except n_exc.PortNotFound:
                 LOG.debug("DHCP port %s has been deleted concurrently",
                           port['id'])
-        binding_obj.delete()
 
         if not notify:
             return
@@ -502,8 +501,13 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         subnets = subnet_obj.Subnet.get_objects(
             payload.context, segment_id=segment_ids)
         network_ids = {s.network_id for s in subnets}
+
+        # pre-compute net-id per segments.
+        netsegs = {}
+        [netsegs.setdefault(s['network_id'], []).append(s)
+         for s in segments if 'network_id' in s]
         for network_id in network_ids:
-            for segment in segments:
+            for segment in netsegs.get(network_id, []):
                 self._schedule_network(
                     payload.context, network_id, dhcp_notifier,
                     candidate_hosts=segment['hosts'])

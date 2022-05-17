@@ -246,6 +246,10 @@ class OVSBridge(BaseOVS):
     def set_controller(self, controllers):
         self.ovsdb.set_controller(self.br_name,
                                   controllers).execute(check_error=True)
+        # TODO(ralonsoh): this is a workaround for LP#1948642. When a new
+        # controller is added, os-ken ``OfctlService`` needs to receive the
+        # update event and register this new datapath.
+        time.sleep(1)
 
     def del_controller(self):
         self.ovsdb.del_controller(self.br_name).execute(check_error=True)
@@ -264,8 +268,19 @@ class OVSBridge(BaseOVS):
         self._set_bridge_fail_mode(FAILMODE_STANDALONE)
 
     def add_protocols(self, *protocols):
-        self.ovsdb.db_add('Bridge', self.br_name,
-                          'protocols', *protocols).execute(check_error=True)
+        existing_protocols = self.db_get_val(
+            'Bridge', self.br_name, 'protocols')
+        diff = set(protocols).difference(existing_protocols)
+        if diff:
+            self.ovsdb.db_add(
+                'Bridge', self.br_name,
+                'protocols', *diff).execute(check_error=True)
+            # TODO(ralonsoh): this is a workaround for LP#1948642. When the OF
+            # protocols are changed, the OF controller is restarted. This
+            # sleep will provide time to os-ken ``OfctlService`` to receive
+            # the update events of the restarted controllers and set them as
+            # enabled.
+            time.sleep(1)
 
     def use_at_least_protocol(self, protocol):
         """Calls to ovs-ofctl will use a protocol version >= 'protocol'"""
@@ -340,13 +355,7 @@ class OVSBridge(BaseOVS):
         with self.ovsdb.transaction() as txn:
             txn.add(self.ovsdb.add_port(self.br_name, port_name,
                                         may_exist=False))
-            # NOTE(mangelajo): Port is added to dead vlan (4095) by default
-            # until it's handled by the neutron-openvswitch-agent. Otherwise it
-            # becomes a trunk port on br-int (receiving traffic for all vlans),
-            # and also triggers issues on ovs-vswitchd related to the
-            # datapath flow revalidator thread, see lp#1767422
-            txn.add(self.ovsdb.db_set(
-                    'Port', port_name, ('tag', constants.DEAD_VLAN_TAG)))
+            self._set_port_dead(port_name, txn)
 
             # TODO(mangelajo): We could accept attr tuples for the Port too
             # but, that could potentially break usage of this function in
@@ -356,6 +365,28 @@ class OVSBridge(BaseOVS):
             if interface_attr_tuples:
                 txn.add(self.ovsdb.db_set('Interface', port_name,
                                           *interface_attr_tuples))
+
+    def _set_port_dead(self, port_name, txn):
+        # NOTE(mangelajo): Port is added to dead vlan (4095) by default
+        # until it's handled by the neutron-openvswitch-agent. Otherwise it
+        # may trigger issues on ovs-vswitchd related to the
+        # datapath flow revalidator thread, see lp#1767422
+        txn.add(self.ovsdb.db_set(
+            'Port', port_name, ('tag', constants.DEAD_VLAN_TAG)))
+        # Just setting 'tag' to 4095 is not enough to prevent any traffic
+        # to/from new port because "access" ports do not have 802.1Q header
+        # and hence are not matched by default 4095-dropping rule.
+        # So we also set "vlan_mode" attribute to "trunk" and "trunks"=[4095]
+        # With this OVS normal pipeline will allow only packets tagged with
+        # 4095 from such ports, which normally not happens,
+        # but even if it does - default rule in br-int will drop them anyway.
+        # Thus untagged packets from such ports will also be dropped until
+        # ovs agent sets proper VLAN tag and clears vlan_mode to default
+        # ("access"). See lp#1930414 for details.
+        txn.add(self.ovsdb.db_set(
+            'Port', port_name, ('vlan_mode', 'trunk')))
+        txn.add(self.ovsdb.db_set(
+            'Port', port_name, ('trunks', constants.DEAD_VLAN_TAG)))
 
     def delete_port(self, port_name):
         self.ovsdb.del_port(port_name, self.br_name).execute()
@@ -676,6 +707,17 @@ class OVSBridge(BaseOVS):
         LOG.info("Port %(port_id)s not present in bridge %(br_name)s",
                  {'port_id': port_id, 'br_name': self.br_name})
 
+    def get_bridge_patch_ports_ofports(self):
+        ports = self.ovsdb.db_find(
+            'Interface', ('type', '=', 'patch'),
+            columns=['name', 'ofport']).execute()
+        patch_ports = []
+        for port in ports:
+            if self.br_name != self.get_bridge_for_iface(port['name']):
+                continue
+            patch_ports.append(port['ofport'])
+        return patch_ports
+
     def delete_ports(self, all_ports=False):
         if all_ports:
             port_names = self.get_port_name_list()
@@ -739,56 +781,6 @@ class OVSBridge(BaseOVS):
             return
         self._set_egress_bw_limit_for_port(port_name, 0, 0, check_error=False)
 
-    def find_qos(self, port_name):
-        qos = self.ovsdb.db_find(
-            'QoS',
-            ('external_ids', '=', {'id': port_name}),
-            columns=['_uuid', 'other_config']).execute(check_error=True)
-        if qos:
-            return qos[0]
-
-    def find_queue(self, port_name, queue_type):
-        queues = self.ovsdb.db_find(
-            'Queue',
-            ('external_ids', '=', {'id': port_name,
-                                   'queue_type': str(queue_type)}),
-            columns=['_uuid', 'other_config']).execute(check_error=True)
-        if queues:
-            return queues[0]
-
-    def _update_bw_limit_queue(self, txn, port_name, queue_uuid, queue_type,
-                               other_config):
-        if queue_uuid:
-            txn.add(self.ovsdb.db_set(
-                'Queue', queue_uuid,
-                ('other_config', other_config)))
-        else:
-            external_ids = {'id': port_name,
-                            'queue_type': str(queue_type)}
-            queue_uuid = txn.add(
-                self.ovsdb.db_create(
-                    'Queue', external_ids=external_ids,
-                    other_config=other_config))
-        return queue_uuid
-
-    def _update_bw_limit_profile(self, txn, port_name, qos_uuid,
-                                 queue_uuid, queue_type, qos_other_config):
-        queues = {queue_type: queue_uuid}
-        if qos_uuid:
-            txn.add(self.ovsdb.db_set(
-                'QoS', qos_uuid, ('queues', queues)))
-            txn.add(self.ovsdb.db_set(
-                'QoS', qos_uuid, ('other_config', qos_other_config)))
-        else:
-            external_ids = {'id': port_name}
-            qos_uuid = txn.add(
-                self.ovsdb.db_create(
-                    'QoS', external_ids=external_ids,
-                    type='linux-htb',
-                    queues=queues,
-                    other_config=qos_other_config))
-        return qos_uuid
-
     def _update_bw_limit_profile_dpdk(self, txn, port_name, qos_uuid,
                                       other_config):
         if qos_uuid:
@@ -802,121 +794,103 @@ class OVSBridge(BaseOVS):
                     other_config=other_config))
         return qos_uuid
 
+    def set_queue_for_ingress_bandwidth_limit(self):
+        # reg3 is used to memoize if queue was set or not. If it is first visit
+        # to table 0 for a packet (i.e. reg3 == 0), set queue and memoize (i.e.
+        # load 1 to reg3), then goto table 0 again. The packet will be handled
+        # as usual when the second visit to table 0.
+        # For min bw reg4 is used for the same purpose. In case if there we
+        # would need one of those registries for something else in the future
+        # we can try to use same reg4 for both OF rules, this one and the one
+        # which sets pkt_mark for minimum bandwidth and play with bitmask
+        self.add_flow(
+            table=constants.LOCAL_SWITCHING,
+            reg3=0,
+            priority=200,
+            actions=("set_queue:%s,load:1->NXM_NX_REG3[0],"
+                     "resubmit(,%s)" % (QOS_DEFAULT_QUEUE,
+                                        constants.LOCAL_SWITCHING)))
+
     def _update_ingress_bw_limit_for_port(
-            self, port_name, max_bw_in_bits, max_burst_in_bits):
-        qos_other_config = {
-            'max-rate': str(max_bw_in_bits)
-        }
-        queue_other_config = {
-            'max-rate': str(max_bw_in_bits),
-            'burst': str(max_burst_in_bits),
-        }
-        qos = self.find_qos(port_name)
-        queue = self.find_queue(port_name, QOS_DEFAULT_QUEUE)
-        qos_uuid = qos['_uuid'] if qos else None
-        queue_uuid = queue['_uuid'] if queue else None
-        with self.ovsdb.transaction(check_error=True) as txn:
-            queue_uuid = self._update_bw_limit_queue(
-                txn, port_name, queue_uuid, QOS_DEFAULT_QUEUE,
-                queue_other_config
-            )
-
-            qos_uuid = self._update_bw_limit_profile(
-                txn, port_name, qos_uuid, queue_uuid, QOS_DEFAULT_QUEUE,
-                qos_other_config
-            )
-
-            txn.add(self.ovsdb.db_set(
-                'Port', port_name, ('qos', qos_uuid)))
+            self, port_name, max_kbps, max_burst_kbps):
+        queue_id = self._update_queue(
+            port_name, QOS_DEFAULT_QUEUE,
+            qos_constants.RULE_TYPE_BANDWIDTH_LIMIT,
+            max_kbps=max_kbps, max_burst_kbps=max_burst_kbps)
+        qos_id, qos_queues = self._find_qos(
+            port_name,
+            qos_constants.RULE_TYPE_BANDWIDTH_LIMIT)
+        if qos_queues:
+            qos_queues[QOS_DEFAULT_QUEUE] = queue_id
+        else:
+            qos_queues = {QOS_DEFAULT_QUEUE: queue_id}
+        qos_id = self._update_qos(
+            port_name,
+            qos_constants.RULE_TYPE_BANDWIDTH_LIMIT,
+            qos_id=qos_id, queues=qos_queues)
+        self._set_port_qos(port_name, qos_id=qos_id)
 
     def _update_ingress_bw_limit_for_dpdk_port(
-            self, port_name, max_bw_in_bits, max_burst_in_bits):
+            self, port_name, max_kbps, max_burst_kbps):
         # cir and cbs should be set in bytes instead of bits
+        max_bw_in_bits = max_kbps * p_const.SI_BASE
+        max_burst_in_bits = max_burst_kbps * p_const.SI_BASE
         qos_other_config = {
-            'cir': str(max_bw_in_bits / 8),
-            'cbs': str(max_burst_in_bits / 8)
+            'cir': str(max_bw_in_bits // 8),
+            'cbs': str(max_burst_in_bits // 8)
         }
-        qos = self.find_qos(port_name)
-        qos_uuid = qos['_uuid'] if qos else None
+        qos_id, qos_queues = self._find_qos(port_name)
         with self.ovsdb.transaction(check_error=True) as txn:
             qos_uuid = self._update_bw_limit_profile_dpdk(
-                txn, port_name, qos_uuid, qos_other_config)
+                txn, port_name, qos_id, qos_other_config)
             txn.add(self.ovsdb.db_set(
                 'Port', port_name, ('qos', qos_uuid)))
 
     def update_ingress_bw_limit_for_port(self, port_name, max_kbps,
                                          max_burst_kbps):
-        max_bw_in_bits = max_kbps * p_const.SI_BASE
-        max_burst_in_bits = max_burst_kbps * p_const.SI_BASE
         port_type = self._get_port_val(port_name, "type")
         if port_type in constants.OVS_DPDK_PORT_TYPES:
             self._update_ingress_bw_limit_for_dpdk_port(
-                port_name, max_bw_in_bits, max_burst_in_bits)
+                port_name, max_kbps, max_burst_kbps)
         else:
             self._update_ingress_bw_limit_for_port(
-                port_name, max_bw_in_bits, max_burst_in_bits)
+                port_name, max_kbps, max_burst_kbps)
 
     def get_ingress_bw_limit_for_port(self, port_name):
-        max_kbps = None
         qos_max_kbps = None
-        queue_max_kbps = None
         max_burst_kbit = None
 
-        qos_res = self.find_qos(port_name)
-        if qos_res:
-            other_config = qos_res['other_config']
+        queue = self._find_queue(
+            port_name, _type=qos_constants.RULE_TYPE_BANDWIDTH_LIMIT)
+        if queue:
+            other_config = queue['other_config']
             max_bw_in_bits = other_config.get('max-rate')
-            if max_bw_in_bits is not None:
-                qos_max_kbps = int(max_bw_in_bits) / p_const.SI_BASE
-
-        queue_res = self.find_queue(port_name, QOS_DEFAULT_QUEUE)
-        if queue_res:
-            other_config = queue_res['other_config']
-            max_bw_in_bits = other_config.get('max-rate')
-            if max_bw_in_bits is not None:
-                queue_max_kbps = int(max_bw_in_bits) / p_const.SI_BASE
+            qos_max_kbps = int(int(max_bw_in_bits) / p_const.SI_BASE)
             max_burst_in_bits = other_config.get('burst')
             if max_burst_in_bits is not None:
-                max_burst_kbit = (
-                    int(max_burst_in_bits) / p_const.SI_BASE)
+                max_burst_kbit = int(int(max_burst_in_bits) / p_const.SI_BASE)
 
-        if qos_max_kbps == queue_max_kbps:
-            max_kbps = qos_max_kbps
-        else:
-            LOG.warning("qos max-rate %(qos_max_kbps)s is not equal to "
-                        "queue max-rate %(queue_max_kbps)s",
-                        {'qos_max_kbps': qos_max_kbps,
-                         'queue_max_kbps': queue_max_kbps})
-        return max_kbps, max_burst_kbit
-
-    def get_ingress_bw_limit_for_dpdk_port(self, port_name):
-        max_kbps = None
-        max_burst_kbit = None
-        res = self.find_qos(port_name)
-        if res:
-            other_config = res['other_config']
-            max_bw_in_bytes = other_config.get("cir")
-            if max_bw_in_bytes is not None:
-                max_kbps = common_utils.bits_to_kilobits(
-                    common_utils.bytes_to_bits(int(float(max_bw_in_bytes))),
-                    p_const.SI_BASE)
-            max_burst_in_bytes = other_config.get("cbs")
-            if max_burst_in_bytes is not None:
-                max_burst_kbit = common_utils.bits_to_kilobits(
-                    common_utils.bytes_to_bits(int(float(max_burst_in_bytes))),
-                    p_const.SI_BASE)
-        return max_kbps, max_burst_kbit
+        return qos_max_kbps, max_burst_kbit
 
     def delete_ingress_bw_limit_for_port(self, port_name):
-        self.ovsdb.db_clear('Port', port_name,
-                            'qos').execute(check_error=False)
-        qos = self.find_qos(port_name)
-        queue = self.find_queue(port_name, QOS_DEFAULT_QUEUE)
-        with self.ovsdb.transaction(check_error=True) as txn:
-            if qos:
-                txn.add(self.ovsdb.db_destroy('QoS', qos['_uuid']))
-            if queue:
-                txn.add(self.ovsdb.db_destroy('Queue', queue['_uuid']))
+        qos_id, qos_queues = self._find_qos(
+            port_name,
+            qos_constants.RULE_TYPE_BANDWIDTH_LIMIT)
+        if not qos_queues:
+            return
+        if QOS_DEFAULT_QUEUE in qos_queues.keys():
+            queue_uuid = qos_queues.pop(QOS_DEFAULT_QUEUE)
+            if qos_queues:
+                self._update_qos(
+                    port_name,
+                    qos_constants.RULE_TYPE_BANDWIDTH_LIMIT,
+                    qos_id=qos_id, queues=qos_queues)
+            self.ovsdb.db_clear('Port', port_name, 'qos').execute(
+                check_error=False)
+            if not qos_queues:
+                self._delete_qos(qos_id)
+            self._delete_queue(
+                queue_uuid, qos_constants.RULE_TYPE_BANDWIDTH_LIMIT)
 
     def set_controller_field(self, field, value):
         attr = [(field, value)]
@@ -963,7 +937,7 @@ class OVSBridge(BaseOVS):
         min_bps = queue['other_config'].get('min-rate')
         return int(int(min_bps) / 1000) if min_bps else None
 
-    def _set_queue_for_minimum_bandwidth(self, queue_num):
+    def _set_pkt_mark_for_minimum_bandwidth(self, queue_num):
         # reg4 is used to memoize if queue was set or not. If it is first visit
         # to table 0 for a packet (i.e. reg4 == 0), set queue and memoize (i.e.
         # load 1 to reg4), then goto table 0 again. The packet will be handled
@@ -973,10 +947,26 @@ class OVSBridge(BaseOVS):
             in_port=queue_num,
             reg4=0,
             priority=200,
-            actions=("set_queue:%s,load:1->NXM_NX_REG4[0],"
+            actions=("set_field:%s->pkt_mark,load:1->NXM_NX_REG4[0],"
                      "resubmit(,%s)" % (queue_num, constants.LOCAL_SWITCHING)))
 
-    def _unset_queue_for_minimum_bandwidth(self, queue_num):
+    def set_queue_for_minimum_bandwidth(self, queue_num):
+        # reg4 is used to memoize if queue was set or not. If it is first visit
+        # to table 0 for a packet (i.e. reg4 == 0), set queue and memoize (i.e.
+        # load 1 to reg4), then goto table 0 again. The packet will be handled
+        # as usual when the second visit to table 0.
+        patch_ports = self.get_bridge_patch_ports_ofports()
+        for patch_port in patch_ports:
+            self.add_flow(
+                table=0,
+                in_port=patch_port,
+                pkt_mark=queue_num,
+                reg4=0,
+                priority=200,
+                actions=("set_queue:%s,load:1->NXM_NX_REG4[0],"
+                         "resubmit(,0)" % queue_num))
+
+    def _unset_pkt_mark_for_minimum_bandwidth(self, queue_num):
         self.delete_flows(
             table=constants.LOCAL_SWITCHING,
             in_port=queue_num,
@@ -985,17 +975,23 @@ class OVSBridge(BaseOVS):
     def update_minimum_bandwidth_queue(self, port_id, egress_port_names,
                                        queue_num, min_kbps):
         queue_num = int(queue_num)
-        queue_id = self._update_queue(port_id, queue_num, min_kbps=min_kbps)
-        qos_id, qos_queues = self._find_qos()
+        queue_id = self._update_queue(
+            port_id, queue_num, qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH,
+            min_kbps=min_kbps)
+        qos_id, qos_queues = self._find_qos(
+            self._min_bw_qos_id,
+            qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH)
         if qos_queues:
             qos_queues[queue_num] = queue_id
         else:
             qos_queues = {queue_num: queue_id}
         qos_id = self._update_qos(
+            self._min_bw_qos_id,
+            qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH,
             qos_id=qos_id, queues=qos_queues)
         for egress_port_name in egress_port_names:
             self._set_port_qos(egress_port_name, qos_id=qos_id)
-        self._set_queue_for_minimum_bandwidth(queue_num)
+        self._set_pkt_mark_for_minimum_bandwidth(queue_num)
         return qos_id
 
     def delete_minimum_bandwidth_queue(self, port_id):
@@ -1003,19 +999,35 @@ class OVSBridge(BaseOVS):
         if not queue:
             return
         queue_num = int(queue['external_ids']['queue-num'])
-        self._unset_queue_for_minimum_bandwidth(queue_num)
-        qos_id, qos_queues = self._find_qos()
+        self._unset_pkt_mark_for_minimum_bandwidth(queue_num)
+        qos_id, qos_queues = self._find_qos(
+            self._min_bw_qos_id,
+            qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH)
         if not qos_queues:
             return
         if queue_num in qos_queues.keys():
             qos_queues.pop(queue_num)
-            self._update_qos(
-                qos_id=qos_id, queues=qos_queues)
-            self._delete_queue(queue['_uuid'])
+            if qos_queues:
+                self._update_qos(
+                    self._min_bw_qos_id,
+                    qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH,
+                    qos_id=qos_id, queues=qos_queues)
+            self.ovsdb.db_clear('Port', port_id, 'qos').execute(
+                check_error=False)
+            if not qos_queues:
+                self._delete_qos(qos_id)
+            self._delete_queue(
+                queue['_uuid'], qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH)
 
-    def clear_minimum_bandwidth_qos(self):
-        qoses = self._list_qos(
-            qos_type=qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH)
+    def clear_bandwidth_qos(self):
+        qoses = []
+        qos_types = [
+            (self._min_bw_qos_id,
+             qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH),
+            (None,
+             qos_constants.RULE_TYPE_BANDWIDTH_LIMIT)]
+        for rule_type_id, qos_type in qos_types:
+            qoses += self._list_qos(_id=rule_type_id, qos_type=qos_type)
 
         for qos in qoses:
             qos_id = qos['_uuid']
@@ -1027,21 +1039,20 @@ class OVSBridge(BaseOVS):
                 colmuns=['name']).execute(check_error=True)
             for port in ports:
                 self._set_port_qos(port['name'])
-            self.ovsdb.db_destroy('QoS', qos_id).execute(check_error=True)
+            self._delete_qos(qos_id)
             for queue_uuid in queues.values():
                 self._delete_queue(queue_uuid)
 
-    def _update_queue(self, port_id, queue_num, max_kbps=None,
+    def _update_queue(self, port_id, queue_num, queue_type, max_kbps=None,
                       max_burst_kbps=None, min_kbps=None):
         other_config = {}
         if max_kbps:
-            other_config['max-rate'] = str(max_kbps * 1000)
-        if max_burst_kbps:
-            other_config['burst'] = str(max_burst_kbps * 1000)
+            other_config['max-rate'] = str(int(max_kbps) * p_const.SI_BASE)
+            other_config['burst'] = str(int(max_burst_kbps) * p_const.SI_BASE)
         if min_kbps:
-            other_config['min-rate'] = str(min_kbps * 1000)
+            other_config['min-rate'] = str(min_kbps * p_const.SI_BASE)
 
-        queue = self._find_queue(port_id)
+        queue = self._find_queue(port_id, _type=queue_type)
         if queue and queue['_uuid']:
             if queue['other_config'] != other_config:
                 self.set_db_attribute('Queue', queue['_uuid'], 'other_config',
@@ -1050,12 +1061,12 @@ class OVSBridge(BaseOVS):
             # NOTE(ralonsoh): "external_ids" is a map of string-string pairs
             external_ids = {
                 'port': str(port_id),
-                'type': str(qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH),
+                'type': str(queue_type),
                 'queue-num': str(queue_num)}
             self.ovsdb.db_create(
                 'Queue', other_config=other_config,
                 external_ids=external_ids).execute(check_error=True)
-            queue = self._find_queue(port_id)
+            queue = self._find_queue(port_id, _type=queue_type)
         return queue['_uuid']
 
     def _find_queue(self, port_id, _type=None):
@@ -1081,16 +1092,23 @@ class OVSBridge(BaseOVS):
                       if queue['external_ids'].get('type') == str(_type)]
         return queues
 
-    def _delete_queue(self, queue_id):
+    def _delete_qos(self, qos_id):
         try:
-            self.ovsdb.db_destroy('Queue', queue_id).execute(check_error=True)
+            self.ovsdb.db_destroy('QoS', qos_id).execute(check_error=True)
+        except idlutils.RowNotFound:
+            LOG.info('OVS QoS %s was already deleted', str(qos_id))
+
+    def _delete_queue(self, queue_id, qos_type=None):
+        try:
+            self.ovsdb.db_destroy('Queue', queue_id).execute(
+                check_error=True)
         except idlutils.RowNotFound:
             LOG.info('OVS Queue %s was already deleted', queue_id)
         except RuntimeError as exc:
             with excutils.save_and_reraise_exception():
                 if 'referential integrity violation' not in str(exc):
                     return
-                qos_regs = self._list_qos()
+                qos_regs = self._list_qos(qos_type=qos_type)
                 qos_uuids = []
                 for qos_reg in qos_regs:
                     queue_nums = [num for num, q in qos_reg['queues'].items()
@@ -1102,17 +1120,17 @@ class OVSBridge(BaseOVS):
                           {'queue': str(queue_id),
                            'qoses': ', '.join(sorted(qos_uuids))})
 
-    def _update_qos(self, qos_id=None, queues=None):
+    def _update_qos(self, rule_type_id, rule_type, qos_id=None, queues=None):
         queues = queues or {}
         if not qos_id:
-            external_ids = {'id': self._min_bw_qos_id,
-                            '_type': qos_constants.RULE_TYPE_MINIMUM_BANDWIDTH}
+            external_ids = {'id': rule_type_id,
+                            '_type': rule_type}
             self.ovsdb.db_create(
                 'QoS',
                 type='linux-htb',
                 queues=queues,
                 external_ids=external_ids).execute(check_error=True)
-            qos_id, _ = self._find_qos()
+            qos_id, _ = self._find_qos(rule_type_id, rule_type)
         else:
             self.clear_db_attribute('QoS', qos_id, 'queues')
             if queues:
@@ -1135,8 +1153,8 @@ class OVSBridge(BaseOVS):
         return self.ovsdb.db_find(
             'QoS', colmuns=['_uuid', 'queues']).execute(check_error=True)
 
-    def _find_qos(self):
-        qos_regs = self._list_qos(_id=self._min_bw_qos_id)
+    def _find_qos(self, rule_type_id, qos_type=None):
+        qos_regs = self._list_qos(_id=rule_type_id, qos_type=qos_type)
         if qos_regs:
             queues = {num: queue.uuid
                       for num, queue in qos_regs[0]['queues'].items()}

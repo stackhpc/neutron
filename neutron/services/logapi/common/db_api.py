@@ -180,26 +180,32 @@ def get_logs_bound_port(context, port_id):
     return [log for log in logs if is_bound(log)]
 
 
-def get_logs_bound_sg(context, sg_id):
+def get_logs_bound_sg(context, sg_id=None, project_id=None, port_id=None,
+                      exclusive=False):
     """Return a list of log_resources bound to a security group"""
 
-    project_id = context.tenant_id
-    log_objs = log_object.Log.get_objects(
-        context,
-        project_id=project_id,
-        resource_type=constants.SECURITY_GROUP,
-        enabled=True)
+    kwargs = {
+        'resource_type': constants.SECURITY_GROUP,
+        'enabled': True}
+    if project_id:
+        kwargs['project_id'] = project_id
 
+    log_objs = log_object.Log.get_objects(context, **kwargs)
     log_resources = []
     for log_obj in log_objs:
-        if log_obj.resource_id == sg_id:
-            log_resources.append(log_obj)
-        elif log_obj.target_id:
-            port = port_objects.Port.get_object(
-                context, id=log_obj.target_id)
-            if sg_id in port.security_group_ids:
+        if sg_id:
+            if log_obj.resource_id == sg_id:
                 log_resources.append(log_obj)
-        elif not log_obj.resource_id and not log_obj.target_id:
+            elif log_obj.target_id:
+                # NOTE: optimize this method just returning the SGs per port.
+                port = port_objects.Port.get_object(
+                    context, id=log_obj.target_id)
+                if sg_id in port.security_group_ids:
+                    log_resources.append(log_obj)
+            elif (not log_obj.resource_id and not log_obj.target_id and
+                    not exclusive):
+                log_resources.append(log_obj)
+        elif port_id and log_obj.target_id and log_obj.target_id == port_id:
             log_resources.append(log_obj)
     return log_resources
 

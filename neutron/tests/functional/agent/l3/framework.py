@@ -27,6 +27,7 @@ import testtools
 
 from neutron.agent.common import ovs_lib
 from neutron.agent.l3 import agent as neutron_l3_agent
+from neutron.agent.l3 import dvr_local_router
 from neutron.agent.l3 import namespaces
 from neutron.agent.l3 import router_info as l3_router_info
 from neutron.agent import l3_agent as l3_agent_main
@@ -43,6 +44,8 @@ from neutron.tests.common import l3_test_common
 from neutron.tests.common import net_helpers
 from neutron.tests.functional import base
 
+
+LOG = logging.getLogger(__name__)
 
 _uuid = uuidutils.generate_uuid
 
@@ -95,6 +98,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         self.mock_plugin_api = mock.patch(
             'neutron.agent.l3.agent.L3PluginApi').start().return_value
         mock.patch('neutron.agent.rpc.PluginReportStateAPI').start()
+        mock.patch('neutron.agent.common.ovs_lib.'
+                   'OVSBridge._set_port_dead').start()
         l3_config.register_l3_agent_config_opts(l3_config.OPTS, cfg.CONF)
         self.conf = self._configure_agent('agent1')
         self.agent = neutron_l3_agent.L3NATAgentWithStateReport('agent1',
@@ -168,6 +173,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                                                   qos_policy_id=qos_policy_id)
 
     def change_router_state(self, router_id, state):
+        LOG.debug("Router %s state changed to '%s'", router_id, state)
         ri = self.agent.router_info.get(router_id)
         if not ri:
             self.fail('Router %s is not present in the L3 agent' % router_id)
@@ -405,7 +411,9 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
             ovsbr.clear_db_attribute('Port', device_name, 'tag')
 
         with mock.patch(OVS_INTERFACE_DRIVER + '.plug_new', autospec=True) as (
-                ovs_plug):
+                ovs_plug), \
+                mock.patch.object(dvr_local_router.DvrLocalRouter,
+                                  '_load_used_fip_information'):
             ovs_plug.side_effect = new_ovs_plug
             agent._process_added_router(router)
 
@@ -519,19 +527,22 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                 msg = 'PID file %s is not present.' % pid_file
             self.fail(msg)
 
-    def _assert_snat_chains(self, router):
-        self.assertFalse(router.iptables_manager.is_chain_empty(
-            'nat', 'snat'))
-        self.assertFalse(router.iptables_manager.is_chain_empty(
-            'nat', 'POSTROUTING'))
+    def _assert_snat_chains(self, router, enable_gw=True):
+        check = self.assertFalse if enable_gw else self.assertTrue
+        check(router.iptables_manager.is_chain_empty('nat', 'snat'))
+        check(router.iptables_manager.is_chain_empty('nat', 'POSTROUTING'))
 
-    def _assert_floating_ip_chains(self, router, snat_bound_fip=False):
+    def _assert_floating_ip_chains(self, router, snat_bound_fip=False,
+                                   enable_gw=True):
         if snat_bound_fip:
-            self.assertFalse(router.snat_iptables_manager.is_chain_empty(
-                'nat', 'float-snat'))
+            if enable_gw:
+                self.assertFalse(router.snat_iptables_manager.is_chain_empty(
+                    'nat', 'float-snat'))
+            else:
+                self.assertIsNone(router.snat_iptables_manager)
 
-        self.assertFalse(router.iptables_manager.is_chain_empty(
-            'nat', 'float-snat'))
+        check = self.assertFalse if enable_gw else self.assertTrue
+        check(router.iptables_manager.is_chain_empty('nat', 'float-snat'))
 
     def _assert_iptables_rules_converged(self, router):
         # if your code is failing on this line, it means you are not generating
@@ -558,7 +569,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
             self.assertTrue(self.device_exists_with_ips_and_mac(
                 device, router.get_internal_device_name, router.ns_name))
 
-    def _assert_extra_routes(self, router, namespace=None):
+    def _assert_extra_routes(self, router, namespace=None, enable_gw=True):
         if namespace is None:
             namespace = router.ns_name
         routes = ip_lib.get_routing_table(4, namespace=namespace)
@@ -566,10 +577,11 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                    'destination': route['destination']} for route in routes]
 
         for extra_route in router.router['routes']:
-            self.assertIn(extra_route, routes)
+            check = self.assertIn if enable_gw else self.assertNotIn
+            check(extra_route, routes)
 
     def _assert_onlink_subnet_routes(
-            self, router, ip_versions, namespace=None):
+            self, router, ip_versions, namespace=None, enable_gw=True):
         ns_name = namespace or router.ns_name
         routes = []
         for ip_version in ip_versions:
@@ -577,7 +589,13 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                                                namespace=ns_name)
             routes.extend(_routes)
         routes = set(route['destination'] for route in routes)
-        extra_subnets = router.get_ex_gw_port()['extra_subnets']
+        ex_gw_port = router.get_ex_gw_port()
+        if not ex_gw_port:
+            if not enable_gw:
+                return
+            self.fail('GW port is enabled but not present in the router')
+
+        extra_subnets = ex_gw_port['extra_subnets']
         for extra_subnet in (route['cidr'] for route in extra_subnets):
             self.assertIn(extra_subnet, routes)
 

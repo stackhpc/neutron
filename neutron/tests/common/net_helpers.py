@@ -637,8 +637,8 @@ class VethFixture(fixtures.Fixture):
     def destroy(self):
         for port in self.ports:
             ip_wrapper = ip_lib.IPWrapper(port.namespace)
-            if (ip_wrapper.netns.exists(port.namespace) or
-                    port.namespace is None):
+            if (port.namespace is None or
+                    ip_wrapper.netns.exists(port.namespace)):
                 try:
                     ip_wrapper.del_veth(port.name)
                     break
@@ -828,6 +828,9 @@ class OVSPortFixture(PortFixture):
         # on ports that we intend to use as fake vm interfaces, they
         # need to be flat. This is related to lp#1767422
         self.bridge.clear_db_attribute("Port", port_name, "tag")
+        # Clear vlan_mode that is added for each new port. lp#1930414
+        self.bridge.clear_db_attribute("Port", port_name, "vlan_mode")
+        self.bridge.clear_db_attribute("Port", port_name, "trunks")
         self.addCleanup(self.bridge.delete_port, port_name)
         self.port = ip_lib.IPDevice(port_name, self.namespace)
 
