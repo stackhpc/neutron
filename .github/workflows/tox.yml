@@ -1,7 +1,32 @@
 ---
-name: Tox Continuous Integration
+name: Tox Workflow
 'on':
-  pull_request:
+  workflow_call:
 jobs:
   tox:
-    uses: stackhpc/.github/.github/workflows/tox.yml@main
+      runs-on: ubuntu-20.04
+      strategy:
+        matrix:
+          include:
+            - environment: py36
+              python-version: 3.6
+            - environment: py38
+              python-version: 3.8
+            - environment: pep8
+              python-version: 3.8
+      name: Tox ${{ matrix.environment }} with Python ${{ matrix.python-version }}
+      steps:
+        - name: Github Checkout 🛎
+          uses: actions/checkout@a12a3943b4bdde767164f792f33f40b04645d846
+        - name: Setup Python ${{ matrix.python-version }} 🐍
+          uses: actions/setup-python@98f2ad02fd48d057ee3b4d4f66525b231c3e52b6
+          with:
+            python-version: ${{ matrix.python-version }}
+        - name: Install bindep
+          run: pip install bindep
+        - name: Run bindep
+          run: bindep bindep.txt
+        - name: Install Tox 📦
+          run: pip install tox
+        - name: Run Tox ${{ matrix.environment }} 🧪
+          run: tox -e ${{ matrix.environment }}
