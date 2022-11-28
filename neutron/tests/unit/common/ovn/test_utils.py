@@ -15,6 +15,7 @@
 
 from collections import namedtuple
 from os import path
+import shlex
 from unittest import mock
 
 import fixtures
@@ -22,10 +23,13 @@ import neutron_lib
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as n_const
+from oslo_concurrency import processutils
 from oslo_config import cfg
+import testtools
 
 from neutron.common.ovn import constants
 from neutron.common.ovn import utils
+from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.tests import base
 from neutron.tests.unit import fake_resources as fakes
 
@@ -414,8 +418,25 @@ class TestDHCPUtils(base.BaseTestCase):
         # Assert no options were passed
         self.assertEqual({}, options)
 
+   def test_get_lsp_dhcp_opts_for_domain_search(self):
+        opt = {'opt_name': 'domain-search',
+               'opt_value': 'openstack.org,ovn.org',
+               'ip_version': 4}
+        port = {portbindings.VNIC_TYPE: portbindings.VNIC_NORMAL,
+                edo_ext.EXTRADHCPOPTS: [opt]}
+
+        dhcp_disabled, options = utils.get_lsp_dhcp_opts(port, 4)
+        self.assertFalse(dhcp_disabled)
+        # Assert option got translated to "domain_search_list" and
+        # the value is a string (double-quoted)
+        expected_options = {'domain_search_list': '"openstack.org,ovn.org"'}
+        self.assertEqual(expected_options, options)
 
 class TestGetDhcpDnsServers(base.BaseTestCase):
+
+    def setUp(self):
+        ovn_conf.register_opts()
+        super(TestGetDhcpDnsServers, self).setUp()
 
     def test_ipv4(self):
         # DNS servers from subnet.
@@ -743,3 +764,162 @@ class TestValidateAndGetDataFromBindingProfile(base.BaseTestCase):
             utils.validate_and_get_data_from_binding_profile(
                 {portbindings.VNIC_TYPE: self.VNIC_FAKE_OTHER,
                  constants.OVN_PORT_BINDING_PROFILE: binding_profile}))
+
+
+class TestRetryDecorator(base.BaseTestCase):
+    DEFAULT_RETRY_VALUE = 10
+
+    def setUp(self):
+        super().setUp()
+        mock.patch.object(
+            ovn_conf, "get_ovn_ovsdb_retry_max_interval",
+            return_value=self.DEFAULT_RETRY_VALUE).start()
+
+    def test_default_retry_value(self):
+        with mock.patch('tenacity.wait_exponential') as m_wait:
+            @utils.retry()
+            def decorated_method():
+                pass
+
+            decorated_method()
+        m_wait.assert_called_with(max=self.DEFAULT_RETRY_VALUE)
+
+    def test_custom_retry_value(self):
+        custom_value = 3
+        with mock.patch('tenacity.wait_exponential') as m_wait:
+            @utils.retry(max_=custom_value)
+            def decorated_method():
+                pass
+
+            decorated_method()
+        m_wait.assert_called_with(max=custom_value)
+
+    def test_positive_result(self):
+        number_of_exceptions = 3
+        method = mock.Mock(
+            side_effect=[Exception() for i in range(number_of_exceptions)])
+
+        @utils.retry(max_=0.001)
+        def decorated_method():
+            try:
+                method()
+            except StopIteration:
+                return
+
+        decorated_method()
+
+        # number of exceptions + one successful call
+        self.assertEqual(number_of_exceptions + 1, method.call_count)
+
+
+class TestOvsdbClientCommand(base.BaseTestCase):
+    class OvsdbClientTestCommand(utils.OvsdbClientCommand):
+        COMMAND = 'test'
+
+    def setUp(self):
+        super().setUp()
+        self.nb_connection = 'ovn_nb_connection'
+        self.sb_connection = 'ovn_sb_connection'
+
+        ovn_conf.register_opts()
+        ovn_conf.cfg.CONF.set_default(
+            'ovn_nb_connection',
+            self.nb_connection,
+            group='ovn')
+        ovn_conf.cfg.CONF.set_default(
+            'ovn_sb_connection',
+            self.sb_connection,
+            group='ovn')
+        self.m_exec = mock.patch.object(processutils, 'execute').start()
+
+    def assert_exec_call(self, expected):
+        self.m_exec.assert_called_with(
+            *shlex.split(expected), log_errors=processutils.LOG_FINAL_ERROR)
+
+    def test_run_northbound(self):
+        expected = ('ovsdb-client %s %s --timeout 180 '
+                    '\'["OVN_Northbound", "foo"]\'' % (
+                        self.OvsdbClientTestCommand.COMMAND,
+                        self.nb_connection))
+        self.OvsdbClientTestCommand.run(['OVN_Northbound', 'foo'])
+        self.assert_exec_call(expected)
+
+    def test_run_southbound(self):
+        expected = ('ovsdb-client %s %s --timeout 180 '
+                    '\'["OVN_Southbound", "foo"]\'' % (
+                        self.OvsdbClientTestCommand.COMMAND,
+                        self.sb_connection))
+        self.OvsdbClientTestCommand.run(['OVN_Southbound', 'foo'])
+        self.assert_exec_call(expected)
+
+    def test_run_northbound_with_ssl(self):
+        private_key = 'north_pk'
+        certificate = 'north_cert'
+        ca_auth = 'north_ca_auth'
+
+        ovn_conf.cfg.CONF.set_default(
+            'ovn_nb_private_key',
+            private_key,
+            group='ovn')
+        ovn_conf.cfg.CONF.set_default(
+            'ovn_nb_certificate',
+            certificate,
+            group='ovn')
+        ovn_conf.cfg.CONF.set_default(
+            'ovn_nb_ca_cert',
+            ca_auth,
+            group='ovn')
+
+        expected = ('ovsdb-client %s %s --timeout 180 '
+                    '-p %s '
+                    '-c %s '
+                    '-C %s '
+                    '\'["OVN_Northbound", "foo"]\'' % (
+                        self.OvsdbClientTestCommand.COMMAND,
+                        self.nb_connection,
+                        private_key,
+                        certificate,
+                        ca_auth))
+
+        self.OvsdbClientTestCommand.run(['OVN_Northbound', 'foo'])
+        self.assert_exec_call(expected)
+
+    def test_run_southbound_with_ssl(self):
+        private_key = 'north_pk'
+        certificate = 'north_cert'
+        ca_auth = 'north_ca_auth'
+
+        ovn_conf.cfg.CONF.set_default(
+            'ovn_sb_private_key',
+            private_key,
+            group='ovn')
+        ovn_conf.cfg.CONF.set_default(
+            'ovn_sb_certificate',
+            certificate,
+            group='ovn')
+        ovn_conf.cfg.CONF.set_default(
+            'ovn_sb_ca_cert',
+            ca_auth,
+            group='ovn')
+
+        expected = ('ovsdb-client %s %s --timeout 180 '
+                    '-p %s '
+                    '-c %s '
+                    '-C %s '
+                    '\'["OVN_Southbound", "foo"]\'' % (
+                        self.OvsdbClientTestCommand.COMMAND,
+                        self.sb_connection,
+                        private_key,
+                        certificate,
+                        ca_auth))
+
+        self.OvsdbClientTestCommand.run(['OVN_Southbound', 'foo'])
+        self.assert_exec_call(expected)
+
+    def test_run_empty_list(self):
+        with testtools.ExpectedException(KeyError):
+            self.OvsdbClientTestCommand.run([])
+
+    def test_run_bad_schema(self):
+        with testtools.ExpectedException(KeyError):
+            self.OvsdbClientTestCommand.run(['foo'])

@@ -205,8 +205,10 @@ ovn_opts = [
                        'baremetal nodes. Defaults to False.')),
 ]
 
-cfg.CONF.register_opts(ovn_opts, group='ovn')
-ovs_conf.register_ovs_agent_opts()
+
+def register_opts():
+    cfg.CONF.register_opts(ovn_opts, group='ovn')
+    ovs_conf.register_ovs_agent_opts()
 
 
 def list_opts():
