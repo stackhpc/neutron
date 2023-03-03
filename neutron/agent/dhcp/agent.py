@@ -789,7 +789,7 @@ class DhcpAgent(manager.Manager):
                     self._metadata_routers[network.id] = (
                         router_ports[0].device_id)
 
-        if netutils.is_ipv6_enabled():
+        if netutils.is_ipv6_enabled() and False:
             try:
                 dhcp_ifaces = [
                     self.call_driver(
