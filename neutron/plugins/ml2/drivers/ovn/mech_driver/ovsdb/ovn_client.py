@@ -1557,29 +1557,21 @@ class OVNClient(object):
         if network is None:
             network = self._plugin.get_network(admin_context,
                                                port['network_id'])
-
         # For VLAN type networks we need to set the
         # "reside-on-redirect-chassis" option so the routing for this
         # logical router port is centralized in the chassis hosting the
         # distributed gateway port.
         # https://github.com/openvswitch/ovs/commit/85706c34d53d4810f54bec1de662392a3c06a996
+        # FIXME(ltomasbo): Once Bugzilla 2162756 is fixed the
+        # is_provider_network check should be removed
         if network.get(pnet.NETWORK_TYPE) == const.TYPE_VLAN:
             options[ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH] = (
-                'false' if ovn_conf.is_ovn_distributed_floating_ip()
+                'false' if (ovn_conf.is_ovn_distributed_floating_ip() and
+                            not utils.is_provider_network(network))
                 else 'true')
 
         is_gw_port = const.DEVICE_OWNER_ROUTER_GW == port.get(
             'device_owner')
-
-        # NOTE(ltomasbo): For VLAN type networks connected through the gateway
-        # port there is a need to set the redirect-type option to bridge to
-        # ensure traffic is not centralized through the controller.
-        # For geneve based tenant networks it won't have any effect as it only
-        # applies to network with a localnet associated to it
-        if is_gw_port and ovn_conf.is_ovn_distributed_floating_ip():
-            options[ovn_const.LRP_OPTIONS_REDIRECT_TYPE] = (
-                ovn_const.BRIDGE_REDIRECT_TYPE)
-
         if is_gw_port and ovn_conf.is_ovn_emit_need_to_frag_enabled():
             try:
                 router_ports = self._get_router_ports(admin_context,
@@ -2380,17 +2372,26 @@ class OVNClient(object):
                     return fixed_ip['ip_address']
 
     def create_metadata_port(self, context, network):
-        if ovn_conf.is_ovn_metadata_enabled():
-            metadata_port = self._find_metadata_port(context, network['id'])
-            if not metadata_port:
-                # Create a neutron port for DHCP/metadata services
-                port = {'port':
-                        {'network_id': network['id'],
+        if not ovn_conf.is_ovn_metadata_enabled():
+            return
+
+        if self._find_metadata_port(context, network['id']):
+            return
+
+        # Create a neutron port for DHCP/metadata services
+        filters = {'network_id': [network['id']]}
+        subnets = self._plugin.get_subnets(context, filters=filters)
+        fixed_ips = [{'subnet_id': s['id']}
+                     for s in subnets if s['enable_dhcp']]
+        port = {'port': {'network_id': network['id'],
                          'tenant_id': network['project_id'],
                          'device_owner': const.DEVICE_OWNER_DISTRIBUTED,
-                         'device_id': 'ovnmeta-%s' % network['id']}}
-                # TODO(boden): rehome create_port into neutron-lib
-                p_utils.create_port(self._plugin, context, port)
+                         'device_id': 'ovnmeta-%s' % network['id'],
+                         'fixed_ips': fixed_ips,
+                         }
+                }
+        # TODO(boden): rehome create_port into neutron-lib
+        p_utils.create_port(self._plugin, context, port)
 
     def update_metadata_port(self, context, network_id, subnet=None):
         """Update metadata port.
