@@ -727,7 +727,7 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                     txn.add(cmd)
         raise periodics.NeverAgain()
 
-    # TODO(lucasagomes): Remove this in the Z cycle
+    # TODO(lucasagomes): Remove this in the B+3 cycle
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
     @periodics.periodic(spacing=600, run_immediately=True)
@@ -738,21 +738,36 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         cmds = []
         for port in self._nb_idl.lsp_list().execute(check_error=True):
             port_type = port.type.strip()
-            if port_type in ("vtep", ovn_const.LSP_TYPE_LOCALPORT, "router"):
-                continue
-
             options = port.options
-            if port_type == ovn_const.LSP_TYPE_LOCALNET:
-                mcast_flood_value = options.get(
+            mcast_flood_reports_value = options.get(
                     ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS)
-                if mcast_flood_value == 'false':
-                    continue
-                options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD: 'false'})
-            elif ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS in options:
-                continue
 
-            options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'})
-            cmds.append(self._nb_idl.lsp_set_options(port.name, **options))
+            if self._ovn_client.is_mcast_flood_broken:
+                if port_type in ("vtep", ovn_const.LSP_TYPE_LOCALPORT,
+                                 "router"):
+                    continue
+
+                if port_type == ovn_const.LSP_TYPE_LOCALNET:
+                    mcast_flood_value = options.pop(
+                        ovn_const.LSP_OPTIONS_MCAST_FLOOD, None)
+                    if mcast_flood_value:
+                        cmds.append(self._nb_idl.db_remove(
+                            'Logical_Switch_Port', port.name, 'options',
+                            ovn_const.LSP_OPTIONS_MCAST_FLOOD,
+                            if_exists=True))
+
+                if mcast_flood_reports_value == 'true':
+                    continue
+
+                options.update(
+                    {ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'})
+                cmds.append(self._nb_idl.lsp_set_options(port.name, **options))
+
+            elif (mcast_flood_reports_value and port_type !=
+                    ovn_const.LSP_TYPE_LOCALNET):
+                cmds.append(self._nb_idl.db_remove(
+                    'Logical_Switch_Port', port.name, 'options',
+                    ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS, if_exists=True))
 
         if cmds:
             with self._nb_idl.transaction(check_error=True) as txn:
@@ -1110,6 +1125,20 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 for ch, ch_private in ch_list[1:]:
                     for table in ('Chassis_Private', 'Chassis'):
                         txn.add(self._sb_idl.db_destroy(table, ch.name))
+
+    @periodics.periodic(spacing=86400, run_immediately=True)
+    def cleanup_old_hash_ring_nodes(self):
+        """Daily task to cleanup old stable Hash Ring node entries.
+
+        Runs once a day and clean up Hash Ring entries that haven't
+        been updated in more than 5 days. See LP #2033281 for more
+        information.
+
+        """
+        if not self.has_lock:
+            return
+        context = n_context.get_admin_context()
+        hash_ring_db.cleanup_old_nodes(context, days=5)
 
 
 class HashRingHealthCheckPeriodics(object):
