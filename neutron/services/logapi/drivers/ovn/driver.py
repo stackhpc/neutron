@@ -28,6 +28,7 @@ from neutron._i18n import _
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
 from neutron.conf.services import logging as log_cfg
+from neutron.objects import securitygroup as sg_obj
 from neutron.services.logapi.common import db_api
 from neutron.services.logapi.common import sg_callback
 from neutron.services.logapi.drivers import base
@@ -152,9 +153,21 @@ class OVNDriver(base.DriverBase):
             msg += " for network log {}".format(log_name)
         LOG.info(msg, acl_changes, acl_absents, acl_visits)
 
-    def _set_acls_log(self, pgs, ovn_txn, actions_enabled, log_name):
+    def _set_acls_log(self, pgs, context, ovn_txn, actions_enabled, log_name):
         acl_changes, acl_visits = 0, 0
         for pg in pgs:
+            meter_name = self.meter_name
+            if pg["name"] != ovn_const.OVN_DROP_PORT_GROUP_NAME:
+                sg = sg_obj.SecurityGroup.get_sg_by_id(
+                    context,
+                    pg["external_ids"][ovn_const.OVN_SG_EXT_ID_KEY])
+                if not sg:
+                    LOG.warning("Port Group %s is missing a corresponding "
+                                "security group, skipping its network log "
+                                "setting...", pg["name"])
+                    continue
+                if not sg.stateful:
+                    meter_name = meter_name + ("_stateless")
             for acl_uuid in pg["acls"]:
                 acl_visits += 1
                 acl = self.ovn_nb.lookup("ACL", acl_uuid)
@@ -163,7 +176,7 @@ class OVNDriver(base.DriverBase):
                     continue
                 columns = {
                     'log': acl.action in actions_enabled,
-                    'meter': self.meter_name,
+                    'meter': meter_name,
                     'name': log_name,
                     'severity': "info"
                 }
@@ -183,12 +196,13 @@ class OVNDriver(base.DriverBase):
         for log_obj in log_objs:
             pgs = self._pgs_from_log_obj(context, log_obj)
             actions_enabled = self._acl_actions_enabled(log_obj)
-            self._set_acls_log(pgs, ovn_txn, actions_enabled,
+            self._set_acls_log(pgs, context, ovn_txn, actions_enabled,
                                utils.ovn_name(log_obj.id))
 
     def _pgs_all(self):
         return self.ovn_nb.db_list(
-            "Port_Group", columns=["name", "acls"]).execute(check_error=True)
+            "Port_Group",
+            columns=["name", "external_ids", "acls"]).execute(check_error=True)
 
     def _pgs_from_log_obj(self, context, log_obj):
         """Map Neutron log_obj into affected port groups in OVN.
@@ -207,11 +221,13 @@ class OVNDriver(base.DriverBase):
                 # No sg, no port, DROP: return DROP pg
                 if log_obj.event == log_const.DROP_EVENT:
                     return [{"name": pg_drop.name,
-                        "acls": [r.uuid for r in pg_drop.acls]}]
+                             "external_ids": pg_drop.external_ids,
+                             "acls": [r.uuid for r in pg_drop.acls]}]
                 # No sg, no port, ACCEPT: return all except DROP pg
                 pgs = self._pgs_all()
                 pgs.remove({"name": pg_drop.name,
-                    "acls": [r.uuid for r in pg_drop.acls]})
+                            "external_ids": pg_drop.external_ids,
+                            "acls": [r.uuid for r in pg_drop.acls]})
                 return pgs
             except idlutils.RowNotFound:
                 pass
@@ -223,6 +239,7 @@ class OVNDriver(base.DriverBase):
                 pg = self.ovn_nb.lookup("Port_Group",
                                         ovn_const.OVN_DROP_PORT_GROUP_NAME)
                 pgs.append({"name": pg.name,
+                            "external_ids": pg.external_ids,
                             "acls": [r.uuid for r in pg.acls]})
             except idlutils.RowNotFound:
                 pass
@@ -235,6 +252,7 @@ class OVNDriver(base.DriverBase):
                                         utils.ovn_port_group_name(
                                             log_obj.resource_id))
                 pgs.append({"name": pg.name,
+                            "external_ids": pg.external_ids,
                             "acls": [r.uuid for r in pg.acls]})
             except idlutils.RowNotFound:
                 pass
@@ -248,6 +266,7 @@ class OVNDriver(base.DriverBase):
                     pg = self.ovn_nb.lookup("Port_Group",
                                             utils.ovn_port_group_name(sg_id))
                     pgs.append({"name": pg.name,
+                                "external_ids": pg.external_ids,
                                 "acls": [r.uuid for r in pg.acls]})
                 except idlutils.RowNotFound:
                     pass
@@ -266,7 +285,7 @@ class OVNDriver(base.DriverBase):
         with self.ovn_nb.transaction(check_error=True) as ovn_txn:
             self._ovn_client.create_ovn_fair_meter(self.meter_name,
                                                    txn=ovn_txn)
-            self._set_acls_log(pgs, ovn_txn, actions_enabled,
+            self._set_acls_log(pgs, context, ovn_txn, actions_enabled,
                                utils.ovn_name(log_obj.id))
 
     def create_log_precommit(self, context, log_obj):
@@ -334,7 +353,7 @@ class OVNDriver(base.DriverBase):
             if not self._unset_disabled_acls(context, log_obj, ovn_txn):
                 pgs = self._pgs_from_log_obj(context, log_obj)
                 actions_enabled = self._acl_actions_enabled(log_obj)
-                self._set_acls_log(pgs, ovn_txn, actions_enabled,
+                self._set_acls_log(pgs, context, ovn_txn, actions_enabled,
                                    utils.ovn_name(log_obj.id))
 
     def delete_log(self, context, log_obj):
@@ -356,6 +375,8 @@ class OVNDriver(base.DriverBase):
                 self._remove_acls_log(pgs, ovn_txn)
                 ovn_txn.add(self.ovn_nb.meter_del(self.meter_name,
                                                   if_exists=True))
+                ovn_txn.add(self.ovn_nb.meter_del(
+                    self.meter_name + "_stateless", if_exists=True))
             LOG.info("All ACL logs cleared after deletion of log_obj %s",
                      log_obj.id)
             return
