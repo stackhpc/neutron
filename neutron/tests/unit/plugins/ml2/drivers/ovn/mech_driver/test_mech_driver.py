@@ -2390,6 +2390,7 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
 
         fake_db_find = mock.Mock()
         fake_db_find.execute.return_value = [nat_row]
+        print("ignore me")
         self.nb_ovn.db_find.return_value = fake_db_find
 
         self.mech_driver._update_dnat_entry_if_needed(port_id)
