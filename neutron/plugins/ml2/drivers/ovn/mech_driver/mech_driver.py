@@ -1069,14 +1069,15 @@ class OVNMechanismDriver(api.MechanismDriver):
                                {ovn_const.OVN_FIP_EXT_MAC_KEY:
                                 nat['external_mac']})).execute()
 
-        if up and ovn_conf.is_ovn_distributed_floating_ip():
-            mac = nat['external_ids'][ovn_const.OVN_FIP_EXT_MAC_KEY]
-            if nat['external_mac'] != mac:
-                LOG.debug("Setting external_mac of port %s to %s",
-                          port_id, mac)
-                self.nb_ovn.db_set(
-                    'NAT', nat['_uuid'], ('external_mac', mac)).execute(
-                    check_error=True)
+        if ovn_conf.is_ovn_distributed_floating_ip():
+            if up:
+                mac = nat['external_ids'].get(ovn_const.OVN_FIP_EXT_MAC_KEY)
+                if mac and nat['external_mac'] != mac:
+                    LOG.debug("Setting external_mac of port %s to %s",
+                              port_id, mac)
+                    self.nb_ovn.db_set(
+                        'NAT', nat['_uuid'], ('external_mac', mac)).execute(
+                            check_error=True)
         else:
             if nat['external_mac']:
                 LOG.debug("Clearing up external_mac of port %s", port_id)
