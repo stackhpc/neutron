@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import datetime
 from unittest import mock
 
 import eventlet
@@ -31,7 +32,7 @@ class AgentCacheTestCase(base.BaseTestCase):
         self.names_ref = []
         for i in range(10):  # Add 10 agents.
             chassis_private = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-                attrs={'name': 'chassis' + str(i)})
+                attrs={'name': 'chassis' + str(i), 'other_config': {}})
             self.agent_cache.update(ovn_const.OVN_CONTROLLER_AGENT,
                                     chassis_private)
             self.names_ref.append('chassis' + str(i))
@@ -67,3 +68,19 @@ class AgentCacheTestCase(base.BaseTestCase):
         agents = list(agents)
         self.assertEqual(1, len(agents))
         self.assertEqual('chassis5', agents[0].agent_id)
+
+    @mock.patch.object(neutron_agent.ControllerAgent, 'alive')
+    def test_heartbeat_timestamp_format(self, agent_alive):
+        chassis_private = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'chassis5'})
+        agents = self.agent_cache.agents_by_chassis_private(chassis_private)
+        agent = list(agents)[0]
+        agent.chassis.hostname = 'fake-hostname'
+        agent.updated_at = datetime.datetime(
+            year=2023, month=2, day=23, hour=1, minute=2, second=3,
+            microsecond=456789).replace(tzinfo=datetime.timezone.utc)
+        agent_alive.return_value = True
+
+        # Verify that both microseconds and timezone are dropped
+        self.assertEqual(str(agent.as_dict()['heartbeat_timestamp']),
+                         '2023-02-23 01:02:03')

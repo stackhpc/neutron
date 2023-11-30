@@ -159,6 +159,8 @@ class FakeOvsdbNbOvnIdl(object):
         self.ha_chassis_group_del = mock.Mock()
         self.ha_chassis_group_add_chassis = mock.Mock()
         self.ha_chassis_group_del_chassis = mock.Mock()
+        self.lrp_get = mock.Mock()
+        self.get_schema_version = mock.Mock(return_value='3.6.0')
 
 
 class FakeOvsdbSbOvnIdl(object):
@@ -181,6 +183,7 @@ class FakeOvsdbSbOvnIdl(object):
         self.is_table_present = mock.Mock()
         self.is_table_present.return_value = False
         self.get_chassis_by_card_serial_from_cms_options = mock.Mock()
+        self.get_schema_version = mock.Mock(return_value='3.6.0')
 
 
 class FakeOvsdbTransaction(object):
@@ -868,20 +871,23 @@ class FakeChassis(object):
             cms_opts.append('%s=%s' % (ovn_const.CMS_OPT_CARD_SERIAL_NUMBER,
                                        card_serial_number))
 
-        external_ids = {}
+        # NOTE(ralonsoh): LP#1990229, once min OVN version >= 20.06, the CMS
+        # options and the bridge mappings should be stored only in
+        # "other_config".
+        other_config = {}
         if cms_opts:
-            external_ids[ovn_const.OVN_CMS_OPTIONS] = ','.join(cms_opts)
+            other_config[ovn_const.OVN_CMS_OPTIONS] = ','.join(cms_opts)
 
         if bridge_mappings:
-            external_ids['ovn-bridge-mappings'] = ','.join(bridge_mappings)
+            other_config['ovn-bridge-mappings'] = ','.join(bridge_mappings)
 
         chassis_attrs = {
             'encaps': [],
-            'external_ids': external_ids,
+            'external_ids': '',
             'hostname': '',
             'name': uuidutils.generate_uuid(),
             'nb_cfg': 0,
-            'other_config': {},
+            'other_config': other_config,
             'transport_zones': [],
             'vtep_logical_switches': []}
 

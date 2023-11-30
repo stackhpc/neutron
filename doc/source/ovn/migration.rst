@@ -21,9 +21,9 @@ adjustments, prepare the environment for the procedure.
 
 Subsequent steps start the migration via Ansible.
 
-Plan for a 24-hour wait after the setup-mtu-t1 step to allow VMs to catch up
-with the new MTU size. The default neutron ML2/OVS configuration has a
-dhcp_lease_duration of 86400 seconds (24h).
+Plan for a 24-hour wait after the reduce-dhcp-t1 step to allow VMs to catch up
+with the new MTU size from the DHCP server. The default neutron ML2/OVS
+configuration has a dhcp_lease_duration of 86400 seconds (24h).
 
 Also, if there are instances using static IP assignment, the administrator
 should be ready to update the MTU of those instances to the new value of 8
@@ -136,7 +136,7 @@ Perform the following steps in the undercloud
    * VALIDATE_MIGRATION - Create migration resources to validate the
      migration. The migration script, before starting the migration, boot a
      server and validates that the server is reachable after the migration.
-     Default: True.
+     Default: False
 
    * SERVER_USER_NAME - User name to use for logging into the migration
      instances.
@@ -154,6 +154,12 @@ Perform the following steps in the undercloud
    * BACKUP_MIGRATION_IP - Only used if CREATE_BACKUP is enabled, IP of the
      server that will be used as a NFS server to store the backup.
      Default: 192.168.24.1
+
+   * BACKUP_MIGRATION_CTL_PLANE_CIDRS - Only used if CREATE_BACKUP is enabled.
+     A comma separated string of control plane subnets in CIDR notation for the
+     controllers being backed up. The specified subnets will be used to enable
+     NFS remote clients connections.
+     Default: 192.168.24.0/24
 
    .. warning::
 
@@ -182,11 +188,11 @@ Perform the following steps in the undercloud
    with the migration playbooks.
 
 
-6. Run ``ovn_migration.sh setup-mtu-t1``
+6. Run ``ovn_migration.sh reduce-dhcp-t1``
 
    .. code-block:: console
 
-      $ ovn_migration.sh setup-mtu-t1
+      $ ovn_migration.sh reduce-dhcp-t1
 
 
    This lowers the T1 parameter

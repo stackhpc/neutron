@@ -21,6 +21,7 @@ from neutron_lib.api.definitions import trunk_details
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
+from neutron_lib import constants as const
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from neutron_lib.db import resource_extend
@@ -293,6 +294,7 @@ class TrunkPlugin(service_base.ServicePluginBase):
             trunk = self._get_trunk(context, trunk_id)
             rules.trunk_can_be_managed(context, trunk)
             trunk_port_validator = rules.TrunkPortValidator(trunk.port_id)
+            parent_port = trunk.db_obj.port
             if trunk_port_validator.can_be_trunked_or_untrunked(context):
                 # NOTE(status_police): when a trunk is deleted, the logical
                 # object disappears from the datastore, therefore there is no
@@ -306,7 +308,7 @@ class TrunkPlugin(service_base.ServicePluginBase):
                                     'deleting trunk port %s: %s', trunk_id,
                                     str(e))
                 payload = events.DBEventPayload(context, resource_id=trunk_id,
-                                                states=(trunk,))
+                                                states=(trunk, parent_port))
                 registry.publish(resources.TRUNK, events.PRECOMMIT_DELETE,
                                  self, payload=payload)
             else:
@@ -316,7 +318,7 @@ class TrunkPlugin(service_base.ServicePluginBase):
         registry.publish(resources.TRUNK, events.AFTER_DELETE, self,
                          payload=events.DBEventPayload(
                              context, resource_id=trunk_id,
-                             states=(trunk,)))
+                             states=(trunk, parent_port)))
 
     @db_base_plugin_common.convert_result_to_dict
     def add_subports(self, context, trunk_id, subports):
@@ -463,12 +465,19 @@ class TrunkPlugin(service_base.ServicePluginBase):
         original_port = payload.states[0]
         orig_vif_type = original_port.get(portbindings.VIF_TYPE)
         new_vif_type = updated_port.get(portbindings.VIF_TYPE)
+        orig_status = original_port.get('status')
+        new_status = updated_port.get('status')
         vif_type_changed = orig_vif_type != new_vif_type
+        trunk_id = trunk_details['trunk_id']
         if vif_type_changed and new_vif_type == portbindings.VIF_TYPE_UNBOUND:
-            trunk_id = trunk_details['trunk_id']
             # NOTE(status_police) Trunk status goes to DOWN when the parent
             # port is unbound. This means there are no more physical resources
             # associated with the logical resource.
             self.update_trunk(
                 context, trunk_id,
                 {'trunk': {'status': constants.TRUNK_DOWN_STATUS}})
+        elif new_status == const.PORT_STATUS_ACTIVE and \
+                new_status != orig_status:
+            self.update_trunk(
+                context, trunk_id,
+                {'trunk': {'status': constants.TRUNK_ACTIVE_STATUS}})

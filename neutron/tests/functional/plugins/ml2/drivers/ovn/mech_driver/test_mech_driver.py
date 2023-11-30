@@ -66,16 +66,16 @@ class TestPortBinding(base.TestOVNFunctionalBase):
         self.add_fake_chassis(self.ovs_host)
         self.add_fake_chassis(
             self.dpdk_host,
-            external_ids={'datapath-type': 'netdev',
+            other_config={'datapath-type': 'netdev',
                           'iface-types': 'dummy,dummy-internal,dpdkvhostuser'})
 
         self.add_fake_chassis(
             self.invalid_dpdk_host,
-            external_ids={'datapath-type': 'netdev',
+            other_config={'datapath-type': 'netdev',
                           'iface-types': 'dummy,dummy-internal,geneve,vxlan'})
         self.add_fake_chassis(
             self.smartnic_dpu_host,
-            external_ids={ovn_const.OVN_CMS_OPTIONS: '{}={}'.format(
+            other_config={ovn_const.OVN_CMS_OPTIONS: '{}={}'.format(
                 ovn_const.CMS_OPT_CARD_SERIAL_NUMBER,
                 self.smartnic_dpu_serial)})
         self.n1 = self._make_network(self.fmt, 'n1', True)
@@ -790,6 +790,40 @@ class TestExternalPorts(base.TestOVNFunctionalBase):
     def test_external_port_update_switchdev_vnic_macvtap(self):
         self._test_external_port_update_switchdev(portbindings.VNIC_MACVTAP)
 
+    def test_external_port_network_update(self):
+        net_id = self.n1['network']['id']
+        port_data = {
+            'port': {'network_id': net_id,
+                     'tenant_id': self._tenant_id,
+                     portbindings.VNIC_TYPE: 'direct'}}
+
+        # Create external port
+        port_req = self.new_create_request('ports', port_data, self.fmt)
+        port_res = port_req.get_response(self.api)
+        port = self.deserialize(self.fmt, port_res)['port']
+        ovn_port = self._find_port_row_by_name(port['id'])
+        self.assertEqual(ovn_const.LSP_TYPE_EXTERNAL, ovn_port.type)
+        # Update MTU of network with external port
+        mtu_value = self.n1['network']['mtu'] - 100
+        dhcp_options = (
+            self.mech_driver._ovn_client._nb_idl.get_subnet_dhcp_options(
+                self.sub['subnet']['id'])
+        )
+        self.assertNotEqual(
+            int(dhcp_options['subnet']['options']['mtu']),
+            mtu_value)
+        data = {'network': {'mtu': mtu_value}}
+        req = self.new_update_request(
+            'networks', data, self.n1['network']['id'], self.fmt)
+        req.get_response(self.api)
+        dhcp_options = (
+            self.mech_driver._ovn_client._nb_idl.get_subnet_dhcp_options(
+                self.sub['subnet']['id'])
+        )
+        self.assertEqual(
+            int(dhcp_options['subnet']['options']['mtu']),
+            mtu_value)
+
 
 class TestSecurityGroup(base.TestOVNFunctionalBase):
 
@@ -961,6 +995,7 @@ class TestMetadataPorts(base.TestOVNFunctionalBase):
 
     def setUp(self, *args, **kwargs):
         super().setUp(*args, **kwargs)
+        self.plugin = self.mech_driver._plugin
         self._ovn_client = self.mech_driver._ovn_client
         self.meta_regex = re.compile(r'%s,(\d+\.\d+\.\d+\.\d+)' %
                                      constants.METADATA_V4_CIDR)
@@ -983,7 +1018,7 @@ class TestMetadataPorts(base.TestOVNFunctionalBase):
         res = self._list_ports(self.fmt, net_id=net_id)
         return self.deserialize(self.fmt, res)['ports']
 
-    def _check_metadata_port(self, net_id, fixed_ip):
+    def _check_metadata_port(self, net_id, fixed_ip, fail=True):
         for port in self._list_ports_ovn(net_id=net_id):
             if ovn_client.OVNClient.is_metadata_port(port):
                 self.assertEqual(net_id, port['network_id'])
@@ -993,13 +1028,17 @@ class TestMetadataPorts(base.TestOVNFunctionalBase):
                     self.assertEqual([], port['fixed_ips'])
                 return port['id']
 
-        self.fail('Metadata port is not present in network %s or data is not '
-                  'correct' % self.n1_id)
+        if fail:
+            self.fail('Metadata port is not present in network %s or data is '
+                      'not correct' % self.n1_id)
 
     def _check_subnet_dhcp_options(self, subnet_id, cidr):
-        # This method checks the DHCP options CIDR and returns, if exits, the
-        # metadata port IP address, included in the classless static routes.
+        # This method checks DHCP options for a subnet ID, and if they exist,
+        # verifies the CIDR matches. Returns the metadata port IP address
+        # if it is included in the classless static routes, else returns None.
         dhcp_opts = self._ovn_client._nb_idl.get_subnet_dhcp_options(subnet_id)
+        if not dhcp_opts['subnet']:
+            return
         self.assertEqual(cidr, dhcp_opts['subnet']['cidr'])
         routes = dhcp_opts['subnet']['options'].get('classless_static_route')
         if not routes:
@@ -1027,6 +1066,35 @@ class TestMetadataPorts(base.TestOVNFunctionalBase):
         self.assertEqual('10.0.0.5', metatada_ip)
         fixed_ip = {'subnet_id': subnet['id'], 'ip_address': metatada_ip}
         self._check_metadata_port(self.n1_id, fixed_ip)
+
+    def test_update_subnet_ipv4(self):
+        self._create_network_ovn(metadata_enabled=True)
+        subnet = self._create_subnet_ovn('10.0.0.0/24')
+        metatada_ip = self._check_subnet_dhcp_options(subnet['id'],
+                                                      '10.0.0.0/24')
+        fixed_ip = {'subnet_id': subnet['id'], 'ip_address': metatada_ip}
+        port_id = self._check_metadata_port(self.n1_id, fixed_ip)
+
+        # Disable DHCP, port should still be present
+        subnet['enable_dhcp'] = False
+        self._ovn_client.update_subnet(self.context, subnet,
+                                       self.n1['network'])
+        port_id = self._check_metadata_port(self.n1_id, None)
+        self.assertIsNone(self._check_subnet_dhcp_options(subnet['id'], []))
+
+        # Delete metadata port
+        self.plugin.delete_port(self.context, port_id)
+        port_id = self._check_metadata_port(self.n1_id, None, fail=False)
+        self.assertIsNone(port_id)
+
+        # Enable DHCP, metadata port should have been re-created
+        subnet['enable_dhcp'] = True
+        self._ovn_client.update_subnet(self.context, subnet,
+                                       self.n1['network'])
+        metatada_ip = self._check_subnet_dhcp_options(subnet['id'],
+                                                      '10.0.0.0/24')
+        fixed_ip = {'subnet_id': subnet['id'], 'ip_address': metatada_ip}
+        port_id = self._check_metadata_port(self.n1_id, fixed_ip)
 
     def test_subnet_ipv4_no_metadata(self):
         self._create_network_ovn(metadata_enabled=False)
@@ -1101,6 +1169,19 @@ class TestAgentApi(base.TestOVNFunctionalBase):
         _, status = self.plugin.create_or_update_agent(self.context, agent)
         return status['id']
 
+    def _check_chassis_registers(self, present=True):
+        chassis = self.sb_api.lookup('Chassis', self.chassis, default=None)
+        chassis_name = chassis.name if chassis else None
+        if self.sb_api.is_table_present('Chassis_Private'):
+            ch_private = self.sb_api.lookup(
+                'Chassis_Private', self.chassis, default=None)
+            ch_private_name = ch_private.name if ch_private else None
+            self.assertEqual(chassis_name, ch_private_name)
+        if present:
+            self.assertEqual(self.chassis, chassis_name)
+        else:
+            self.assertIsNone(chassis)
+
     def test_agent_show(self):
         for agent_id in self.agent_types.values():
             self.assertTrue(self.plugin.get_agent(self.context, agent_id))
@@ -1114,7 +1195,7 @@ class TestAgentApi(base.TestOVNFunctionalBase):
                 'Chassis_Private', self.chassis, 'nb_cfg_timestamp'
             ).execute(check_error=True)
             updated_at = datetime.datetime.fromtimestamp(
-                int(chassis_ts / 1000), datetime.timezone.utc)
+                int(chassis_ts / 1000))
             # if table Chassis_Private present, agent.updated_at is
             # Chassis_Private.nb_cfg_timestamp
             self.assertEqual(updated_at, heartbeat_timestamp)
@@ -1149,12 +1230,15 @@ class TestAgentApi(base.TestOVNFunctionalBase):
         self.assertRaises(agent_exc.AgentNotFound, self.plugin.get_agent,
                           self.context, agent_id)
 
-        # OVN controller agent deletion, that triggers the "Chassis" register
-        # deletion. The "Chassis" register deletion triggers the host OVN
-        # agents deletion, both controller and metadata if present.
+        # OVN controller agent deletion, that triggers the "Chassis" and
+        # "Chassis_Private" registers deletion. The registers deletion triggers
+        # the host OVN agents deletion, both controller and metadata if
+        # present.
         controller_id = self.agent_types[ovn_const.OVN_CONTROLLER_AGENT]
         metadata_id = self.agent_types[ovn_const.OVN_METADATA_AGENT]
+        self._check_chassis_registers()
         self.plugin.delete_agent(self.context, controller_id)
+        self._check_chassis_registers(present=False)
         self.assertRaises(agent_exc.AgentNotFound, self.plugin.get_agent,
                           self.context, controller_id)
         self.assertEqual(

@@ -32,6 +32,8 @@ OVN_ROUTER_IS_EXT_GW = 'neutron:is_ext_gw'
 OVN_GW_PORT_EXT_ID_KEY = 'neutron:gw_port_id'
 OVN_SUBNET_EXT_ID_KEY = 'neutron:subnet_id'
 OVN_SUBNET_EXT_IDS_KEY = 'neutron:subnet_ids'
+OVN_SUBNET_POOL_EXT_ADDR_SCOPE4_KEY = 'neutron:subnet_pool_addr_scope4'
+OVN_SUBNET_POOL_EXT_ADDR_SCOPE6_KEY = 'neutron:subnet_pool_addr_scope6'
 OVN_PHYSNET_EXT_ID_KEY = 'neutron:provnet-physical-network'
 OVN_NETTYPE_EXT_ID_KEY = 'neutron:provnet-network-type'
 OVN_SEGID_EXT_ID_KEY = 'neutron:provnet-segmentation-id'
@@ -49,6 +51,7 @@ OVN_DEVICE_OWNER_EXT_ID_KEY = 'neutron:device_owner'
 OVN_LIVENESS_CHECK_EXT_ID_KEY = 'neutron:liveness_check_at'
 METADATA_LIVENESS_CHECK_EXT_ID_KEY = 'neutron:metadata_liveness_check_at'
 OVN_PORT_BINDING_PROFILE = portbindings.PROFILE
+OVN_HOST_ID_EXT_ID_KEY = 'neutron:host_id'
 
 MIGRATING_ATTR = 'migrating_to'
 OVN_ROUTER_PORT_OPTION_KEYS = ['router-port', 'nat-addresses',
@@ -166,7 +169,8 @@ SUPPORTED_DHCP_OPTS_MAPPING = {
         '119': 'domain_search_list',
         '252': 'wpad',
         '210': 'path_prefix',
-        '150': 'tftp_server_address'},
+        '150': 'tftp_server_address',
+        '255': 'next_server'},
     6: {'server-id': 'server_id',
         'dns-server': 'dns_server',
         'domain-search': 'domain_search',
@@ -381,6 +385,8 @@ LSP_OPTIONS_MCAST_FLOOD_REPORTS = 'mcast_flood_reports'
 LSP_OPTIONS_MCAST_FLOOD = 'mcast_flood'
 
 LRP_OPTIONS_RESIDE_REDIR_CH = 'reside-on-redirect-chassis'
+LRP_OPTIONS_REDIRECT_TYPE = 'redirect-type'
+BRIDGE_REDIRECT_TYPE = "bridged"
 
 # Port Binding types
 PB_TYPE_VIRTUAL = 'virtual'

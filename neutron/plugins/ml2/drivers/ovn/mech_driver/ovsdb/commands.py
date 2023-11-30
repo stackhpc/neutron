@@ -11,6 +11,8 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import collections
+from collections import abc
 
 from oslo_utils import timeutils
 from ovsdbapp.backend.ovs_idl import command
@@ -122,6 +124,7 @@ class AddLSwitchPortCommand(command.BaseCommand):
                                          'Logical_Switch_Port', 'name',
                                          self.lport, None)
             if port:
+                self.result = port.uuid
                 return
 
         port = txn.insert(self.api._tables['Logical_Switch_Port'])
@@ -148,9 +151,10 @@ class AddLSwitchPortCommand(command.BaseCommand):
 
 
 class SetLSwitchPortCommand(command.BaseCommand):
-    def __init__(self, api, lport, if_exists, **columns):
+    def __init__(self, api, lport, external_ids_update, if_exists, **columns):
         super(SetLSwitchPortCommand, self).__init__(api)
         self.lport = lport
+        self.external_ids_update = external_ids_update
         self.columns = columns
         self.if_exists = if_exists
 
@@ -194,6 +198,12 @@ class SetLSwitchPortCommand(command.BaseCommand):
             port.dhcpv6_options = [dhcpv6_options.result]
         for uuid in cur_port_dhcp_opts - new_port_dhcp_opts:
             self.api._tables['DHCP_Options'].rows[uuid].delete()
+
+        external_ids_update = self.external_ids_update or {}
+        external_ids = getattr(port, 'external_ids', {})
+        for k, v in external_ids_update.items():
+            external_ids[k] = v
+        port.external_ids = external_ids
 
         for col, val in self.columns.items():
             setattr(port, col, val)
@@ -887,3 +897,35 @@ class UnsetLSwitchPortToVirtualTypeCommand(command.BaseCommand):
                 virtual_parents)
 
         setattr(lsp, 'options', options)
+
+
+class DbSetCommand(command.BaseCommand):
+    def __init__(self, api, table, record, *col_values, if_exists=False,
+                 **columns):
+        super().__init__(api)
+        self.table = table
+        self.record = record
+        self.col_values = col_values or columns.items()
+        self.if_exists = if_exists
+
+    def run_idl(self, txn):
+        try:
+            record = self.api.lookup(self.table, self.record)
+        except idlutils.RowNotFound:
+            if self.if_exists:
+                return
+            raise
+
+        for col, val in self.col_values:
+            if isinstance(val, abc.Mapping):
+                if isinstance(val, collections.OrderedDict):
+                    val = dict(val)
+                existing = getattr(record, col, {})
+                existing.update(val)
+                val = existing
+                # Since we are updating certain keys and leaving existing keys
+                # but rewriting the whole external_ids column, we must verify()
+                record.verify(col)
+            # For non-map columns, we unconditionally overwrite the values that
+            # exist, so prior state doesn't matter and we don't need verify()
+            self.set_column(record, col, val)

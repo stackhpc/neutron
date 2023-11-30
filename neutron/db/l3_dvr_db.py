@@ -17,7 +17,6 @@ import netaddr
 from neutron_lib.api.definitions import external_net as extnet_apidef
 from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.api.definitions import portbindings
-from neutron_lib.api.definitions import portbindings_extended
 from neutron_lib.api.definitions import router_admin_state_down_before_update
 from neutron_lib.api import validators
 from neutron_lib.callbacks import events
@@ -70,18 +69,6 @@ def is_admin_state_down_necessary():
     return _IS_ADMIN_STATE_DOWN_NECESSARY
 
 
-# TODO(slaweq): this should be moved to neutron_lib.plugins.utils module
-def is_port_bound(port):
-    active_binding = plugin_utils.get_port_binding_by_status_and_host(
-        port.get("port_bindings", []), const.ACTIVE)
-    if not active_binding:
-        LOG.warning("Binding for port %s was not found.", port)
-        return False
-    return active_binding[portbindings_extended.VIF_TYPE] not in [
-        portbindings.VIF_TYPE_UNBOUND,
-        portbindings.VIF_TYPE_BINDING_FAILED]
-
-
 @registry.has_registry_receivers
 class DVRResourceOperationHandler(object):
     """Contains callbacks for DVR operations.
@@ -103,13 +90,11 @@ class DVRResourceOperationHandler(object):
                        priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _set_distributed_flag(self, resource, event, trigger, payload):
         """Event handler to set distributed flag on creation."""
-        context = payload.context
         router = payload.latest_state
         router_db = payload.metadata['router_db']
         dist = is_distributed_router(router)
         router['distributed'] = dist
-        self.l3plugin.set_extra_attr_value(context, router_db, 'distributed',
-                                           dist)
+        self.l3plugin.set_extra_attr_value(router_db, 'distributed', dist)
 
     def _validate_router_migration(self, context, router_db, router_res,
                                    old_router=None):
@@ -203,8 +188,7 @@ class DVRResourceOperationHandler(object):
                 payload.context, payload.resource_id,
                 agent['id'])
         self.l3plugin.set_extra_attr_value(
-            payload.context, payload.desired_state,
-            'distributed', migrating_to_distributed)
+            payload.desired_state, 'distributed', migrating_to_distributed)
 
     @registry.receives(resources.ROUTER, [events.AFTER_UPDATE],
                        priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
@@ -1429,7 +1413,7 @@ class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
 
     def get_ports_under_dvr_connected_subnet(self, context, subnet_id):
         query = dvr_mac_db.get_ports_query_by_subnet_and_ip(context, subnet_id)
-        ports = [p for p in query.all() if is_port_bound(p)]
+        ports = [p for p in query.all() if n_utils.is_port_bound(p)]
         # TODO(slaweq): if there would be way to pass to neutron-lib only
         # list of extensions which actually should be processed, than setting
         # process_extensions=True below could avoid that second loop and

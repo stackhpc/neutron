@@ -62,33 +62,31 @@ class TestUtils(base.BaseTestCase):
 
     def test_is_gateway_chassis(self):
         chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-            'external_ids': {'ovn-cms-options': 'enable-chassis-as-gw'}})
+            'other_config': {'ovn-cms-options': 'enable-chassis-as-gw'}})
         non_gw_chassis_0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-            'external_ids': {'ovn-cms-options': ''}})
-        non_gw_chassis_1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={})
-        non_gw_chassis_2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-            'external_ids': {}})
+            'other_config': {'ovn-cms-options': ''}})
+        non_gw_chassis_1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
+            'other_config': {}})
 
         self.assertTrue(utils.is_gateway_chassis(chassis))
         self.assertFalse(utils.is_gateway_chassis(non_gw_chassis_0))
         self.assertFalse(utils.is_gateway_chassis(non_gw_chassis_1))
-        self.assertFalse(utils.is_gateway_chassis(non_gw_chassis_2))
 
     def test_get_chassis_availability_zones_no_azs(self):
         chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-            'external_ids': {'ovn-cms-options': 'enable-chassis-as-gw'}})
+            'other_config': {'ovn-cms-options': 'enable-chassis-as-gw'}})
         self.assertEqual(set(), utils.get_chassis_availability_zones(chassis))
 
     def test_get_chassis_availability_zones_one_az(self):
         chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-            'external_ids': {'ovn-cms-options':
+            'other_config': {'ovn-cms-options':
                              'enable-chassis-as-gw,availability-zones=az0'}})
         self.assertEqual(
             {'az0'}, utils.get_chassis_availability_zones(chassis))
 
     def test_get_chassis_availability_zones_multiple_az(self):
         chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-            'external_ids': {
+            'other_config': {
                 'ovn-cms-options':
                 'enable-chassis-as-gw,availability-zones=az0:az1 :az2:: :'}})
         self.assertEqual(
@@ -97,7 +95,7 @@ class TestUtils(base.BaseTestCase):
 
     def test_get_chassis_availability_zones_malformed(self):
         chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-            'external_ids': {'ovn-cms-options':
+            'other_config': {'ovn-cms-options':
                              'enable-chassis-as-gw,availability-zones:az0'}})
         self.assertEqual(
             set(), utils.get_chassis_availability_zones(chassis))
@@ -156,16 +154,16 @@ class TestUtils(base.BaseTestCase):
     def test_get_chassis_in_azs(self):
         ch0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
             'name': 'ch0',
-            'external_ids': {
+            'other_config': {
                 'ovn-cms-options':
                 'enable-chassis-as-gw,availability-zones=az0:az1:az2'}})
         ch1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
             'name': 'ch1',
-            'external_ids': {
+            'other_config': {
                 'ovn-cms-options': 'enable-chassis-as-gw'}})
         ch2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
             'name': 'ch2',
-            'external_ids': {
+            'other_config': {
                 'ovn-cms-options':
                 'enable-chassis-as-gw,availability-zones=az1:az5'}})
 
@@ -183,21 +181,21 @@ class TestUtils(base.BaseTestCase):
     def test_get_gateway_chassis_without_azs(self):
         ch0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
             'name': 'ch0',
-            'external_ids': {
+            'other_config': {
                 'ovn-cms-options':
                 'enable-chassis-as-gw,availability-zones=az0:az1:az2'}})
         ch1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
             'name': 'ch1',
-            'external_ids': {
+            'other_config': {
                 'ovn-cms-options': 'enable-chassis-as-gw'}})
         ch2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
             'name': 'ch2',
-            'external_ids': {
+            'other_config': {
                 'ovn-cms-options':
                 'enable-chassis-as-gw,availability-zones=az1:az5'}})
         ch3 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
             'name': 'ch3',
-            'external_ids': {}})
+            'other_config': {}})
 
         chassis_list = [ch0, ch1, ch2, ch3]
         self.assertEqual(
@@ -418,19 +416,19 @@ class TestDHCPUtils(base.BaseTestCase):
         # Assert no options were passed
         self.assertEqual({}, options)
 
-   def test_get_lsp_dhcp_opts_for_domain_search(self):
-        opt = {'opt_name': 'domain-search',
-               'opt_value': 'openstack.org,ovn.org',
-               'ip_version': 4}
-        port = {portbindings.VNIC_TYPE: portbindings.VNIC_NORMAL,
-                edo_ext.EXTRADHCPOPTS: [opt]}
+    def test_get_lsp_dhcp_opts_for_domain_search(self):
+         opt = {'opt_name': 'domain-search',
+                'opt_value': 'openstack.org,ovn.org',
+                'ip_version': 4}
+         port = {portbindings.VNIC_TYPE: portbindings.VNIC_NORMAL,
+                 edo_ext.EXTRADHCPOPTS: [opt]}
 
-        dhcp_disabled, options = utils.get_lsp_dhcp_opts(port, 4)
-        self.assertFalse(dhcp_disabled)
-        # Assert option got translated to "domain_search_list" and
-        # the value is a string (double-quoted)
-        expected_options = {'domain_search_list': '"openstack.org,ovn.org"'}
-        self.assertEqual(expected_options, options)
+         dhcp_disabled, options = utils.get_lsp_dhcp_opts(port, 4)
+         self.assertFalse(dhcp_disabled)
+         # Assert option got translated to "domain_search_list" and
+         # the value is a string (double-quoted)
+         expected_options = {'domain_search_list': '"openstack.org,ovn.org"'}
+         self.assertEqual(expected_options, options)
 
 class TestGetDhcpDnsServers(base.BaseTestCase):
 

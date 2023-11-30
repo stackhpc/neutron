@@ -26,7 +26,9 @@ from neutron_lib.api.definitions import provider_net as pnet
 from neutron_lib.api.definitions import segment as segment_def
 from neutron_lib import constants as n_const
 from neutron_lib import context as n_context
+from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
+from neutron_lib.exceptions import l3 as l3_exc
 from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import timeutils
@@ -35,10 +37,15 @@ from ovsdbapp.backend.ovs_idl import event as row_event
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
+from neutron.db import l3_attrs_db
 from neutron.db import ovn_hash_ring_db as hash_ring_db
 from neutron.db import ovn_revision_numbers_db as revision_numbers_db
 from neutron.db import segments_db
+from neutron.objects import router as router_obj
+from neutron.objects import ports as ports_obj
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
+from neutron import service
+from neutron.services.logapi.drivers.ovn import driver as log_driver
 
 
 CONF = cfg.CONF
@@ -597,6 +604,47 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
 
         raise periodics.NeverAgain()
 
+    # TODO(czesla): Remove this in the A+4 cycle
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @periodics.periodic(spacing=600, run_immediately=True)
+    def check_port_has_address_scope(self):
+        if not self.has_lock:
+            return
+
+        ports = self._nb_idl.db_find_rows(
+            "Logical_Switch_Port", ("type", "!=", ovn_const.LSP_TYPE_LOCALNET)
+        ).execute(check_error=True)
+
+        context = n_context.get_admin_context()
+        with self._nb_idl.transaction(check_error=True) as txn:
+            for port in ports:
+                if (
+                    port.external_ids.get(
+                        ovn_const.OVN_SUBNET_POOL_EXT_ADDR_SCOPE4_KEY
+                    ) is None or
+                    port.external_ids.get(
+                        ovn_const.OVN_SUBNET_POOL_EXT_ADDR_SCOPE6_KEY
+                    ) is None
+                ):
+                    try:
+                        port_neutron = self._ovn_client._plugin.get_port(
+                            context, port.name
+                        )
+
+                        port_info, external_ids = (
+                            self._ovn_client.get_external_ids_from_port(
+                                port_neutron)
+                        )
+                        txn.add(self._nb_idl.set_lswitch_port(
+                            port.name, external_ids=external_ids))
+                    except n_exc.PortNotFound:
+                        # The sync function will fix this port
+                        pass
+                    except Exception:
+                        LOG.exception('Failed to update port %s', port.name)
+        raise periodics.NeverAgain()
+
     def _delete_default_ha_chassis_group(self, txn):
         # TODO(lucasgomes): Remove the deletion of the
         # HA_CHASSIS_GROUP_DEFAULT_NAME in the Y cycle. We no longer
@@ -679,7 +727,7 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                     txn.add(cmd)
         raise periodics.NeverAgain()
 
-    # TODO(lucasagomes): Remove this in the Z cycle
+    # TODO(lucasagomes): Remove this in the B+3 cycle
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
     @periodics.periodic(spacing=600, run_immediately=True)
@@ -690,21 +738,36 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         cmds = []
         for port in self._nb_idl.lsp_list().execute(check_error=True):
             port_type = port.type.strip()
-            if port_type in ("vtep", ovn_const.LSP_TYPE_LOCALPORT, "router"):
-                continue
-
             options = port.options
-            if port_type == ovn_const.LSP_TYPE_LOCALNET:
-                mcast_flood_value = options.get(
+            mcast_flood_reports_value = options.get(
                     ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS)
-                if mcast_flood_value == 'false':
-                    continue
-                options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD: 'false'})
-            elif ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS in options:
-                continue
 
-            options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'})
-            cmds.append(self._nb_idl.lsp_set_options(port.name, **options))
+            if self._ovn_client.is_mcast_flood_broken:
+                if port_type in ("vtep", ovn_const.LSP_TYPE_LOCALPORT,
+                                 "router"):
+                    continue
+
+                if port_type == ovn_const.LSP_TYPE_LOCALNET:
+                    mcast_flood_value = options.pop(
+                        ovn_const.LSP_OPTIONS_MCAST_FLOOD, None)
+                    if mcast_flood_value:
+                        cmds.append(self._nb_idl.db_remove(
+                            'Logical_Switch_Port', port.name, 'options',
+                            ovn_const.LSP_OPTIONS_MCAST_FLOOD,
+                            if_exists=True))
+
+                if mcast_flood_reports_value == 'true':
+                    continue
+
+                options.update(
+                    {ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'})
+                cmds.append(self._nb_idl.lsp_set_options(port.name, **options))
+
+            elif (mcast_flood_reports_value and port_type !=
+                    ovn_const.LSP_TYPE_LOCALNET):
+                cmds.append(self._nb_idl.db_remove(
+                    'Logical_Switch_Port', port.name, 'options',
+                    ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS, if_exists=True))
 
         if cmds:
             with self._nb_idl.transaction(check_error=True) as txn:
@@ -776,6 +839,66 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
     @periodics.periodic(spacing=600, run_immediately=True)
+    def check_redirect_type_router_gateway_ports(self):
+        """Check OVN router gateway ports
+        Check for the option "redirect-type=bridged" value for
+        router gateway ports.
+        """
+        if not self.has_lock:
+            return
+        context = n_context.get_admin_context()
+        cmds = []
+        gw_ports = self._ovn_client._plugin.get_ports(
+            context, {'device_owner': [n_const.DEVICE_OWNER_ROUTER_GW]})
+        for gw_port in gw_ports:
+            enable_redirect = False
+            if ovn_conf.is_ovn_distributed_floating_ip():
+                try:
+                    r_ports = self._ovn_client._get_router_ports(
+                        context, gw_port['device_id'])
+                except l3_exc.RouterNotFound:
+                    LOG.debug("No Router %s not found", gw_port['device_id'])
+                    continue
+                else:
+                    network_ids = {port['network_id'] for port in r_ports}
+                    networks = self._ovn_client._plugin.get_networks(
+                        context, filters={'id': network_ids})
+                    # NOTE(ltomasbo): For VLAN type networks connected through
+                    # the gateway port there is a need to set the redirect-type
+                    # option to bridge to ensure traffic is not centralized
+                    # through the controller.
+                    # If there are no VLAN type networks attached we need to
+                    # still make it centralized.
+                    if networks:
+                        enable_redirect = all(
+                            net.get(pnet.NETWORK_TYPE) in [n_const.TYPE_VLAN,
+                                                           n_const.TYPE_FLAT]
+                            for net in networks)
+
+            lrp_name = utils.ovn_lrouter_port_name(gw_port['id'])
+            lrp = self._nb_idl.get_lrouter_port(lrp_name)
+            redirect_value = lrp.options.get(
+                ovn_const.LRP_OPTIONS_REDIRECT_TYPE)
+            if enable_redirect:
+                if redirect_value != ovn_const.BRIDGE_REDIRECT_TYPE:
+                    opt = {ovn_const.LRP_OPTIONS_REDIRECT_TYPE:
+                           ovn_const.BRIDGE_REDIRECT_TYPE}
+                    cmds.append(self._nb_idl.db_set(
+                        'Logical_Router_Port', lrp_name, ('options', opt)))
+            else:
+                if redirect_value == ovn_const.BRIDGE_REDIRECT_TYPE:
+                    cmds.append(self._nb_idl.db_remove(
+                        'Logical_Router_Port', lrp_name, 'options',
+                        (ovn_const.LRP_OPTIONS_REDIRECT_TYPE)))
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+        raise periodics.NeverAgain()
+
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @periodics.periodic(spacing=600, run_immediately=True)
     def check_vlan_distributed_ports(self):
         """Check VLAN distributed ports
         Check for the option "reside-on-redirect-chassis" value for
@@ -788,13 +911,18 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         # Get router ports belonging to VLAN networks
         vlan_nets = self._ovn_client._plugin.get_networks(
             context, {pnet.NETWORK_TYPE: [n_const.TYPE_VLAN]})
-        vlan_net_ids = [vn['id'] for vn in vlan_nets]
+        # FIXME(ltomasbo): Once Bugzilla 2162756 is fixed the
+        # is_provider_network check should be removed
+        vlan_net_ids = [vn['id'] for vn in vlan_nets
+                        if not utils.is_provider_network(vn)]
         router_ports = self._ovn_client._plugin.get_ports(
             context, {'network_id': vlan_net_ids,
                       'device_owner': n_const.ROUTER_PORT_OWNERS})
-        expected_value = ('false' if ovn_conf.is_ovn_distributed_floating_ip()
-                          else 'true')
+
         for rp in router_ports:
+            expected_value = (
+                self._ovn_client._get_reside_redir_for_gateway_port(
+                    rp['device_id']))
             lrp_name = utils.ovn_lrouter_port_name(rp['id'])
             lrp = self._nb_idl.get_lrouter_port(lrp_name)
             if lrp.options.get(
@@ -825,7 +953,11 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
             if lsp.type != '':
                 continue
 
-            port = self._ovn_client._plugin.get_port(context, lsp.name)
+            try:
+                port = self._ovn_client._plugin.get_port(context, lsp.name)
+            except n_exc.PortNotFound:
+                continue
+
             for ip in port.get('fixed_ips', []):
                 if utils.get_virtual_port_parents(
                         self._nb_idl, ip['ip_address'], port['network_id'],
@@ -859,9 +991,10 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
             return
 
         context = n_context.get_admin_context()
+        ports = ports_obj.Port.get_ports_by_vnic_type_and_host(
+            context, portbindings.VNIC_BAREMETAL)
         ports = self._ovn_client._plugin.get_ports(
-            context,
-            filters={portbindings.VNIC_TYPE: portbindings.VNIC_BAREMETAL})
+            context, filters={'id': [p.id for p in ports]})
         if not ports:
             raise periodics.NeverAgain()
 
@@ -893,6 +1026,120 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
 
         raise periodics.NeverAgain()
 
+    # TODO(ralonsoh): Remove this in the Antelope+4 cycle
+    @periodics.periodic(spacing=600, run_immediately=True)
+    def create_router_extra_attributes_registers(self):
+        """Create missing ``RouterExtraAttributes`` registers.
+
+        ML2/OVN L3 plugin does not inherit the ``ExtraAttributesMixin`` class.
+        Before LP#1995974, the L3 plugin was not creating a
+        ``RouterExtraAttributes`` register per ``Routers`` register. This one
+        only execution method finds those ``Routers`` registers without the
+        child one and creates one with the default values.
+        """
+
+        if not self.has_lock:
+            return
+
+        context = n_context.get_admin_context()
+        for router_id in router_obj.Router.\
+                get_router_ids_without_router_std_attrs(context):
+            with db_api.CONTEXT_WRITER.using(context):
+                router_db = {'id': router_id}
+                l3_attrs_db.ExtraAttributesMixin.add_extra_attr(context,
+                                                                router_db)
+
+        raise periodics.NeverAgain()
+
+    @periodics.periodic(spacing=600, run_immediately=True)
+    def check_fair_meter_consistency(self):
+        """Update the logging meter after neutron-server reload
+
+        When we change the rate and burst limit we need to update the fair
+        meter band to apply the new values. This is called from the ML2/OVN
+        driver after the OVN NB idl is loaded
+
+        """
+        if not self.has_lock:
+            return
+        if log_driver.OVNDriver.network_logging_supported(self._nb_idl):
+            meter_name = (
+                cfg.CONF.network_log.local_output_log_base or "acl_log_meter")
+            self._ovn_client.create_ovn_fair_meter(meter_name,
+                                                   from_reload=True)
+        raise periodics.NeverAgain()
+
+    @periodics.periodic(spacing=300, run_immediately=True)
+    def remove_duplicated_chassis_registers(self):
+        """Remove the "Chassis" and "Chassis_Private" duplicated registers.
+
+        When the ovn-controller service of a node is updated and the system-id
+        is changed, if the old service is not stopped gracefully, it will leave
+        a "Chassis" and a "Chassis_Private" registers on the OVN SB database.
+        These leftovers must be removed.
+
+        NOTE: this method is executed every 5 minutes. If a new chassis is
+        added, this method will perform again the clean-up process.
+
+        NOTE: this method can be executed only if the OVN SB has the
+        "Chassis_Private" table. Otherwise, is not possible to find out which
+        register is newer and thus must be kept in the database.
+        """
+        if not self._sb_idl.is_table_present('Chassis_Private'):
+            raise periodics.NeverAgain()
+
+        if not self.has_lock:
+            return
+
+        # dup_chassis_port_host = {host_name: [(ch1, ch_private1),
+        #                                      (ch2, ch_private2), ... ]}
+        dup_chassis_port_host = {}
+        chassis = self._sb_idl.chassis_list().execute(check_error=True)
+        chassis_hostnames = {ch.hostname for ch in chassis}
+        # Find the duplicated "Chassis" and "Chassis_Private" registers,
+        # comparing the hostname.
+        for hostname in chassis_hostnames:
+            ch_list = []
+            # Find these chassis matching the hostname and create a list.
+            for ch in (ch for ch in chassis if ch.hostname == hostname):
+                ch_private = self._sb_idl.lookup('Chassis_Private', ch.name,
+                                                 default=None)
+                if ch_private:
+                    ch_list.append((ch, ch_private))
+
+            # If the chassis list > 1, then we have duplicated chassis.
+            if len(ch_list) > 1:
+                # Order ch_list by Chassis_Private.nb_cfg_timestamp, from newer
+                # (greater value) to older.
+                ch_list.sort(key=lambda x: x[1].nb_cfg_timestamp, reverse=True)
+                dup_chassis_port_host[hostname] = ch_list
+
+        if not dup_chassis_port_host:
+            return
+
+        # Remove the "Chassis" and "Chassis_Private" registers with the
+        # older Chassis_Private.nb_cfg_timestamp.
+        with self._sb_idl.transaction(check_error=True) as txn:
+            for ch_list in dup_chassis_port_host.values():
+                # The first item is skipped, this is the newest element.
+                for ch, ch_private in ch_list[1:]:
+                    for table in ('Chassis_Private', 'Chassis'):
+                        txn.add(self._sb_idl.db_destroy(table, ch.name))
+
+    @periodics.periodic(spacing=86400, run_immediately=True)
+    def cleanup_old_hash_ring_nodes(self):
+        """Daily task to cleanup old stable Hash Ring node entries.
+
+        Runs once a day and clean up Hash Ring entries that haven't
+        been updated in more than 5 days. See LP #2033281 for more
+        information.
+
+        """
+        if not self.has_lock:
+            return
+        context = n_context.get_admin_context()
+        hash_ring_db.cleanup_old_nodes(context, days=5)
+
 
 class HashRingHealthCheckPeriodics(object):
 
@@ -906,3 +1153,20 @@ class HashRingHealthCheckPeriodics(object):
         # here because we want the maintenance tasks from each instance to
         # execute this task.
         hash_ring_db.touch_nodes_from_host(self.ctx, self._group)
+
+        # Check the number of the nodes in the ring and log a message in
+        # case they are out of sync. See LP #2024205 for more information
+        # on this issue.
+        api_workers = service._get_api_workers()
+        num_nodes = hash_ring_db.count_nodes_from_host(self.ctx, self._group)
+
+        if num_nodes > api_workers:
+            LOG.critical(
+                'The number of nodes in the Hash Ring (%d) is higher than '
+                'the number of API workers (%d) for host "%s". Something is '
+                'not right and OVSDB events could be missed because of this. '
+                'Please check the status of the Neutron processes, this can '
+                'happen when the API workers are killed and restarted. '
+                'Restarting the service should fix the issue, see LP '
+                '#2024205 for more information.',
+                num_nodes, api_workers, cfg.CONF.host)

@@ -31,15 +31,19 @@ from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins import utils as p_utils
+from neutron_lib.services.logapi import constants as log_const
+from neutron_lib.services.qos import constants as qos_consts
 from neutron_lib.utils import helpers
 from neutron_lib.utils import net as n_net
 from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import excutils
 from oslo_utils import timeutils
+from oslo_utils import versionutils
 from ovsdbapp.backend.ovs_idl import idlutils
 import tenacity
 
+from neutron._i18n import _
 from neutron.common.ovn import acl as ovn_acl
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
@@ -47,6 +51,7 @@ from neutron.common import utils as common_utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron.db import segments_db
+from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions \
     import placement as placement_extension
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions \
@@ -58,9 +63,23 @@ LOG = log.getLogger(__name__)
 
 
 OvnPortInfo = collections.namedtuple(
-    'OvnPortInfo', ['type', 'options', 'addresses', 'port_security',
-                    'parent_name', 'tag', 'dhcpv4_options', 'dhcpv6_options',
-                    'cidrs', 'device_owner', 'security_group_ids'])
+    "OvnPortInfo",
+    [
+        "type",
+        "options",
+        "addresses",
+        "port_security",
+        "parent_name",
+        "tag",
+        "dhcpv4_options",
+        "dhcpv6_options",
+        "cidrs",
+        "device_owner",
+        "security_group_ids",
+        "address4_scope_id",
+        "address6_scope_id",
+    ],
+)
 
 
 GW_INFO = collections.namedtuple('GatewayInfo', ['network_id', 'subnet_id',
@@ -76,6 +95,7 @@ class OVNClient(object):
 
         self._plugin_property = None
         self._l3_plugin_property = None
+        self._is_mcast_flood_broken = None
 
         # TODO(ralonsoh): handle the OVN client extensions with an ext. manager
         self._qos_driver = qos_extension.OVNClientQosExtension(driver=self)
@@ -256,6 +276,84 @@ class OVNClient(object):
                     ovn_const.VIF_DETAILS_CARD_SERIAL_NUMBER]).hostname
         return ''
 
+    @tenacity.retry(retry=tenacity.retry_if_exception_type(RuntimeError),
+                    wait=tenacity.wait_random(min=2, max=3),
+                    stop=tenacity.stop_after_attempt(3),
+                    reraise=True)
+    def _wait_for_port_bindings_host(self, context, port_id):
+        db_port = ml2_db.get_port(context, port_id)
+        # This is already checked previously but, just to stay on
+        # the safe side in case the port is deleted mid-operation
+        if not db_port:
+            raise RuntimeError(
+                _('No port found with ID %s') % port_id)
+
+        if not db_port.port_bindings:
+            raise RuntimeError(
+                _('No port bindings information found for  '
+                  'port %s') % port_id)
+
+        if not db_port.port_bindings[0].host:
+            raise RuntimeError(
+                _('No hosting information found for port %s') % port_id)
+
+        return db_port
+
+    def update_lsp_host_info(self, context, db_port, up=True):
+        """Update the binding hosting information for the LSP.
+
+        Update the binding hosting information in the Logical_Switch_Port
+        external_ids column. See LP #2020058 for more information.
+
+        :param context: Neutron API context.
+        :param db_port: The Neutron port.
+        :param up: If True add the host information, if False remove it.
+                   Defaults to True.
+        """
+        cmd = []
+        if up:
+            if not db_port.port_bindings:
+                return
+
+            if not db_port.port_bindings[0].host:
+                # NOTE(lucasgomes): There might be a sync issue between
+                # the moment that this port was fetched from the database
+                # and the hosting information being set, retry a few times
+                try:
+                    db_port = self._wait_for_port_bindings_host(
+                        context, db_port.id)
+                except RuntimeError as e:
+                    LOG.warning(e)
+                    return
+
+            host = db_port.port_bindings[0].host
+            ext_ids = ('external_ids',
+                       {ovn_const.OVN_HOST_ID_EXT_ID_KEY: host})
+            cmd.append(
+                self._nb_idl.db_set(
+                    'Logical_Switch_Port', db_port.id, ext_ids))
+        else:
+            cmd.append(
+                self._nb_idl.db_remove(
+                    'Logical_Switch_Port', db_port.id, 'external_ids',
+                    ovn_const.OVN_HOST_ID_EXT_ID_KEY, if_exists=True))
+
+        self._transaction(cmd)
+
+    # TODO(lucasagomes): Remove this method and the logic around the broken
+    # mcast_flood_reports configuration option on any other port that is not
+    # type "localnet" when the fixed version of OVN becomes the norm.
+    # The commit in core OVN fixing this issue is the
+    # https://github.com/ovn-org/ovn/commit/6aeeccdf272bc60630581e46aa42d97f4f56d4fa
+    @property
+    def is_mcast_flood_broken(self):
+        if self._is_mcast_flood_broken is None:
+            schema_version = self._nb_idl.get_schema_version()
+            self._is_mcast_flood_broken = (
+                versionutils.convert_version_to_tuple(schema_version) <
+                (6, 3, 0))
+        return self._is_mcast_flood_broken
+
     def _get_port_options(self, port):
         context = n_context.get_admin_context()
         binding_prof = utils.validate_and_get_data_from_binding_profile(port)
@@ -264,6 +362,8 @@ class OVNClient(object):
 
         port_type = ''
         cidrs = ''
+        address4_scope_id = ""
+        address6_scope_id = ""
         dhcpv4_options = self._get_port_dhcp_options(port, const.IP_VERSION_4)
         dhcpv6_options = self._get_port_dhcp_options(port, const.IP_VERSION_6)
         if vtep_physical_switch:
@@ -305,6 +405,26 @@ class OVNClient(object):
                         LOG.debug('Subnet not found for ip address %s',
                                   ip_addr)
                         continue
+
+                    if subnet["subnetpool_id"]:
+                        try:
+                            subnet_pool = self._plugin.get_subnetpool(
+                                context, id=subnet["subnetpool_id"]
+                            )
+                            if subnet_pool["address_scope_id"]:
+                                ip_version = subnet_pool["ip_version"]
+                                if ip_version == const.IP_VERSION_4:
+                                    address4_scope_id = subnet_pool[
+                                        "address_scope_id"
+                                    ]
+                                elif ip_version == const.IP_VERSION_6:
+                                    address6_scope_id = subnet_pool[
+                                        "address_scope_id"
+                                    ]
+                        except n_exc.SubnetPoolNotFound:
+                            # swallow the exception and just continue if the
+                            # lookup failed
+                            pass
 
                     cidrs += ' {}/{}'.format(ip['ip_address'],
                                              subnet['cidr'].split('/')[1])
@@ -389,21 +509,24 @@ class OVNClient(object):
                         # a RARP packet from it to inform network about the new
                         # location of the port
                         options['activation-strategy'] = 'rarp'
-            options[ovn_const.LSP_OPTIONS_REQUESTED_CHASSIS_KEY] = chassis
 
-        # TODO(lucasagomes): Enable the mcast_flood_reports by default,
-        # according to core OVN developers it shouldn't cause any harm
-        # and will be ignored when mcast_snoop is False. We can revise
-        # this once https://bugzilla.redhat.com/show_bug.cgi?id=1933990
-        # (see comment #3) is fixed in Core OVN.
-        if port_type not in ('vtep', ovn_const.LSP_TYPE_LOCALPORT, 'router'):
+            # Virtual ports can not be bound by using the
+            # requested-chassis mechanism, ovn-controller will create the
+            # Port_Binding entry when it sees an ARP coming from the VIP
+            if port_type != ovn_const.LSP_TYPE_VIRTUAL:
+                options[ovn_const.LSP_OPTIONS_REQUESTED_CHASSIS_KEY] = chassis
+
+        if self.is_mcast_flood_broken and port_type not in (
+                'vtep', ovn_const.LSP_TYPE_LOCALPORT, 'router'):
             options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'})
 
         device_owner = port.get('device_owner', '')
         sg_ids = ' '.join(utils.get_lsp_security_groups(port))
         return OvnPortInfo(port_type, options, addresses, port_security,
                            parent_name, tag, dhcpv4_options, dhcpv6_options,
-                           cidrs.strip(), device_owner, sg_ids)
+                           cidrs.strip(), device_owner, sg_ids,
+                           address4_scope_id, address6_scope_id
+                           )
 
     def sync_ha_chassis_group(self, context, network_id, txn):
         """Return the UUID of the HA Chassis Group.
@@ -496,6 +619,7 @@ class OVNClient(object):
         if utils.is_lsp_ignored(port):
             return
 
+    def get_external_ids_from_port(self, port):
         port_info = self._get_port_options(port)
         external_ids = {ovn_const.OVN_PORT_NAME_EXT_ID_KEY: port['name'],
                         ovn_const.OVN_DEVID_EXT_ID_KEY: port['device_id'],
@@ -503,6 +627,10 @@ class OVNClient(object):
                         ovn_const.OVN_CIDRS_EXT_ID_KEY: port_info.cidrs,
                         ovn_const.OVN_DEVICE_OWNER_EXT_ID_KEY:
                             port_info.device_owner,
+                        ovn_const.OVN_SUBNET_POOL_EXT_ADDR_SCOPE4_KEY:
+                            port_info.address4_scope_id,
+                        ovn_const.OVN_SUBNET_POOL_EXT_ADDR_SCOPE6_KEY:
+                            port_info.address6_scope_id,
                         ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY:
                             utils.ovn_name(port['network_id']),
                         ovn_const.OVN_SG_IDS_EXT_ID_KEY:
@@ -510,6 +638,13 @@ class OVNClient(object):
                         ovn_const.OVN_REV_NUM_EXT_ID_KEY: str(
                             utils.get_revision_number(
                                 port, ovn_const.TYPE_PORTS))}
+        return port_info, external_ids
+
+    def create_port(self, context, port):
+        if utils.is_lsp_ignored(port):
+            return
+
+        port_info, external_ids = self.get_external_ids_from_port(port)
         lswitch_name = utils.ovn_name(port['network_id'])
 
         # It's possible to have a network created on one controller and then a
@@ -615,20 +750,8 @@ class OVNClient(object):
     def update_port(self, context, port, port_object=None):
         if utils.is_lsp_ignored(port):
             return
-        port_info = self._get_port_options(port)
-        external_ids = {ovn_const.OVN_PORT_NAME_EXT_ID_KEY: port['name'],
-                        ovn_const.OVN_DEVID_EXT_ID_KEY: port['device_id'],
-                        ovn_const.OVN_PROJID_EXT_ID_KEY: port['project_id'],
-                        ovn_const.OVN_CIDRS_EXT_ID_KEY: port_info.cidrs,
-                        ovn_const.OVN_DEVICE_OWNER_EXT_ID_KEY:
-                            port_info.device_owner,
-                        ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY:
-                            utils.ovn_name(port['network_id']),
-                        ovn_const.OVN_SG_IDS_EXT_ID_KEY:
-                            port_info.security_group_ids,
-                        ovn_const.OVN_REV_NUM_EXT_ID_KEY: str(
-                            utils.get_revision_number(
-                                port, ovn_const.TYPE_PORTS))}
+
+        port_info, external_ids = self.get_external_ids_from_port(port)
 
         check_rev_cmd = self._nb_idl.check_revision_number(
             port['id'], port, ovn_const.TYPE_PORTS)
@@ -1089,25 +1212,30 @@ class OVNClient(object):
                 n_context.get_admin_context(), floatingip['id'],
                 const.FLOATINGIP_STATUS_ACTIVE)
 
-    def update_floatingip(self, context, floatingip):
+    def update_floatingip(self, context, floatingip, fip_request=None):
         fip_status = None
         router_id = None
         ovn_fip = self._nb_idl.get_floatingip(floatingip['id'])
+        fip_request = fip_request[l3.FLOATINGIP] if fip_request else {}
+        qos_update_only = (len(fip_request.keys()) == 1 and
+                           qos_consts.QOS_POLICY_ID in fip_request)
 
         check_rev_cmd = self._nb_idl.check_revision_number(
             floatingip['id'], floatingip, ovn_const.TYPE_FLOATINGIPS)
         with self._nb_idl.transaction(check_error=True) as txn:
             txn.add(check_rev_cmd)
-            if ovn_fip:
-                lrouter = ovn_fip['external_ids'].get(
-                    ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY,
-                    utils.ovn_name(router_id))
-                self._delete_floatingip(ovn_fip, lrouter, txn=txn)
-                fip_status = const.FLOATINGIP_STATUS_DOWN
+            # If FIP updates the QoS policy only, skip the OVN NAT rules update
+            if not qos_update_only:
+                if ovn_fip:
+                    lrouter = ovn_fip['external_ids'].get(
+                        ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY,
+                        utils.ovn_name(router_id))
+                    self._delete_floatingip(ovn_fip, lrouter, txn=txn)
+                    fip_status = const.FLOATINGIP_STATUS_DOWN
 
-            if floatingip.get('port_id'):
-                self._create_or_update_floatingip(floatingip, txn=txn)
-                fip_status = const.FLOATINGIP_STATUS_ACTIVE
+                if floatingip.get('port_id'):
+                    self._create_or_update_floatingip(floatingip, txn=txn)
+                    fip_status = const.FLOATINGIP_STATUS_ACTIVE
 
             self._qos_driver.update_floatingip(txn, floatingip)
 
@@ -1212,7 +1340,7 @@ class OVNClient(object):
                 # leak the RAs generated for the tenant networks via the
                 # provider network
                 ipv6_ra_configs['send_periodic'] = 'true'
-                if is_gw_port and utils.is_provider_network(net):
+                if is_gw_port and utils.is_external_network(net):
                     ipv6_ra_configs['send_periodic'] = 'false'
                 ipv6_ra_configs['mtu'] = str(net['mtu'])
 
@@ -1281,6 +1409,11 @@ class OVNClient(object):
                     lrouter_name, ip_prefix=route['destination'],
                     nexthop=route['nexthop']))
         self._transaction(commands, txn=txn)
+
+    def _get_router_gw_ports(self, context, router_id):
+        return self._plugin.get_ports(context, filters={
+            'device_owner': [const.DEVICE_OWNER_ROUTER_GW],
+            'device_id': [router_id]})
 
     def _get_router_ports(self, context, router_id, get_gw_port=False):
         # _get_router() will raise a RouterNotFound error if there's no router
@@ -1513,6 +1646,31 @@ class OVNClient(object):
 
         return ext_ids
 
+    def _get_reside_redir_for_gateway_port(self, device_id):
+        admin_context = n_context.get_admin_context()
+        reside_redir_ch = 'true'
+        if ovn_conf.is_ovn_distributed_floating_ip():
+            reside_redir_ch = 'false'
+            try:
+                router_ports = self._get_router_ports(admin_context, device_id)
+            except l3_exc.RouterNotFound:
+                LOG.debug("No Router %s not found", device_id)
+            else:
+                network_ids = {port['network_id'] for port in router_ports}
+                networks = self._plugin.get_networks(
+                    admin_context, filters={'id': network_ids})
+
+                # NOTE(ltomasbo): not all the networks connected to the router
+                # are of vlan type, so we won't set the redirect-type=bridged
+                # on the router gateway port, therefore we need to centralized
+                # the vlan traffic to avoid tunneling
+                if networks:
+                    reside_redir_ch = 'true' if any(
+                        net.get(pnet.NETWORK_TYPE) not in [const.TYPE_VLAN,
+                                                           const.TYPE_FLAT]
+                        for net in networks) else 'false'
+        return reside_redir_ch
+
     def _gen_router_port_options(self, port, network=None):
         options = {}
         admin_context = n_context.get_admin_context()
@@ -1524,14 +1682,18 @@ class OVNClient(object):
         # logical router port is centralized in the chassis hosting the
         # distributed gateway port.
         # https://github.com/openvswitch/ovs/commit/85706c34d53d4810f54bec1de662392a3c06a996
+        # FIXME(ltomasbo): Once Bugzilla 2162756 is fixed the
+        # is_provider_network check should be removed
         if network.get(pnet.NETWORK_TYPE) == const.TYPE_VLAN:
-            options[ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH] = (
-                'false' if ovn_conf.is_ovn_distributed_floating_ip()
-                else 'true')
+            reside_redir_ch = self._get_reside_redir_for_gateway_port(
+                port['device_id'])
+            options[ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH] = reside_redir_ch
 
         is_gw_port = const.DEVICE_OWNER_ROUTER_GW == port.get(
             'device_owner')
-        if is_gw_port and ovn_conf.is_ovn_emit_need_to_frag_enabled():
+
+        if is_gw_port and (ovn_conf.is_ovn_distributed_floating_ip() or
+                           ovn_conf.is_ovn_emit_need_to_frag_enabled()):
             try:
                 router_ports = self._get_router_ports(admin_context,
                                                       port['device_id'])
@@ -1540,12 +1702,32 @@ class OVNClient(object):
                 LOG.debug("Router %s not found", port['device_id'])
             else:
                 network_ids = {port['network_id'] for port in router_ports}
-                for net in self._plugin.get_networks(admin_context,
-                                            filters={'id': network_ids}):
-                    if net['mtu'] > network['mtu']:
-                        options[ovn_const.OVN_ROUTER_PORT_GW_MTU_OPTION] = str(
-                                network['mtu'])
-                        break
+                networks = self._plugin.get_networks(
+                    admin_context, filters={'id': network_ids})
+                if ovn_conf.is_ovn_emit_need_to_frag_enabled():
+                    for net in networks:
+                        if net['mtu'] > network['mtu']:
+                            options[
+                                ovn_const.OVN_ROUTER_PORT_GW_MTU_OPTION] = str(
+                                    network['mtu'])
+                            break
+                if ovn_conf.is_ovn_distributed_floating_ip():
+                    # NOTE(ltomasbo): For VLAN type networks connected through
+                    # the gateway port there is a need to set the redirect-type
+                    # option to bridge to ensure traffic is not centralized
+                    # through the controller.
+                    # If there are no VLAN type networks attached we need to
+                    # still make it centralized.
+                    enable_redirect = False
+                    if networks:
+                        enable_redirect = all(
+                            net.get(pnet.NETWORK_TYPE) in [const.TYPE_VLAN,
+                                                           const.TYPE_FLAT]
+                            for net in networks)
+                    if enable_redirect:
+                        options[ovn_const.LRP_OPTIONS_REDIRECT_TYPE] = (
+                            ovn_const.BRIDGE_REDIRECT_TYPE)
+
         return options
 
     def _create_lrouter_port(self, context, router, port, txn=None):
@@ -1626,6 +1808,12 @@ class OVNClient(object):
                 if utils.is_snat_enabled(router) and cidr:
                     self.update_nat_rules(router, networks=[cidr],
                                           enable_snat=True, txn=txn)
+                if ovn_conf.is_ovn_distributed_floating_ip():
+                    router_gw_ports = self._get_router_gw_ports(context,
+                                                                router_id)
+                    for router_port in router_gw_ports:
+                        self._update_lrouter_port(context, router_port,
+                                                  txn=txn)
 
         db_rev.bump_revision(context, port, ovn_const.TYPE_ROUTER_PORTS)
 
@@ -1765,6 +1953,11 @@ class OVNClient(object):
             if utils.is_snat_enabled(router) and cidr:
                 self.update_nat_rules(
                     router, networks=[cidr], enable_snat=False, txn=txn)
+
+            if ovn_conf.is_ovn_distributed_floating_ip():
+                router_gw_ports = self._get_router_gw_ports(context, router_id)
+                for router_port in router_gw_ports:
+                    self._update_lrouter_port(context, router_port, txn=txn)
 
             # NOTE(mangelajo): If the port doesn't exist anymore, we
             # delete the router port as the last operation and update the
@@ -1941,8 +2134,9 @@ class OVNClient(object):
                 for subnet in subnets:
                     self.update_subnet(context, subnet, network, txn)
 
-                if utils.is_provider_network(network):
-                    # make sure to use admin context as this is a providernet
+                if utils.is_external_network(network):
+                    # make sure to use admin context as this is a external
+                    # network
                     self.set_gateway_mtu(n_context.get_admin_context(),
                                          network, txn)
 
@@ -1952,7 +2146,7 @@ class OVNClient(object):
                 if any([p for p in lswitch.ports if
                         p.type == ovn_const.LSP_TYPE_EXTERNAL]):
                     # Check for changes in the network Availability Zones
-                    ovn_ls_azs = lswitch_name.external_ids.get(
+                    ovn_ls_azs = lswitch.external_ids.get(
                         ovn_const.OVN_AZ_HINTS_EXT_ID_KEY, '')
                     neutron_net_azs = lswitch_params['external_ids'].get(
                         ovn_const.OVN_AZ_HINTS_EXT_ID_KEY, '')
@@ -2217,7 +2411,7 @@ class OVNClient(object):
             mport_updated = False
             if subnet['ip_version'] == const.IP_VERSION_4:
                 mport_updated = self.update_metadata_port(
-                    context, network['id'], subnet=subnet)
+                    context, network, subnet=subnet)
             if subnet['ip_version'] == const.IP_VERSION_6 or not mport_updated:
                 # NOTE(ralonsoh): if IPv4 but the metadata port has not been
                 # updated, the DHPC options register has not been created.
@@ -2237,7 +2431,7 @@ class OVNClient(object):
             subnet['id'])['subnet']
 
         if subnet['enable_dhcp'] or ovn_subnet:
-            self.update_metadata_port(context, network['id'], subnet=subnet)
+            self.update_metadata_port(context, network, subnet=subnet)
 
         check_rev_cmd = self._nb_idl.check_revision_number(
             subnet['id'], subnet, ovn_const.TYPE_SUBNETS)
@@ -2330,26 +2524,39 @@ class OVNClient(object):
                     return fixed_ip['ip_address']
 
     def create_metadata_port(self, context, network):
-        if ovn_conf.is_ovn_metadata_enabled():
-            metadata_port = self._find_metadata_port(context, network['id'])
-            if not metadata_port:
-                # Create a neutron port for DHCP/metadata services
-                port = {'port':
-                        {'network_id': network['id'],
+        if not ovn_conf.is_ovn_metadata_enabled():
+            return
+
+        metadata_port = self._find_metadata_port(context, network['id'])
+        if metadata_port:
+            return metadata_port
+
+        # Create a neutron port for DHCP/metadata services
+        filters = {'network_id': [network['id']]}
+        subnets = self._plugin.get_subnets(context, filters=filters)
+        fixed_ips = [{'subnet_id': s['id']}
+                     for s in subnets if s['enable_dhcp']]
+        port = {'port': {'network_id': network['id'],
                          'tenant_id': network['project_id'],
                          'device_owner': const.DEVICE_OWNER_DISTRIBUTED,
-                         'device_id': 'ovnmeta-%s' % network['id']}}
-                # TODO(boden): rehome create_port into neutron-lib
-                p_utils.create_port(self._plugin, context, port)
+                         'device_id': 'ovnmeta-%s' % network['id'],
+                         'fixed_ips': fixed_ips,
+                         }
+                }
+        # TODO(boden): rehome create_port into neutron-lib
+        return p_utils.create_port(self._plugin, context, port)
 
-    def update_metadata_port(self, context, network_id, subnet=None):
+    def update_metadata_port(self, context, network, subnet=None):
         """Update metadata port.
 
         This function will allocate an IP address for the metadata port of
         the given network in all its IPv4 subnets or the given subnet. Returns
         "True" if the metadata port has been updated and "False" if OVN
-        metadata is disabled or the metadata port does not exist.
+        metadata is disabled or the metadata port does not exist or
+        cannot be created.
         """
+        network_id = network['id']
+
         def update_metadata_port_fixed_ips(metadata_port, add_subnet_ids,
                                            del_subnet_ids):
             wanted_fixed_ips = [
@@ -2368,11 +2575,11 @@ class OVNClient(object):
         if not ovn_conf.is_ovn_metadata_enabled():
             return False
 
-        # Retrieve the metadata port of this network
-        metadata_port = self._find_metadata_port(context, network_id)
+        # Retrieve or create the metadata port of this network
+        metadata_port = self.create_metadata_port(context, network)
         if not metadata_port:
-            LOG.error("Metadata port couldn't be found for network %s",
-                      network_id)
+            LOG.error("Metadata port could not be found or created "
+                      "for network %s", network_id)
             return False
 
         port_subnet_ids = set(ip['subnet_id'] for ip in
@@ -2525,3 +2732,74 @@ class OVNClient(object):
             if ls_dns_record.records.get(ptr_record):
                 txn.add(self._nb_idl.dns_remove_record(
                         ls_dns_record.uuid, ptr_record, if_exists=True))
+
+    def _create_ovn_fair_meter(self, meter_name, from_reload=False, txn=None,
+                               stateless=False):
+        """Create row in Meter table with fair attribute set to True.
+
+        Create a row in OVN's NB Meter table based on well-known name. This
+        method uses the network_log configuration to specify the attributes
+        of the meter. Current implementation needs only one 'fair' meter row
+        which is then referred by multiple ACL rows.
+
+        :param meter_name: ovn northbound meter name.
+        :param from_reload: whether we update the meter values or create them.
+        :txn: ovn northbound idl transaction.
+
+        """
+        meter = self._nb_idl.db_find_rows(
+            "Meter", ("name", "=", meter_name)).execute(check_error=True)
+        # The meters are created when a log object is created, not by default.
+        # This condition avoids creating the meter if it wasn't there already.
+        commands = []
+        if from_reload and not meter:
+            return
+
+        burst_limit = cfg.CONF.network_log.burst_limit
+        rate_limit = cfg.CONF.network_log.rate_limit
+        if stateless:
+            meter_name = meter_name + "_stateless"
+            burst_limit = int(burst_limit / 2)
+            rate_limit = int(rate_limit / 2)
+        # The stateless meter is only created once the stateful meter was
+        # successfully created.
+        # The treatment of limits is not equal for stateful and stateless
+        # traffic at a kernel level according to:
+        # https://bugzilla.redhat.com/show_bug.cgi?id=2212952
+        # The stateless meter is created to adjust this issue.
+        meter = self._nb_idl.db_find_rows(
+            "Meter", ("name", "=", meter_name)).execute(check_error=True)
+        if meter:
+            meter = meter[0]
+            meter_band = self._nb_idl.lookup("Meter_Band",
+                                             meter.bands[0].uuid, default=None)
+            if meter_band:
+                if all((meter.unit == "pktps",
+                        meter.fair[0],
+                        meter_band.rate == rate_limit,
+                        meter_band.burst_size == burst_limit)):
+                    # Meter (and its meter-band) unchanged: noop.
+                    return
+            # Re-create meter (and its meter-band) with the new attributes.
+            # This is supposed to happen only if configuration changed, so
+            # doing updates is an overkill: better to leverage the ovsdbapp
+            # library to avoid the complexity.
+            LOG.info("Deleting outdated log fair meter %s", meter_name)
+            commands.append(self._nb_idl.meter_del(meter.uuid))
+        # Create meter
+        LOG.info("Creating network log fair meter %s", meter_name)
+        commands.append(self._nb_idl.meter_add(
+                        name=meter_name,
+                        unit="pktps",
+                        rate=rate_limit,
+                        fair=True,
+                        burst_size=burst_limit,
+                        may_exist=False,
+                        external_ids={ovn_const.OVN_DEVICE_OWNER_EXT_ID_KEY:
+                                      log_const.LOGGING_PLUGIN}))
+        self._transaction(commands, txn=txn)
+
+    def create_ovn_fair_meter(self, meter_name, from_reload=False, txn=None):
+        self._create_ovn_fair_meter(meter_name, from_reload, txn)
+        self._create_ovn_fair_meter(meter_name, from_reload, txn,
+                                    stateless=True)

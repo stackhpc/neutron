@@ -57,12 +57,12 @@ class OVNMechanismDriver(mech_driver.OVNMechanismDriver):
     def ovn_client(self):
         return self._ovn_client
 
-    def _clean_hash_ring(self):
-        """Don't clean the hash ring.
+    def _remove_node_from_hash_ring(self):
+        """Don't remove the node from the Hash Ring.
 
-        If this method was not overriden, cleanup would be performed when
-        calling the db sync and running neutron server would lose all the nodes
-        from the ring.
+        If this method was not overridden, cleanup would be performed when
+        calling the db sync and running neutron server would remove the
+        nodes from the Hash Ring.
         """
 
     # Since we are not using the ovn mechanism driver while syncing,
@@ -203,6 +203,9 @@ def main():
             'port_forwarding',
             'qos'
         ]
+        extension_drivers = list(set(cfg.CONF.ml2.extension_drivers + ['qos']))
+        cfg.CONF.set_override('extension_drivers', extension_drivers, 'ml2')
+
     else:
         LOG.error('Invalid core plugin : ["%s"].', cfg.CONF.core_plugin)
         return

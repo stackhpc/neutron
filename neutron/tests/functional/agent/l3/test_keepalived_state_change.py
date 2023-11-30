@@ -85,7 +85,9 @@ class TestMonitorDaemon(base.BaseLoggingTestCase):
             '--pid_file=%s' % self.pid_file,
             '--state_path=%s' % self.conf_dir,
             '--user=%s' % os.geteuid(),
-            '--group=%s' % os.getegid()]
+            '--group=%s' % os.getegid(),
+            '--debug',
+        ]
 
     def _search_in_file(self, file_name, text):
         def text_in_file():
@@ -94,7 +96,7 @@ class TestMonitorDaemon(base.BaseLoggingTestCase):
             except FileNotFoundError:
                 return False
         try:
-            utils.wait_until_true(text_in_file, timeout=15)
+            utils.wait_until_true(text_in_file, timeout=18)
         except utils.WaitTimeout:
             devices = {}
             for dev in ip_lib.IPWrapper(

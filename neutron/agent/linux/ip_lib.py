@@ -103,6 +103,10 @@ class AddressNotReady(exceptions.NeutronException):
                 "become ready: %(reason)s")
 
 
+class DADFailed(AddressNotReady):
+    pass
+
+
 InvalidArgument = privileged.InvalidArgument
 
 
@@ -578,9 +582,10 @@ class IpAddrCommand(IpDeviceCommandBase):
         return filtered_devices
 
     def wait_until_address_ready(self, address, wait_time=30):
-        """Wait until an address is no longer marked 'tentative'
+        """Wait until an address is no longer marked 'tentative' or 'dadfailed'
 
-        raises AddressNotReady if times out or address not present on interface
+        raises AddressNotReady if times out, address not present on interface
+        raises DADFailed if Duplicate Address Detection fails
         """
         def is_address_ready():
             try:
@@ -589,12 +594,14 @@ class IpAddrCommand(IpDeviceCommandBase):
                 raise AddressNotReady(
                     address=address,
                     reason=_('Address not present on interface'))
-            if not addr_info['tentative']:
-                return True
+            # Since both 'dadfailed' and 'tentative' will be set if DAD fails,
+            # check 'dadfailed' first just to be explicit
             if addr_info['dadfailed']:
-                raise AddressNotReady(
+                raise DADFailed(
                     address=address, reason=_('Duplicate address detected'))
-            return False
+            if addr_info['tentative']:
+                return False
+            return True
         errmsg = _("Exceeded %s second limit waiting for "
                    "address to leave the tentative state.") % wait_time
         common_utils.wait_until_true(

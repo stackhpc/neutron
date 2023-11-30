@@ -30,8 +30,14 @@ from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf as ovn_config
 from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import maintenance
 from neutron.tests.functional import base
+from neutron.tests.functional.services.logapi.drivers.ovn \
+    import test_driver as test_log_driver
+
 from neutron.tests.unit.api import test_extensions
 from neutron.tests.unit.extensions import test_extraroute
+
+CFG_NEW_BURST = 50
+CFG_NEW_RATE = 150
 
 
 class _TestMaintenanceHelper(base.TestOVNFunctionalBase):
@@ -1032,7 +1038,9 @@ class TestMaintenance(_TestMaintenanceHelper):
             m_publish.reset_mock()
             self.pf_plugin.delete_floatingip_port_forwarding(
                 self.context, pf_obj['id'], fip_id)
-            m_publish.assert_called_once()
+            call = mock.call('port_forwarding', 'after_delete', self.pf_plugin,
+                             payload=mock.ANY)
+            m_publish.assert_has_calls([call])
 
             # Assert load balancer for port forwarding is stale
             _verify_lb(self, 'udp', 5353, 53)
@@ -1042,3 +1050,103 @@ class TestMaintenance(_TestMaintenanceHelper):
 
             # Assert load balancer for port forwarding is gone
             self.assertFalse(self._find_pf_lb(router_id, fip_id))
+
+    def test_remove_duplicated_chassis_registers(self):
+        hostnames = ['host1', 'host2']
+        for hostname in hostnames:
+            for _ in range(3):
+                self.add_fake_chassis(hostname)
+
+        chassis = self.sb_api.chassis_list().execute(check_error=True)
+        self.assertEqual(6, len(chassis))
+        # Make the chassis private timestamp different
+        for idx, ch in enumerate(chassis):
+            self.sb_api.db_set('Chassis_Private', ch.name,
+                               ('nb_cfg_timestamp', idx)).execute()
+
+        ch_private_dict = {}  # host: [ch_private1, ch_private2, ...]
+        for hostname in hostnames:
+            ch_private_list = []
+            for ch in (ch for ch in chassis if ch.hostname == hostname):
+                ch_private = self.sb_api.lookup('Chassis_Private', ch.name,
+                                                default=None)
+                if ch_private:
+                    # One of the "Chassis_Private" has been deleted on purpose
+                    # in this test.
+                    ch_private_list.append(ch_private)
+            ch_private_list.sort(key=lambda x: x.nb_cfg_timestamp,
+                                 reverse=True)
+            ch_private_dict[hostname] = ch_private_list
+
+        self.maint.remove_duplicated_chassis_registers()
+        chassis_result = self.sb_api.chassis_list().execute(check_error=True)
+        self.assertEqual(2, len(chassis_result))
+        for ch in chassis_result:
+            self.assertIn(ch.hostname, hostnames)
+            hostnames.remove(ch.hostname)
+            # From ch_private_dict[ch.hostname], we retrieve the first
+            # "Chassis_Private" register because these are ordered by
+            # timestamp. The newer one (bigger timestamp) should remain in the
+            # system.
+            ch_expected = ch_private_dict[ch.hostname][0].chassis[0]
+            self.assertEqual(ch_expected.name, ch.name)
+
+    def test_remove_duplicated_chassis_registers_no_ch_private_register(self):
+        for _ in range(2):
+            self.add_fake_chassis('host1')
+
+        chassis = self.sb_api.chassis_list().execute(check_error=True)
+        self.assertEqual(2, len(chassis))
+        # Make the chassis private timestamp different
+        # Delete on of the "Chassis_Private" registers.
+        self.sb_api.db_destroy('Chassis_Private', chassis[0].name).execute()
+        self.sb_api.db_set('Chassis_Private', chassis[1].name,
+                           ('nb_cfg_timestamp', 1)).execute()
+
+        self.maint.remove_duplicated_chassis_registers()
+        chassis_result = self.sb_api.chassis_list().execute(check_error=True)
+        # Both "Chassis" registers are still in the DB because one
+        # "Chassis_Private" register was missing.
+        self.assertEqual(2, len(chassis_result))
+
+
+class TestLogMaintenance(_TestMaintenanceHelper,
+                         test_log_driver.LogApiTestCaseBase):
+    def test_check_for_logging_conf_change(self):
+        # Check logging is supported
+        if not self.log_driver.network_logging_supported(self.nb_api):
+            self.skipTest("The current OVN version does not offer support "
+                          "for neutron network log functionality.")
+            self.assertIsNotNone(self.log_plugin)
+        # Check no meter exists
+        self.assertFalse(self.nb_api._tables['Meter'].rows.values())
+        # Add a log object
+        self.log_plugin.create_log(self.context, self._log_data())
+        # Check a meter and fair meter exist
+        self.assertTrue(self.nb_api._tables['Meter'].rows)
+        self.assertTrue(self.nb_api._tables['Meter_Band'].rows)
+        self.assertEqual(len([*self.nb_api._tables['Meter'].rows.values()]),
+            len([*self.nb_api._tables['Meter_Band'].rows.values()]))
+        self._check_meters_consistency()
+        # Update burst and rate limit values on the configuration
+        ovn_config.cfg.CONF.set_override('burst_limit', CFG_NEW_BURST,
+                                         group='network_log')
+        ovn_config.cfg.CONF.set_override('rate_limit', CFG_NEW_RATE,
+                                         group='network_log')
+        # Call the maintenance task
+        self.assertRaises(periodics.NeverAgain,
+                          self.maint.check_fair_meter_consistency)
+        # Check meter band was effectively changed after the maintenance call
+        self._check_meters_consistency(CFG_NEW_BURST, CFG_NEW_RATE)
+
+    def _check_meters_consistency(self, new_burst=None, new_rate=None):
+        burst, rate = (new_burst, new_rate) if new_burst else (
+            cfg.CONF.network_log.burst_limit, cfg.CONF.network_log.rate_limit)
+        for meter in [*self.nb_api._tables['Meter'].rows.values()]:
+            meter_band = self.nb_api.lookup('Meter_Band', meter.bands[0].uuid)
+            if "_stateless" in meter.name:
+                self.assertEqual(int(burst / 2), meter_band.burst_size)
+                self.assertEqual(int(rate / 2), meter_band.rate)
+            else:
+                self.assertEqual(burst, meter_band.burst_size)
+                self.assertEqual(rate, meter_band.rate)

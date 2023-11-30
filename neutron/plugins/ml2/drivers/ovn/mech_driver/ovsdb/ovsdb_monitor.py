@@ -172,12 +172,21 @@ class ChassisEvent(row_event.RowEvent):
     def match_fn(self, event, row, old):
         if event != self.ROW_UPDATE:
             return True
-        # NOTE(lucasgomes): If the external_ids column wasn't updated
-        # (meaning, Chassis "gateway" status didn't change) just returns
-        if not hasattr(old, 'external_ids') and event == self.ROW_UPDATE:
+
+        # NOTE(ralonsoh): LP#1990229 to be removed when min OVN version is
+        # 22.09
+        other_config = ('other_config' if hasattr(row, 'other_config') else
+                        'external_ids')
+        # NOTE(lucasgomes): If the other_config/external_ids column wasn't
+        # updated (meaning, Chassis "gateway" status didn't change) just
+        # returns
+        if not hasattr(old, other_config) and event == self.ROW_UPDATE:
             return False
-        if (old.external_ids.get('ovn-bridge-mappings') !=
-                row.external_ids.get('ovn-bridge-mappings')):
+        old_br_mappings = utils.get_ovn_chassis_other_config(old).get(
+            'ovn-bridge-mappings')
+        new_br_mappings = utils.get_ovn_chassis_other_config(row).get(
+            'ovn-bridge-mappings')
+        if old_br_mappings != new_br_mappings:
             return True
         # Check if either the Gateway status or Availability Zones has
         # changed in the Chassis
@@ -192,8 +201,9 @@ class ChassisEvent(row_event.RowEvent):
     def run(self, event, row, old):
         host = row.hostname
         phy_nets = []
+        new_other_config = utils.get_ovn_chassis_other_config(row)
         if event != self.ROW_DELETE:
-            bridge_mappings = row.external_ids.get('ovn-bridge-mappings', '')
+            bridge_mappings = new_other_config.get('ovn-bridge-mappings', '')
             mapping_dict = helpers.parse_mappings(bridge_mappings.split(','))
             phy_nets = list(mapping_dict)
 
@@ -208,9 +218,10 @@ class ChassisEvent(row_event.RowEvent):
             if event == self.ROW_DELETE:
                 kwargs['event_from_chassis'] = row.name
             elif event == self.ROW_UPDATE:
-                old_mappings = old.external_ids.get('ovn-bridge-mappings',
+                old_other_config = utils.get_ovn_chassis_other_config(old)
+                old_mappings = old_other_config.get('ovn-bridge-mappings',
                                                     set()) or set()
-                new_mappings = row.external_ids.get('ovn-bridge-mappings',
+                new_mappings = new_other_config.get('ovn-bridge-mappings',
                                                     set()) or set()
                 if old_mappings:
                     old_mappings = set(old_mappings.split(','))
@@ -262,6 +273,15 @@ class PortBindingChassisUpdateEvent(row_event.RowEvent):
             LOG.warning("Logical Switch Port %(port)s not found for "
                         "Port_Binding %(binding)s",
                         {'port': row.logical_port, 'binding': row.uuid})
+            return False
+
+        req_chassis = utils.get_requested_chassis(
+            row.options.get(ovn_const.LSP_OPTIONS_REQUESTED_CHASSIS_KEY, ''))
+        if len(req_chassis) > 1:
+            # This event has been issued during a LSP migration. During this
+            # process, the LSP will change the port binding but the port status
+            # will be handled by the ``LogicalSwitchPortUpdateDownEvent`` and
+            # ``LogicalSwitchPortUpdateUpEvent`` events.
             return False
 
         return bool(lsp.up)
@@ -325,7 +345,7 @@ class ChassisAgentWriteEvent(ChassisAgentEvent):
         # don't update the AgentCache. We use chassis_private.chassis to return
         # data about the agent.
         return event == self.ROW_CREATE or (
-            getattr(old, 'nb_cfg', False) and not
+            hasattr(old, 'nb_cfg') and not
             (self.table == 'Chassis_Private' and not row.chassis))
 
     def run(self, event, row, old):
@@ -339,11 +359,17 @@ class ChassisAgentTypeChangeEvent(ChassisEvent):
     events = (BaseEvent.ROW_UPDATE,)
 
     def match_fn(self, event, row, old=None):
-        if not getattr(old, 'external_ids', False):
+        # NOTE(ralonsoh): LP#1990229 to be removed when min OVN version is
+        # 22.09
+        other_config = ('other_config' if hasattr(row, 'other_config') else
+                        'external_ids')
+        if not getattr(old, other_config, False):
             return False
-        agent_type_change = n_agent.NeutronAgent.chassis_from_private(
-                row).external_ids.get('ovn-cms-options', []) != (
-                        old.external_ids.get('ovn-cms-options', []))
+        chassis = n_agent.NeutronAgent.chassis_from_private(row)
+        new_other_config = utils.get_ovn_chassis_other_config(chassis)
+        old_other_config = utils.get_ovn_chassis_other_config(old)
+        agent_type_change = new_other_config.get('ovn-cms-options', []) != (
+            old_other_config.get('ovn-cms-options', []))
         return agent_type_change
 
     def run(self, event, row, old):
@@ -398,11 +424,13 @@ class PortBindingChassisEvent(row_event.RowEvent):
         self.l3_plugin = directory.get_plugin(constants.L3)
         table = 'Port_Binding'
         events = (self.ROW_UPDATE,)
-        super(PortBindingChassisEvent, self).__init__(
-            events, table, (('type', '=', ovn_const.OVN_CHASSIS_REDIRECT),))
+        super().__init__(events, table, None)
         self.event_name = 'PortBindingChassisEvent'
 
     def match_fn(self, event, row, old):
+        if row.type != ovn_const.OVN_CHASSIS_REDIRECT:
+            return False
+
         if len(old._data) == 1 and 'external_ids' in old._data:
             # NOTE: since [1], the NB logical_router_port.external_ids are
             # copied into the SB port_binding.external_ids. If only the
@@ -591,8 +619,9 @@ class OvnDbNotifyHandler(row_event.RowEventHandler):
             pass
 
     def notify(self, event, row, updates=None, global_=False):
-        row = idlutils.frozen_row(row)
         matching = self.matching_events(event, row, updates, global_)
+        if matching:
+            row = idlutils.frozen_row(row)
         for match in matching:
             self.notifications.put((match, event, row, updates))
 
@@ -641,9 +670,8 @@ class BaseOvnSbIdl(Ml2OvnIdlBase):
         helper.register_table('Encap')
         helper.register_table('Port_Binding')
         helper.register_table('Datapath_Binding')
-        # Used by MaintenanceWorker which can use ovsdb locking
         try:
-            return cls(connection_string, helper, leader_only=True)
+            return cls(connection_string, helper, leader_only=False)
         except TypeError:
             # TODO(twilson) We can remove this when we require ovs>=2.12.0
             return cls(connection_string, helper)
@@ -701,39 +729,43 @@ class OvnIdlDistributedLock(BaseOvnIdl):
                     self.driver.agent_chassis_table = 'Chassis_Private'
 
     def notify(self, event, row, updates=None):
-        self.handle_db_schema_changes(event, row)
-        self.notify_handler.notify(event, row, updates, global_=True)
         try:
-            target_node = self._hash_ring.get_node(str(row.uuid))
-        except exceptions.HashRingIsEmpty as e:
-            LOG.error('HashRing is empty, error: %s', e)
-            return
-        if target_node != self._node_uuid:
-            return
-
-        # If the worker hasn't been health checked by the maintenance
-        # thread (see bug #1834498), indicate that it's alive here
-        time_now = timeutils.utcnow()
-        touch_timeout = time_now - datetime.timedelta(
-            seconds=ovn_const.HASH_RING_TOUCH_INTERVAL)
-        if not self._last_touch or touch_timeout >= self._last_touch:
-            # NOTE(lucasagomes): Guard the db operation with an exception
-            # handler. If heartbeating fails for whatever reason, log
-            # the error and continue with processing the event
+            self.handle_db_schema_changes(event, row)
+            self.notify_handler.notify(event, row, updates, global_=True)
             try:
-                ctx = neutron_context.get_admin_context()
-                ovn_hash_ring_db.touch_node(ctx, self._node_uuid)
-                self._last_touch = time_now
-            except Exception:
-                LOG.exception('Hash Ring node %s failed to heartbeat',
-                              self._node_uuid)
+                target_node = self._hash_ring.get_node(str(row.uuid))
+            except exceptions.HashRingIsEmpty as e:
+                LOG.error('HashRing is empty, error: %s', e)
+                return
+            if target_node != self._node_uuid:
+                return
 
-        LOG.debug('Hash Ring: Node %(node)s (host: %(hostname)s) '
-                  'handling event "%(event)s" for row %(row)s '
-                  '(table: %(table)s)',
-                  {'node': self._node_uuid, 'hostname': CONF.host,
-                   'event': event, 'row': row.uuid, 'table': row._table.name})
-        self.notify_handler.notify(event, row, updates)
+            # If the worker hasn't been health checked by the maintenance
+            # thread (see bug #1834498), indicate that it's alive here
+            time_now = timeutils.utcnow()
+            touch_timeout = time_now - datetime.timedelta(
+                seconds=ovn_const.HASH_RING_TOUCH_INTERVAL)
+            if not self._last_touch or touch_timeout >= self._last_touch:
+                # NOTE(lucasagomes): Guard the db operation with an exception
+                # handler. If heartbeating fails for whatever reason, log
+                # the error and continue with processing the event
+                try:
+                    ctx = neutron_context.get_admin_context()
+                    ovn_hash_ring_db.touch_node(ctx, self._node_uuid)
+                    self._last_touch = time_now
+                except Exception:
+                    LOG.exception('Hash Ring node %s failed to heartbeat',
+                                  self._node_uuid)
+
+            LOG.debug('Hash Ring: Node %(node)s (host: %(hostname)s) '
+                      'handling event "%(event)s" for row %(row)s '
+                      '(table: %(table)s)',
+                      {'node': self._node_uuid, 'hostname': CONF.host,
+                       'event': event, 'row': row.uuid,
+                       'table': row._table.name})
+            self.notify_handler.notify(event, row, updates)
+        except Exception as e:
+            LOG.exception(e)
 
     @abc.abstractmethod
     def post_connect(self):

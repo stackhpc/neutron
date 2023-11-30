@@ -75,7 +75,7 @@ LOG = logging.getLogger(__name__)
 
 
 def _ensure_subnet_not_used(context, subnet_id):
-    models_v2.Subnet.lock_register(
+    models_v2.Subnet.write_lock_register(
         context, exc.SubnetInUse(subnet_id=subnet_id), id=subnet_id)
     try:
         registry.publish(
@@ -110,11 +110,18 @@ def _update_subnetpool_dict(orig_pool, new_pool):
     return updated
 
 
+def _port_query_hook(context, original_model, query):
+    # Apply the port query only in non-admin and non-advsvc context
+    if ndb_utils.model_query_scope_is_project(context, original_model):
+        query = query.join(models_v2.Network,
+                           models_v2.Network.id == models_v2.Port.network_id)
+    return query
+
+
 def _port_filter_hook(context, original_model, conditions):
     # Apply the port filter only in non-admin and non-advsvc context
     if ndb_utils.model_query_scope_is_project(context, original_model):
         conditions |= and_(
-            models_v2.Port.network_id == models_v2.Network.id,
             models_v2.Network.project_id == context.project_id)
     return conditions
 
@@ -150,7 +157,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
         model_query.register_hook(
             models_v2.Port,
             "port",
-            query_hook=None,
+            query_hook=_port_query_hook,
             filter_hook=_port_filter_hook,
             result_filters=None)
         return super(NeutronDbPluginV2, cls).__new__(cls, *args, **kwargs)
@@ -407,7 +414,7 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
             args = {'tenant_id': project_id,
                     'id': n.get('id') or uuidutils.generate_uuid(),
                     'name': n['name'],
-                    'mtu': n.get('mtu', constants.DEFAULT_NETWORK_MTU),
+                    'mtu': n.get('mtu', 0),
                     'admin_state_up': n['admin_state_up'],
                     'status': n.get('status', constants.NET_STATUS_ACTIVE),
                     'description': n.get('description')}

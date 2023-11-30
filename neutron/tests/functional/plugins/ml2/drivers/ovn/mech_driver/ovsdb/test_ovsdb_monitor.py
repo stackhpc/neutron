@@ -437,9 +437,8 @@ class TestAgentMonitor(base.TestOVNFunctionalBase):
             chassis_name, self.mech_driver.agent_chassis_table)
         self.mech_driver.sb_ovn.idl.notify_handler.watch_event(row_event)
         self.chassis_name = self.add_fake_chassis(
-            self.FAKE_CHASSIS_HOST,
-            external_ids={'ovn-cms-options': 'enable-chassis-as-gw'},
-            name=chassis_name)
+            self.FAKE_CHASSIS_HOST, name=chassis_name,
+            enable_chassis_as_gw=True)
         self.assertTrue(row_event.wait())
         n_utils.wait_until_true(
             lambda: len(list(neutron_agent.AgentCache())) == 1)
@@ -447,11 +446,11 @@ class TestAgentMonitor(base.TestOVNFunctionalBase):
     def test_agent_change_controller(self):
         self.assertEqual(neutron_agent.ControllerGatewayAgent,
                 type(neutron_agent.AgentCache()[self.chassis_name]))
-        self.sb_api.db_set('Chassis', self.chassis_name, ('external_ids',
+        self.sb_api.db_set('Chassis', self.chassis_name, ('other_config',
                 {'ovn-cms-options': ''})).execute(check_error=True)
         n_utils.wait_until_true(lambda:
                 neutron_agent.AgentCache()[self.chassis_name].
-                chassis.external_ids['ovn-cms-options'] == '')
+                chassis.other_config['ovn-cms-options'] == '')
         self.assertEqual(neutron_agent.ControllerAgent,
                 type(neutron_agent.AgentCache()[self.chassis_name]))
 
@@ -471,6 +470,12 @@ class TestAgentMonitor(base.TestOVNFunctionalBase):
         nb_cfg_timestamp = timestamp * 1000
         self.sb_api.db_set('Chassis_Private', self.chassis_name, (
             'nb_cfg_timestamp', nb_cfg_timestamp)).execute(check_error=True)
+        # Also increment nb_cfg by 1 to trigger ChassisAgentWriteEvent which
+        # is responsible to update AgentCache
+        old_nb_cfg = self.sb_api.db_get('Chassis_Private', self.chassis_name,
+            'nb_cfg').execute(check_error=True)
+        self.sb_api.db_set('Chassis_Private', self.chassis_name, (
+            'nb_cfg', old_nb_cfg + 1)).execute(check_error=True)
         try:
             n_utils.wait_until_true(check_agent_ts, timeout=5)
         except n_utils.WaitTimeout:
@@ -480,6 +485,66 @@ class TestAgentMonitor(base.TestOVNFunctionalBase):
                 'nb_cfg_timestamp').execute(check_error=True)
             self.fail('Chassis timestamp: %s, agent updated_at: %s' %
                       (chassis_ts, str(agent.updated_at)))
+
+    def test_agent_restart(self):
+        def check_agent_up():
+            agent = neutron_agent.AgentCache()[self.chassis_name]
+            return agent.alive
+
+        def check_agent_down():
+            return not check_agent_up()
+
+        def check_nb_cfg_timestamp_is_not_null():
+            agent = neutron_agent.AgentCache()[self.chassis_name]
+            return agent.updated_at != 0
+
+        if not self.sb_api.is_table_present('Chassis_Private'):
+            self.skipTest('Ovn sb not support Chassis_Private')
+
+        # Set nb_cfg to some realistic value, so that the alive check can
+        # actually work
+        self.nb_api.db_set(
+            'NB_Global', '.', ('nb_cfg', 1337)).execute(check_error=True)
+        self.sb_api.db_set(
+            'Chassis_Private', self.chassis_name, ('nb_cfg', 1337)
+        ).execute(check_error=True)
+
+        chassis_uuid = self.sb_api.db_get(
+            'Chassis', self.chassis_name, 'uuid').execute(check_error=True)
+
+        self.assertTrue(check_agent_up())
+        n_utils.wait_until_true(check_nb_cfg_timestamp_is_not_null, timeout=5)
+
+        # Lets start by shutting down the ovn-controller
+        # (where it will remove the Chassis_Private table entry)
+        self.sb_api.db_destroy(
+            'Chassis_Private', self.chassis_name).execute(check_error=True)
+        try:
+            n_utils.wait_until_true(check_agent_down, timeout=5)
+        except n_utils.WaitTimeout:
+            self.fail('Agent did not go down after Chassis_Private removal')
+
+        # Now the ovn-controller starts up again and has not yet synced with
+        # the southbound database
+        self.sb_api.db_create(
+            'Chassis_Private', name=self.chassis_name,
+            external_ids={}, chassis=chassis_uuid,
+            nb_cfg_timestamp=0, nb_cfg=0
+        ).execute(check_error=True)
+        self.assertTrue(check_agent_down())
+
+        # Now the ovn-controller has synced with the southbound database
+        nb_cfg_timestamp = timeutils.utcnow_ts() * 1000
+        with self.sb_api.transaction() as txn:
+            txn.add(self.sb_api.db_set('Chassis_Private', self.chassis_name,
+                                       ('nb_cfg_timestamp', nb_cfg_timestamp)))
+            txn.add(self.sb_api.db_set('Chassis_Private', self.chassis_name,
+                                       ('nb_cfg', 1337)))
+        try:
+            n_utils.wait_until_true(check_agent_up, timeout=5)
+        except n_utils.WaitTimeout:
+            self.fail('Agent did not go up after sync is done')
+        self.assertTrue(check_nb_cfg_timestamp_is_not_null())
 
 
 class TestOvnIdlProbeInterval(base.TestOVNFunctionalBase):
@@ -512,3 +577,45 @@ class TestOvnIdlProbeInterval(base.TestOVNFunctionalBase):
         interval = ovn_conf.get_ovn_ovsdb_probe_interval()
         for idl in idls:
             self.assertEqual(interval, idl._session.reconnect.probe_interval)
+
+
+class TestPortBindingChassisEvent(base.TestOVNFunctionalBase,
+                                  test_l3.L3NatTestCaseMixin):
+
+    def setUp(self, **kwargs):
+        super().setUp(**kwargs)
+        self.chassis = self.add_fake_chassis('ovs-host1')
+        self.l3_plugin = directory.get_plugin(plugin_constants.L3)
+        kwargs = {'arg_list': (external_net.EXTERNAL,),
+                  external_net.EXTERNAL: True}
+        self.net = self._make_network(
+            self.fmt, 'ext_net', True, as_admin=True, **kwargs)
+        self._make_subnet(self.fmt, self.net, '20.0.10.1', '20.0.10.0/24')
+        port_res = self._create_port(self.fmt, self.net['network']['id'])
+        self.port = self.deserialize(self.fmt, port_res)['port']
+
+        self.ext_api = test_extensions.setup_extensions_middleware(
+            test_l3.L3TestExtensionManager())
+        self.pb_event_match = mock.patch.object(
+            self.sb_api.idl._portbinding_event, 'match_fn').start()
+
+    def _check_pb_type(self, _type):
+        def check_pb_type(_type):
+            if len(self.pb_event_match.call_args_list) < 1:
+                return False
+
+            pb_row = self.pb_event_match.call_args_list[0].args[1]
+            return _type == pb_row.type
+
+        n_utils.wait_until_true(lambda: check_pb_type(_type), timeout=5)
+
+    def test_pb_type_patch(self):
+        router = self._make_router(self.fmt, self._tenant_id)
+        self._add_external_gateway_to_router(router['router']['id'],
+                                             self.net['network']['id'])
+        self._check_pb_type('patch')
+
+    def test_pb_type_empty(self):
+        self.sb_api.lsp_bind(self.port['id'], self.chassis,
+                             may_exist=True).execute(check_error=True)
+        self._check_pb_type('')

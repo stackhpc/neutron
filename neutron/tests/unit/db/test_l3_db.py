@@ -37,6 +37,7 @@ import webob.exc
 from neutron.db import extraroute_db
 from neutron.db import l3_db
 from neutron.db.models import l3 as l3_models
+from neutron.db.models import l3_attrs
 from neutron.db import models_v2
 from neutron.extensions import segment as segment_ext
 from neutron.objects import base as base_obj
@@ -289,9 +290,10 @@ class TestL3_NAT_dbonly_mixin(
         # without fixed IPs is allowed
         gp.return_value.get_port.return_value = {
             'device_owner': n_const.DEVICE_OWNER_ROUTER_INTF, 'fixed_ips': [],
-            'id': 'f'
+            'device_id': '44', 'id': 'f',
         }
-        self.db.prevent_l3_port_deletion(None, None)
+        with testtools.ExpectedException(n_exc.ServicePortInUse):
+            self.db.prevent_l3_port_deletion(mock.Mock(), None)
 
     @mock.patch.object(directory, 'get_plugin')
     def test_prevent_l3_port_no_router(self, gp):
@@ -326,6 +328,27 @@ class TestL3_NAT_dbonly_mixin(
                 testtools.ExpectedException(n_exc.ServicePortInUse):
 
             self.db.prevent_l3_port_deletion(ctx, None)
+
+    @mock.patch.object(l3_obj.FloatingIP, 'objects_exist')
+    @mock.patch.object(l3_obj.FloatingIP, 'get_objects')
+    def test_disassociate_floatingips_conflict_by_fip_attached(self,
+                                                               get_objects,
+                                                               objects_exist):
+        context_tenant = context.Context('tenant', 'tenant', is_admin=False)
+        objects_exist.return_value = True
+        get_objects.side_effect = [
+            [],
+            [{'id': 'floating_ip1', 'port_id': 'port_id'}]]
+        self.assertRaises(l3_db.FipAssociated,
+                          self.db.disassociate_floatingips,
+                          context_tenant,
+                          'port_id')
+        objects_exist.assert_called_once_with(
+            mock.ANY, fixed_port_id='port_id')
+        expected_calls = [
+                mock.call(context_tenant, fixed_port_id='port_id'),
+                mock.call(mock.ANY, fixed_port_id='port_id')]
+        get_objects.assert_has_calls(expected_calls)
 
     @mock.patch.object(directory, 'get_plugin')
     def test_subscribe_address_scope_of_subnetpool(self, gp):
@@ -575,6 +598,53 @@ class TestL3_NAT_dbonly_mixin(
                     subnet_id='foo_subnet')])
         self.db._validate_one_router_ipv6_port_per_network(
             router, new_port)
+
+    def test__validate_one_router_ipv6_port_per_network_distributed_port(self):
+        port = models_v2.Port(
+                id=uuidutils.generate_uuid(),
+                network_id='foo_network',
+                device_owner=n_const.DEVICE_OWNER_DVR_INTERFACE,
+                fixed_ips=[models_v2.IPAllocation(
+                    ip_address=str(netaddr.IPNetwork(
+                        '2001:db8::/32').ip + 1),
+                    subnet_id='foo_subnet')])
+        rports = [l3_models.RouterPort(router_id='foo_router', port=port)]
+        router = l3_models.Router(
+            id='foo_router', attached_ports=rports, route_list=[],
+            gw_port_id=None)
+        new_port = models_v2.Port(
+                id=uuidutils.generate_uuid(),
+                network_id='foo_network',
+                device_owner=n_const.DEVICE_OWNER_ROUTER_SNAT,
+                fixed_ips=[models_v2.IPAllocation(
+                    ip_address=str(netaddr.IPNetwork(
+                        '2001:db8::/32').ip + 2),
+                    subnet_id='foo_subnet')])
+        self.db._validate_one_router_ipv6_port_per_network(router, new_port)
+
+    def test__validate_one_router_ipv6_port_per_network_centralized_snat_port(
+            self):
+        port = models_v2.Port(
+                id=uuidutils.generate_uuid(),
+                network_id='foo_network',
+                device_owner=n_const.DEVICE_OWNER_ROUTER_SNAT,
+                fixed_ips=[models_v2.IPAllocation(
+                    ip_address=str(netaddr.IPNetwork(
+                        '2001:db8::/32').ip + 1),
+                    subnet_id='foo_subnet')])
+        rports = [l3_models.RouterPort(router_id='foo_router', port=port)]
+        router = l3_models.Router(
+            id='foo_router', attached_ports=rports, route_list=[],
+            gw_port_id=None)
+        new_port = models_v2.Port(
+                id=uuidutils.generate_uuid(),
+                network_id='foo_network',
+                device_owner=n_const.DEVICE_OWNER_DVR_INTERFACE,
+                fixed_ips=[models_v2.IPAllocation(
+                    ip_address=str(netaddr.IPNetwork(
+                        '2001:db8::/32').ip + 2),
+                    subnet_id='foo_subnet')])
+        self.db._validate_one_router_ipv6_port_per_network(router, new_port)
 
     def test__validate_one_router_ipv6_port_per_network_failed(self):
         port = models_v2.Port(
@@ -868,6 +938,20 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
                           self.mixin, payload=mock.ANY),
             ]
             mock_publish.assert_has_calls(expected_calls)
+
+    def test_create_router_extra_attr(self):
+        router_args = {'router': {'name': 'foo_router',
+                                  'admin_state_up': True,
+                                  'tenant_id': 'foo_tenant'}
+                       }
+        router_dict = self.create_router(router_args)
+        with db_api.CONTEXT_READER.using(self.ctx) as session:
+            r_extra_attrs = session.query(
+                l3_attrs.RouterExtraAttributes).filter(
+                    l3_attrs.RouterExtraAttributes.router_id ==
+                    router_dict['id']).all()
+        self.assertEqual(1, len(r_extra_attrs))
+        self.assertEqual(router_dict['id'], r_extra_attrs[0].router_id)
 
     def test_update_router_notify(self):
         with mock.patch.object(l3_db.registry, 'publish') as mock_publish:

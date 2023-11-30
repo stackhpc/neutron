@@ -79,11 +79,11 @@ vrrp_instance VR_1 {
         %(int_port_ipv6)s dev %(internal_device_name)s scope link no_track
     }
     virtual_routes {
-        0.0.0.0/0 via %(default_gateway_ip)s dev %(ex_device_name)s no_track
-        8.8.8.0/24 via 19.4.4.4 no_track
-        %(extra_subnet_cidr)s dev %(ex_device_name)s scope link no_track
+        0.0.0.0/0 via %(default_gateway_ip)s dev %(ex_device_name)s no_track protocol static
+        8.8.8.0/24 via 19.4.4.4 no_track protocol static
+        %(extra_subnet_cidr)s dev %(ex_device_name)s scope link no_track protocol static
     }
-}"""
+}"""  # noqa: E501 # pylint: disable=line-too-long
 
 
 def get_ovs_bridge(br_name):
@@ -213,7 +213,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                 n, len([line for line in out.strip().split('\n') if line]))
 
         if ha:
-            common_utils.wait_until_true(lambda: router.ha_state == 'primary')
+            self.wait_until_ha_router_has_state(router, 'primary')
 
         with self.assert_max_execution_time(100):
             assert_num_of_conntrack_rules(0)
@@ -334,7 +334,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         router.process()
 
         if enable_ha:
-            common_utils.wait_until_true(lambda: router.ha_state == 'primary')
+            self.wait_until_ha_router_has_state(router, 'primary')
 
             # Keepalived notifies of a state transition when it starts,
             # not when it ends. Thus, we have to wait until keepalived finishes
@@ -669,29 +669,25 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                                         check_external_device=True):
 
         try:
-            common_utils.wait_until_true(
-                lambda: router1.ha_state == 'primary')
+            self.wait_until_ha_router_has_state(router1, 'primary')
             if check_external_device:
                 common_utils.wait_until_true(
                     lambda: self._check_external_device(router1))
             primary_router = router1
             backup_router = router2
         except common_utils.WaitTimeout:
-            common_utils.wait_until_true(
-                lambda: router2.ha_state == 'primary')
+            self.wait_until_ha_router_has_state(router2, 'primary')
             if check_external_device:
                 common_utils.wait_until_true(
                     lambda: self._check_external_device(router2))
             primary_router = router2
             backup_router = router1
 
-        common_utils.wait_until_true(
-                lambda: primary_router.ha_state == 'primary')
+        self.wait_until_ha_router_has_state(primary_router, 'primary')
         if check_external_device:
             common_utils.wait_until_true(
                 lambda: self._check_external_device(primary_router))
-        common_utils.wait_until_true(
-            lambda: backup_router.ha_state == 'backup')
+        self.wait_until_ha_router_has_state(backup_router, 'backup')
 
         LOG.debug("Found primary router %s and backup router %s",
                   primary_router.router_id, backup_router.router_id)

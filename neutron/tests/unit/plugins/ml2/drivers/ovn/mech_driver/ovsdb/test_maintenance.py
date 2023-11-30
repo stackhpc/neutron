@@ -16,6 +16,7 @@
 from unittest import mock
 
 from futurist import periodics
+from neutron_lib import constants as n_const
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from oslo_config import cfg
@@ -30,6 +31,7 @@ from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
 from neutron.tests.unit import fake_resources as fakes
 from neutron.tests.unit.plugins.ml2 import test_security_group as test_sg
 from neutron.tests.unit import testlib_api
+from neutron_lib import exceptions as n_exc
 
 
 class TestSchemaAwarePeriodicsBase(testlib_api.SqlTestCaseLight):
@@ -444,7 +446,84 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         nb_idl.set_lswitch_port.assert_called_once_with(
             'p1', ha_chassis_group=hcg0.uuid)
 
-    def test_check_for_mcast_flood_reports(self):
+    def test_check_port_has_address_scope(self):
+        self.fake_ovn_client.is_external_ports_supported.return_value = True
+        nb_idl = self.fake_ovn_client._nb_idl
+
+        # Already has the address scope set but empty, nothing to do
+        lsp0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                "uuid": "1f4323db-fb58-48e9-adae-6c6e833c581f",
+                "name": "lsp0",
+                "external_ids": {
+                    constants.OVN_SUBNET_POOL_EXT_ADDR_SCOPE4_KEY: "",
+                    constants.OVN_SUBNET_POOL_EXT_ADDR_SCOPE6_KEY: "",
+                },
+            }
+        )
+
+        # address scope is missing, needs update
+        lsp1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                "uuid": "1f4323db-fb58-48e9-adae-6c6e833c581d",
+                "name": "lsp1",
+                "external_ids": {},
+            }
+        )
+
+        # Already has the address scope set, nothing to do
+        lsp2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                "uuid": "1f4323db-fb58-48e9-adae-6c6e833c581a",
+                "name": "lsp2",
+                "external_ids": {
+                    constants.OVN_SUBNET_POOL_EXT_ADDR_SCOPE4_KEY: "fakev4",
+                    constants.OVN_SUBNET_POOL_EXT_ADDR_SCOPE6_KEY: "fakev6",
+                },
+            }
+        )
+
+        # address scope is missing, needs update but port is missing in ovn
+        lsp4 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                "uuid": "1f4323db-fb58-48e9-adae-6c6e833c581c",
+                "name": "lsp4",
+                "external_ids": {},
+            }
+        )
+
+        nb_idl.db_find_rows.return_value.execute.return_value = [
+            lsp0,
+            lsp1,
+            lsp2,
+            lsp4,
+        ]
+
+        self.fake_ovn_client._plugin.get_port.side_effect = [
+            {"network_id": "net0"},
+            n_exc.PortNotFound(port_id="port"),
+        ]
+
+        external_ids = {
+            constants.OVN_SUBNET_POOL_EXT_ADDR_SCOPE4_KEY: "address_scope_v4",
+            constants.OVN_SUBNET_POOL_EXT_ADDR_SCOPE6_KEY: "address_scope_v6",
+        }
+
+        self.fake_ovn_client.get_external_ids_from_port.return_value = (
+            None,
+            external_ids,
+        )
+
+        self.assertRaises(
+            periodics.NeverAgain, self.periodic.check_port_has_address_scope
+        )
+
+        nb_idl.set_lswitch_port.assert_called_once_with(
+            "lsp1", external_ids=external_ids
+        )
+
+    def test_check_for_mcast_flood_reports_broken(self):
+        self.fake_ovn_client.is_mcast_flood_broken = True
         nb_idl = self.fake_ovn_client._nb_idl
         lsp0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': 'lsp0',
@@ -485,14 +564,86 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         self.assertRaises(periodics.NeverAgain,
                           self.periodic.check_for_mcast_flood_reports)
 
-        # Assert only lsp1, lsp5 and lsp6 were called because they are the
-        # only ones meeting the criteria
+        # Assert only lsp1 and lsp5 were called because they are the
+        # only ones meeting to set mcast_flood_reports to 'true'
         expected_calls = [
             mock.call('lsp1', mcast_flood_reports='true'),
-            mock.call('lsp5', mcast_flood_reports='true', mcast_flood='false'),
-            mock.call('lsp6', mcast_flood_reports='true', mcast_flood='false')]
+            mock.call('lsp5', mcast_flood_reports='true')]
 
         nb_idl.lsp_set_options.assert_has_calls(expected_calls)
+        self.assertEqual(2, nb_idl.lsp_set_options.call_count)
+
+        # Assert only lsp6 and lsp7 were called because they are the
+        # only ones meeting to remove mcast_flood
+        expected_calls = [
+            mock.call('Logical_Switch_Port', 'lsp6', 'options',
+                      constants.LSP_OPTIONS_MCAST_FLOOD,
+                      if_exists=True),
+            mock.call('Logical_Switch_Port', 'lsp7', 'options',
+                      constants.LSP_OPTIONS_MCAST_FLOOD,
+                      if_exists=True)]
+
+        nb_idl.db_remove.assert_has_calls(expected_calls)
+        self.assertEqual(2, nb_idl.db_remove.call_count)
+
+    def test_check_for_mcast_flood_reports(self):
+        self.fake_ovn_client.is_mcast_flood_broken = False
+        nb_idl = self.fake_ovn_client._nb_idl
+
+        lsp0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp0',
+                   'options': {
+                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'},
+                   'type': ""})
+        lsp1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp1', 'options': {}, 'type': ""})
+        lsp2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp2',
+                   'options': {
+                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'},
+                   'type': "vtep"})
+        lsp3 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp3', 'options': {},
+                   'type': constants.LSP_TYPE_LOCALPORT})
+        lsp4 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp4', 'options': {},
+                   'type': "router"})
+        lsp5 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp5', 'options': {},
+                   'type': constants.LSP_TYPE_LOCALNET})
+        lsp6 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp6',
+                   'options': {
+                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true',
+                       constants.LSP_OPTIONS_MCAST_FLOOD: 'true'},
+                   'type': constants.LSP_TYPE_LOCALNET})
+        lsp7 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp7',
+                   'options': {
+                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true',
+                       constants.LSP_OPTIONS_MCAST_FLOOD: 'false'},
+                   'type': constants.LSP_TYPE_LOCALNET})
+
+        nb_idl.lsp_list.return_value.execute.return_value = [
+            lsp0, lsp1, lsp2, lsp3, lsp4, lsp5, lsp6, lsp7]
+
+        # Invoke the periodic method, it meant to run only once at startup
+        # so NeverAgain will be raised at the end
+        self.assertRaises(periodics.NeverAgain,
+                          self.periodic.check_for_mcast_flood_reports)
+
+        # Assert only lsp0 and lsp2 were called because they are the
+        # only ones meeting the criteria
+        expected_calls = [
+            mock.call('Logical_Switch_Port', 'lsp0', 'options',
+                      constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS,
+                      if_exists=True),
+            mock.call('Logical_Switch_Port', 'lsp2', 'options',
+                      constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS,
+                      if_exists=True)]
+
+        nb_idl.db_remove.assert_has_calls(expected_calls)
+        self.assertEqual(2, nb_idl.db_remove.call_count)
 
     def test_check_router_mac_binding_options(self):
         nb_idl = self.fake_ovn_client._nb_idl
@@ -545,16 +696,76 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
                                     ('external_ids', external_ids))]
         nb_idl.db_set.assert_has_calls(expected_calls)
 
+    def _test_check_redirect_type_router_gateway_ports(self, networks,
+                                                       redirect_value):
+        self.fake_ovn_client._plugin.get_ports.return_value = [{
+            'device_owner': n_const.DEVICE_OWNER_ROUTER_GW,
+            'id': 'fake-id',
+            'device_id': 'fake-device-id'}]
+        self.fake_ovn_client._get_router_ports.return_value = []
+        self.fake_ovn_client._plugin.get_networks.return_value = networks
+
+        lrp_redirect = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                'options': {constants.LRP_OPTIONS_REDIRECT_TYPE: "bridged"}})
+        lrp_no_redirect = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                'options': {}})
+
+        # set the opossite so that the value is changed
+        if redirect_value:
+            self.fake_ovn_client._nb_idl.get_lrouter_port.return_value = (
+                lrp_no_redirect)
+        else:
+            self.fake_ovn_client._nb_idl.get_lrouter_port.return_value = (
+                lrp_redirect)
+
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.periodic.check_redirect_type_router_gateway_ports)
+
+        if redirect_value:
+            expected_calls = [
+                mock.call.db_set('Logical_Router_Port',
+                                 mock.ANY,
+                                 ('options', {'redirect-type': 'bridged'}))
+            ]
+            self.fake_ovn_client._nb_idl.db_set.assert_has_calls(
+                expected_calls)
+        else:
+            expected_calls = [
+                mock.call.db_remove('Logical_Router_Port', mock.ANY,
+                                    'options', 'redirect-type')
+            ]
+            self.fake_ovn_client._nb_idl.db_remove.assert_has_calls(
+                expected_calls)
+
+    def test_check_redirect_type_router_gateway_ports_enable_redirect(self):
+        cfg.CONF.set_override('enable_distributed_floating_ip', 'True',
+                              group='ovn')
+        networks = [{'network_id': 'foo',
+                     'provider:network_type': n_const.TYPE_VLAN}]
+        self._test_check_redirect_type_router_gateway_ports(networks, True)
+
+    def test_check_redirect_type_router_gateway_ports_disable_redirect(self):
+        cfg.CONF.set_override('enable_distributed_floating_ip', 'True',
+                              group='ovn')
+        networks = [{'network_id': 'foo',
+                     'provider:network_type': n_const.TYPE_GENEVE}]
+        self._test_check_redirect_type_router_gateway_ports(networks, False)
+
     def _test_check_vlan_distributed_ports(self, opt_value=None):
         fake_net0 = {'id': 'net0'}
         fake_net1 = {'id': 'net1'}
-        fake_port0 = {'id': 'port0'}
-        fake_port1 = {'id': 'port1'}
+        fake_port0 = {'id': 'port0', 'device_id': 'device0'}
+        fake_port1 = {'id': 'port1', 'device_id': 'device1'}
 
         self.fake_ovn_client._plugin.get_networks.return_value = [
             fake_net0, fake_net1]
         self.fake_ovn_client._plugin.get_ports.return_value = [
             fake_port0, fake_port1]
+        (self.fake_ovn_client._get_reside_redir_for_gateway_port
+             .return_value) = 'true'
 
         fake_lrp = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={
@@ -568,8 +779,6 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
                           self.periodic.check_vlan_distributed_ports)
 
     def test_check_vlan_distributed_ports_expected_value(self):
-        cfg.CONF.set_override('enable_distributed_floating_ip', 'False',
-                              group='ovn')
         self._test_check_vlan_distributed_ports(opt_value='true')
 
         # If the "reside-on-redirect-chassis" option value do match
@@ -578,8 +787,6 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
             self.fake_ovn_client._nb_idl.db_set.called)
 
     def test_check_vlan_distributed_ports_non_expected_value(self):
-        cfg.CONF.set_override('enable_distributed_floating_ip', 'False',
-                              group='ovn')
         self._test_check_vlan_distributed_ports(opt_value='false')
 
         # If the "reside-on-redirect-chassis" option value does not match
@@ -599,10 +806,13 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
             attrs={'name': 'lsp0', 'type': ''})
         lsp1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': 'lsp1', 'type': constants.LSP_TYPE_VIRTUAL})
+        lsp2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'lsp2_not_present_in_neutron_db', 'type': ''})
         port0 = {'fixed_ips': [{'ip_address': mock.ANY}],
                  'network_id': mock.ANY, 'id': mock.ANY}
-        nb_idl.lsp_list.return_value.execute.return_value = (lsp0, lsp1)
-        self.fake_ovn_client._plugin.get_port.return_value = port0
+        nb_idl.lsp_list.return_value.execute.return_value = (lsp0, lsp1, lsp2)
+        self.fake_ovn_client._plugin.get_port.side_effect = [
+            port0, n_exc.PortNotFound(port_id=mock.ANY)]
 
         self.assertRaises(
             periodics.NeverAgain, self.periodic.update_port_virtual_type)

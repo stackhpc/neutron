@@ -25,6 +25,7 @@ from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.utils import helpers
 from oslo_log import log
+from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron.common.ovn import acl as acl_utils
 from neutron.common.ovn import constants as ovn_const
@@ -99,7 +100,6 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         LOG.debug("Starting OVN-Northbound DB sync process")
 
         ctx = context.get_admin_context()
-
         self.sync_port_groups(ctx)
         self.sync_networks_ports_and_dhcp_opts(ctx)
         self.sync_port_dns_records(ctx)
@@ -298,11 +298,32 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                          'remove': num_acls_to_remove})
 
         if self.mode == SYNC_MODE_REPAIR:
-            with self.ovn_api.transaction(check_error=True) as txn:
-                for acla in neutron_acls:
-                    LOG.warning('ACL found in Neutron but not in '
-                                'OVN DB for port group %s', acla['port_group'])
-                    txn.add(self.ovn_api.pg_acl_add(**acla, may_exist=True))
+            pg_resync_count = 0
+            while True:
+                try:
+                    with self.ovn_api.transaction(check_error=True) as txn:
+                        for acla in neutron_acls:
+                            LOG.warning('ACL found in Neutron but not in '
+                                        'OVN DB for port group %s',
+                                        acla['port_group'])
+                            txn.add(self.ovn_api.pg_acl_add(
+                                **acla, may_exist=True))
+                except idlutils.RowNotFound as row_err:
+                    if row_err.msg.startswith("Cannot find Port_Group"):
+                        if pg_resync_count < 1:
+                            LOG.warning('Port group row was not found during '
+                                        'ACLs sync. Will attempt to sync port '
+                                        'groups one more time. The caught '
+                                        'exception is: %s', row_err)
+                            self.sync_port_groups(ctx)
+                            pg_resync_count += 1
+                            continue
+                        LOG.error('Port group exception during ACL sync '
+                                  'even after one more port group resync. '
+                                  'The caught exception is: %s', row_err)
+                    else:
+                        raise
+                break
 
             with self.ovn_api.transaction(check_error=True) as txn:
                 for aclr in ovn_acls:
@@ -425,6 +446,36 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         self.l3_plugin.port_forwarding.db_sync_delete(
             context, fip_id, txn)
 
+    def _is_router_port_changed(self, db_router_port, lrport_nets):
+        """Check if the router port needs to be updated.
+
+        This method checks for networks and ipv6_ra_configs (if supported)
+        changes on a given router port.
+         """
+        db_lrport_nets = db_router_port['networks']
+        if db_lrport_nets != lrport_nets:
+            return True
+
+        # Check for ipv6_ra_configs changes
+        db_lrport_ra = db_router_port['ipv6_ra_configs']
+        lrport_ra = {}
+        ipv6_ra_supported = self.ovn_api.is_col_present(
+            'Logical_Router_Port', 'ipv6_ra_configs')
+        if ipv6_ra_supported:
+            lrp_name = utils.ovn_lrouter_port_name(db_router_port['id'])
+            try:
+                ovn_lrport = self.ovn_api.lrp_get(
+                    lrp_name).execute(check_error=True)
+            except idlutils.RowNotFound:
+                # If the port is not found in the OVN database the
+                # ovn-db-sync script will recreate this port later
+                # and it will have the latest information. No need
+                # to update it.
+                return False
+            lrport_ra = ovn_lrport.ipv6_ra_configs
+
+        return db_lrport_ra != lrport_ra
+
     def sync_routers_and_rports(self, ctx):
         """Sync Routers between neutron and NB.
 
@@ -504,6 +555,12 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
              constants.DEVICE_OWNER_HA_REPLICATED_INT])
         for interface in interfaces:
             db_router_ports[interface['id']] = interface
+            networks, ipv6_ra_configs = (
+                self._ovn_client._get_nets_and_ipv6_ra_confs_for_router_port(
+                    ctx, interface))
+            db_router_ports[interface['id']]['networks'] = networks
+            db_router_ports[interface['id']][
+                'ipv6_ra_configs'] = ipv6_ra_configs
 
         lrouters = self.ovn_api.get_all_logical_routers_with_rports()
 
@@ -520,11 +577,9 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
             if lrouter['name'] in db_routers:
                 for lrport, lrport_nets in lrouter['ports'].items():
                     if lrport in db_router_ports:
-                        # We dont have to check for the networks and
-                        # ipv6_ra_configs values. Lets add it to the
-                        # update_lrport_list. If they are in sync, then
-                        # update_router_port will be a no-op.
-                        update_lrport_list.append(db_router_ports[lrport])
+                        if self._is_router_port_changed(
+                                db_router_ports[lrport], lrport_nets):
+                            update_lrport_list.append(db_router_ports[lrport])
                         del db_router_ports[lrport]
                     else:
                         del_lrouter_ports_list.append(
@@ -769,7 +824,7 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         LOG.debug('OVN-NB Sync DHCP options for Neutron subnets started')
 
         db_subnets = {}
-        filters = {'enable_dhcp': [1]}
+        filters = {'enable_dhcp': [True]}
         for subnet in self.core_plugin.get_subnets(ctx, filters=filters):
             if (subnet['ip_version'] == constants.IP_VERSION_6 and
                     subnet.get('ipv6_address_mode') == constants.IPV6_SLAAC):
@@ -951,7 +1006,7 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                 try:
                     # Make sure that this port has an IP address in all the
                     # subnets
-                    self._ovn_client.update_metadata_port(ctx, net['id'])
+                    self._ovn_client.update_metadata_port(ctx, net)
                 except n_exc.IpAddressGenerationFailure:
                     LOG.error('Could not allocate IP addresses for '
                               'metadata port in network %s', net['id'])
@@ -1027,6 +1082,10 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                     self._ovn_client.create_network(ctx, network)
                 except RuntimeError:
                     LOG.warning("Create network in OVN NB failed for "
+                                "network %s", network['id'])
+                except n_exc.IpAddressGenerationFailure:
+                    LOG.warning("No more IP addresses available during "
+                                "implicit port creation while creating "
                                 "network %s", network['id'])
 
         self._sync_metadata_ports(ctx, db_ports)

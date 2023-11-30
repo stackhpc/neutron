@@ -366,7 +366,7 @@ class QoSPlugin(qos.QoSPluginBase):
     def _get_ports_with_policy(self, context, policy):
         networks_ids = policy.get_bound_networks()
         ports_with_net_policy = ports_object.Port.get_objects(
-            context, network_id=networks_ids)
+            context, network_id=networks_ids) if networks_ids else []
 
         # Filter only this ports which don't have overwritten policy
         ports_with_net_policy = [
@@ -376,7 +376,7 @@ class QoSPlugin(qos.QoSPluginBase):
 
         ports_ids = policy.get_bound_ports()
         ports_with_policy = ports_object.Port.get_objects(
-            context, id=ports_ids)
+            context, id=ports_ids) if ports_ids else []
         return list(set(ports_with_policy + ports_with_net_policy))
 
     def _validate_create_port_callback(self, resource, event, trigger,
@@ -651,9 +651,9 @@ class QoSPlugin(qos.QoSPluginBase):
         network_id = payload.resource_id
         network = network_object.Network.get_object(context, id=network_id)
 
-        policy_id = network.qos_policy_id
-        if policy_id is None:
+        if not network or not getattr(network, 'qos_policy_id', None):
             return
+        policy_id = network.qos_policy_id
 
         policy = policy_object.QosPolicy.get_object(
             context.elevated(), id=policy_id)

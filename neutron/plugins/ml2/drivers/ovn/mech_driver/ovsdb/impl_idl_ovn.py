@@ -161,6 +161,10 @@ class Backend(ovs_idl.Backend):
         return cls._schema_helper
 
     @classmethod
+    def get_schema_version(cls):
+        return cls.schema_helper.schema_json['version']
+
+    @classmethod
     def schema_has_table(cls, table_name):
         return table_name in cls.schema_helper.schema_json['tables']
 
@@ -283,8 +287,9 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
         return cmd.AddLSwitchPortCommand(self, lport_name, lswitch_name,
                                          may_exist, **columns)
 
-    def set_lswitch_port(self, lport_name, if_exists=True, **columns):
-        return cmd.SetLSwitchPortCommand(self, lport_name,
+    def set_lswitch_port(self, lport_name, external_ids_update=None,
+                         if_exists=True, **columns):
+        return cmd.SetLSwitchPortCommand(self, lport_name, external_ids_update,
                                          if_exists, **columns)
 
     def delete_lswitch_port(self, lport_name=None, lswitch_name=None,
@@ -810,6 +815,10 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
     def update_lb_external_ids(self, lb_name, values, if_exists=True):
         return cmd.UpdateLbExternalIds(self, lb_name, values, if_exists)
 
+    def db_set(self, table, record, *col_values, if_exists=True, **columns):
+        return cmd.DbSetCommand(self, table, record, *col_values,
+                                if_exists=if_exists, **columns)
+
 
 class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
     def __init__(self, connection):
@@ -830,7 +839,8 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
         return cls(conn)
 
     def _get_chassis_physnets(self, chassis):
-        bridge_mappings = chassis.external_ids.get('ovn-bridge-mappings', '')
+        other_config = utils.get_ovn_chassis_other_config(chassis)
+        bridge_mappings = other_config.get('ovn-bridge-mappings', '')
         mapping_dict = helpers.parse_mappings(bridge_mappings.split(','))
         return list(mapping_dict.keys())
 
@@ -848,7 +858,8 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
         return [ch.name if name_only else ch
                 for ch in self.chassis_list().execute(check_error=True)
                 if ovn_const.CMS_OPT_CHASSIS_AS_GW in
-                ch.external_ids.get(ovn_const.OVN_CMS_OPTIONS, '').split(',')]
+                utils.get_ovn_chassis_other_config(ch).get(
+                    ovn_const.OVN_CMS_OPTIONS, '').split(',')]
 
     def get_chassis_and_physnets(self):
         chassis_info_dict = {}
@@ -867,7 +878,7 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
             if ('{}={}'
                 .format(ovn_const.CMS_OPT_CARD_SERIAL_NUMBER,
                         card_serial_number)
-                    in ch.external_ids.get(
+                    in utils.get_ovn_chassis_other_config(ch).get(
                         ovn_const.OVN_CMS_OPTIONS, '').split(',')):
                 return ch
         msg = _('Chassis with %s %s %s does not exist'
@@ -927,3 +938,7 @@ class OvsdbSbOvnIdl(sb_impl_idl.OvnSbApiIdlImpl, Backend):
         # and just start using chassis objects so db_find_rows could be used
         rows = self.db_list_rows('Port_Binding').execute(check_error=True)
         return [r for r in rows if r.chassis and r.chassis[0].name == chassis]
+
+    def db_set(self, table, record, *col_values, if_exists=True, **columns):
+        return cmd.DbSetCommand(self, table, record, *col_values,
+                                if_exists=if_exists, **columns)

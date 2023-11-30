@@ -21,6 +21,7 @@ from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import l3
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.api.definitions import provider_net
 from neutron_lib.api import validators
 from neutron_lib import constants as const
 from neutron_lib import context as n_context
@@ -618,6 +619,10 @@ def is_gateway_chassis_invalid(chassis_name, gw_chassis,
 
 
 def is_provider_network(network):
+    return network.get(provider_net.PHYSICAL_NETWORK, False)
+
+
+def is_external_network(network):
     return network.get(external_net.EXTERNAL, False)
 
 
@@ -633,8 +638,8 @@ def compute_address_pairs_diff(ovn_port, neutron_port):
 
 def get_ovn_cms_options(chassis):
     """Return the list of CMS options in a Chassis."""
-    return [opt.strip() for opt in chassis.external_ids.get(
-            constants.OVN_CMS_OPTIONS, '').split(',')]
+    return [opt.strip() for opt in get_ovn_chassis_other_config(chassis).get(
+        constants.OVN_CMS_OPTIONS, '').split(',')]
 
 
 def is_gateway_chassis(chassis):
@@ -823,3 +828,18 @@ def create_neutron_pg_drop():
         }]
 
     OvsdbClientTransactCommand.run(command)
+
+
+def get_ovn_chassis_other_config(chassis):
+    # NOTE(ralonsoh): LP#1990229 to be removed when min OVN version is 22.09
+    try:
+        return chassis.other_config
+    except AttributeError:
+        return chassis.external_ids
+
+
+def get_requested_chassis(requested_chassis):
+    """Returns a list with the items in the LSP.options:requested-chassis"""
+    if isinstance(requested_chassis, str):
+        return requested_chassis.split(',')
+    return []

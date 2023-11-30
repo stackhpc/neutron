@@ -106,9 +106,19 @@ class PortBinding(PortBindingBase):
     @classmethod
     @db_api.CONTEXT_READER
     def get_duplicated_port_bindings(cls, context):
-        return context.session.query(
-            cls.db_model).group_by(
-            cls.db_model.port_id).having(sqlalchemy.func.count() > 1).all()
+        # This query will return the port_id of all "ml2_port_bindings"
+        # registers that appears more than once (duplicated
+        # "ml2_port_bindings" registers).
+        # At the same time, this query returns only the "ml2_port_bindings"
+        # that have status=INACTIVE.
+        select = (
+            sqlalchemy.select(cls.db_model.port_id).
+            select_from(cls.db_model).
+            group_by(cls.db_model.port_id).
+            having(sqlalchemy.func.count(cls.db_model.port_id) > 1))
+        _filter = and_(cls.db_model.port_id.in_(select),
+                       cls.db_model.status == constants.INACTIVE)
+        return context.session.query(cls.db_model).filter(_filter).all()
 
 
 @base.NeutronObjectRegistry.register
@@ -684,13 +694,12 @@ class Port(base.NeutronDbObject):
         return [cls._load_object(context, db_obj) for db_obj in query.all()]
 
     @classmethod
-    def get_ports_by_vnic_type_and_host(
-            cls, context, vnic_type, host):
+    def get_ports_by_vnic_type_and_host(cls, context, vnic_type, host=None):
         query = context.session.query(models_v2.Port).join(
             ml2_models.PortBinding)
-        query = query.filter(
-            ml2_models.PortBinding.vnic_type == vnic_type,
-            ml2_models.PortBinding.host == host)
+        query = query.filter(ml2_models.PortBinding.vnic_type == vnic_type)
+        if host:
+            query = query.filter(ml2_models.PortBinding.host == host)
         return [cls._load_object(context, db_obj) for db_obj in query.all()]
 
     @classmethod

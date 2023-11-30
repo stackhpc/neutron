@@ -40,6 +40,7 @@ from oslo_config import cfg
 from oslo_db import exception as os_db_exc
 from oslo_log import log
 from oslo_utils import timeutils
+from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron._i18n import _
 from neutron.common.ovn import acl as ovn_acl
@@ -179,7 +180,8 @@ class OVNMechanismDriver(api.MechanismDriver):
     def get_supported_vif_types(self):
         vif_types = set()
         for ch in self.sb_ovn.chassis_list().execute(check_error=True):
-            dp_type = ch.external_ids.get('datapath-type', '')
+            other_config = ovn_utils.get_ovn_chassis_other_config(ch)
+            dp_type = other_config.get('datapath-type', '')
             if dp_type == ovn_const.CHASSIS_DATAPATH_NETDEV:
                 vif_types.add(portbindings.VIF_TYPE_VHOST_USER)
             else:
@@ -268,15 +270,17 @@ class OVNMechanismDriver(api.MechanismDriver):
                                resources.SECURITY_GROUP_RULE,
                                events.BEFORE_DELETE)
 
-    def _clean_hash_ring(self, *args, **kwargs):
+    def _remove_node_from_hash_ring(self, *args, **kwargs):
+        # The node_uuid attribute will be empty for worker types
+        # that are not added to the Hash Ring and can be skipped
+        if self.node_uuid is None:
+            return
         admin_context = n_context.get_admin_context()
-        ovn_hash_ring_db.remove_nodes_from_host(admin_context,
-                                                self.hash_ring_group)
+        ovn_hash_ring_db.remove_node_by_uuid(
+            admin_context, self.node_uuid)
 
     def pre_fork_initialize(self, resource, event, trigger, payload=None):
         """Pre-initialize the ML2/OVN driver."""
-        atexit.register(self._clean_hash_ring)
-        signal.signal(signal.SIGTERM, self._clean_hash_ring)
         ovn_utils.create_neutron_pg_drop()
 
     @staticmethod
@@ -294,9 +298,15 @@ class OVNMechanismDriver(api.MechanismDriver):
         thread for this host. Subsequently workers just need to register
         themselves to the hash ring.
         """
+        # Attempt to remove the node from the ring when the worker stops
+        atexit.register(self._remove_node_from_hash_ring)
+        signal.signal(signal.SIGTERM, self._remove_node_from_hash_ring)
+
         admin_context = n_context.get_admin_context()
         if not self._hash_ring_probe_event.is_set():
-            self._clean_hash_ring()
+            # Clear existing entries
+            ovn_hash_ring_db.remove_nodes_from_host(admin_context,
+                                                    self.hash_ring_group)
             self.node_uuid = ovn_hash_ring_db.add_node(admin_context,
                                                        self.hash_ring_group)
             self._hash_ring_thread = maintenance.MaintenanceThread()
@@ -961,8 +971,9 @@ class OVNMechanismDriver(api.MechanismDriver):
                                       'agent': agent})
             return
         chassis = agent.chassis
-        datapath_type = chassis.external_ids.get('datapath-type', '')
-        iface_types = chassis.external_ids.get('iface-types', '')
+        other_config = ovn_utils.get_ovn_chassis_other_config(chassis)
+        datapath_type = other_config.get('datapath-type', '')
+        iface_types = other_config.get('iface-types', '')
         iface_types = iface_types.split(',') if iface_types else []
         chassis_physnets = self.sb_ovn._get_chassis_physnets(chassis)
         for segment_to_bind in context.segments_to_bind:
@@ -1058,14 +1069,15 @@ class OVNMechanismDriver(api.MechanismDriver):
                                {ovn_const.OVN_FIP_EXT_MAC_KEY:
                                 nat['external_mac']})).execute()
 
-        if up and ovn_conf.is_ovn_distributed_floating_ip():
-            mac = nat['external_ids'][ovn_const.OVN_FIP_EXT_MAC_KEY]
-            if nat['external_mac'] != mac:
-                LOG.debug("Setting external_mac of port %s to %s",
-                          port_id, mac)
-                self.nb_ovn.db_set(
-                    'NAT', nat['_uuid'], ('external_mac', mac)).execute(
-                    check_error=True)
+        if ovn_conf.is_ovn_distributed_floating_ip():
+            if up:
+                mac = nat['external_ids'].get(ovn_const.OVN_FIP_EXT_MAC_KEY)
+                if mac and nat['external_mac'] != mac:
+                    LOG.debug("Setting external_mac of port %s to %s",
+                              port_id, mac)
+                    self.nb_ovn.db_set(
+                        'NAT', nat['_uuid'], ('external_mac', mac)).execute(
+                            check_error=True)
         else:
             if nat['external_mac']:
                 LOG.debug("Clearing up external_mac of port %s", port_id)
@@ -1115,6 +1127,8 @@ class OVNMechanismDriver(api.MechanismDriver):
                                                 const.PORT_STATUS_ACTIVE)
             elif self._should_notify_nova(db_port):
                 self._plugin.nova_notifier.notify_port_active_direct(db_port)
+
+            self._ovn_client.update_lsp_host_info(admin_context, db_port)
         except (os_db_exc.DBReferenceError, n_exc.PortNotFound):
             LOG.debug('Port not found during OVN status up report: %s',
                       port_id)
@@ -1143,6 +1157,9 @@ class OVNMechanismDriver(api.MechanismDriver):
                     None)
                 self._plugin.nova_notifier.send_port_status(
                     None, None, db_port)
+
+            self._ovn_client.update_lsp_host_info(
+                admin_context, db_port, up=False)
         except (os_db_exc.DBReferenceError, n_exc.PortNotFound):
             LOG.debug("Port not found during OVN status down report: %s",
                       port_id)
@@ -1320,6 +1337,14 @@ def delete_agent(self, context, id, _driver=None):
     chassis_name = agent['configurations']['chassis_name']
     _driver.sb_ovn.chassis_del(chassis_name, if_exists=True).execute(
         check_error=True)
+    if _driver.sb_ovn.is_table_present('Chassis_Private'):
+        # TODO(ralonsoh): implement the corresponding chassis_private
+        # commands in ovsdbapp.
+        try:
+            _driver.sb_ovn.db_destroy('Chassis_Private', chassis_name).execute(
+                check_error=True)
+        except idlutils.RowNotFound:
+            pass
     # Send a specific event that all API workers can get to delete the agent
     # from their caches. Ideally we could send a single transaction that both
     # created and deleted the key, but alas python-ovs is too "smart"

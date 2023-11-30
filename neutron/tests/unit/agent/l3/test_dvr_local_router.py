@@ -287,6 +287,15 @@ class TestDvrRouterOperations(base.BaseTestCase):
         self.assertEqual(sorted(ret, key=lambda ret: ret[0]),
                          fip_rule_prio_list)
 
+    @mock.patch.object(router_info.RouterInfo, 'initialize')
+    def test_initialize_dvr_local_router(self, super_initialize):
+        ri = self._create_router()
+        self.mock_load_fip.assert_not_called()
+
+        ri.initialize(self.process_monitor)
+        super_initialize.assert_called_once_with(self.process_monitor)
+        self.mock_load_fip.assert_called_once()
+
     def test_get_floating_ips_dvr(self):
         router = mock.MagicMock()
         router.get.return_value = [{'host': HOSTNAME},
@@ -307,6 +316,7 @@ class TestDvrRouterOperations(base.BaseTestCase):
         self.assertFalse(ri.floating_forward_rules(fip))
 
     def test_floating_forward_rules(self):
+        self.utils_exec.return_value = "iptables v1.6.2 (legacy)"
         router = mock.MagicMock()
         router.get.return_value = [{'host': HOSTNAME},
                                    {'host': mock.sentinel.otherhost}]
@@ -983,7 +993,6 @@ class TestDvrRouterOperations(base.BaseTestCase):
         self.mock_driver.unplug.reset_mock()
         self._set_ri_kwargs(agent, router['id'], router)
         ri = dvr_edge_ha_rtr.DvrEdgeHaRouter(HOSTNAME, **self.ri_kwargs)
-        ri._ha_state_path = self.get_temp_file_path('router_ha_state')
         ri._create_snat_namespace = mock.Mock()
         ri._plug_external_gateway = mock.Mock()
         ri.initialize(mock.Mock())
