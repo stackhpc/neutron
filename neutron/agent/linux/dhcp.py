@@ -1144,7 +1144,8 @@ class Dnsmasq(DhcpLocalProcess):
         m_ports = [port for port in self.network.ports if
                    self._is_ovn_metadata_port(port, self.network.id)]
         if m_ports:
-            for fixed_ip in m_ports[0].fixed_ips:
+            port = self.device_manager.plugin.get_dhcp_port(m_ports[0].id)
+            for fixed_ip in port.fixed_ips:
                 if fixed_ip.subnet_id == subnet.id:
                     return fixed_ip.ip_address
 
@@ -1220,7 +1221,7 @@ class Dnsmasq(DhcpLocalProcess):
                     if subnet_dhcp_ip:
                         metadata_route_ip = subnet_dhcp_ip
 
-                if not isolated_subnets[subnet.id] and gateway:
+                elif not isolated_subnets[subnet.id] and gateway:
                     metadata_route_ip = gateway
 
                 if metadata_route_ip:
