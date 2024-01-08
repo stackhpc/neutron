@@ -269,7 +269,13 @@ class MetadataDriver(object):
         pm = cls._get_metadata_proxy_process_manager(uuid, conf,
                                                      ns_name=ns_name,
                                                      callback=callback)
-        pm.enable()
+        try:
+            pm.enable()
+        except exceptions.ProcessExecutionError as exec_err:
+            LOG.error("Encountered process execution error %(err)s while "
+                      "starting process in namespace %(ns)s",
+                      {"err": exec_err, "ns": ns_name})
+            return
         monitor.register(uuid, METADATA_SERVICE_NAME, pm)
         cls.monitors[router_id] = pm
 
@@ -288,9 +294,8 @@ class MetadataDriver(object):
                         pm.pid, SIGTERM_TIMEOUT)
             pm.disable(sig=str(int(signal.SIGKILL)))
 
-        # Delete metadata proxy config and PID files.
+        # Delete metadata proxy config.
         HaproxyConfigurator.cleanup_config_file(uuid, cfg.CONF.state_path)
-        linux_utils.delete_if_exists(pm.get_pid_file_name(), run_as_root=True)
 
         cls.monitors.pop(uuid, None)
 

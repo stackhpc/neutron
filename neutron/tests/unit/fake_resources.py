@@ -181,6 +181,7 @@ class FakeOvsdbSbOvnIdl(object):
         self._get_chassis_physnets.return_value = ['fake-physnet']
         self.get_chassis_and_physnets = mock.Mock()
         self.get_gateway_chassis_from_cms_options = mock.Mock()
+        self.get_extport_chassis_from_cms_options = mock.Mock(return_value=[])
         self.is_col_present = mock.Mock()
         self.is_col_present.return_value = False
         self.db_set = mock.Mock()
@@ -190,6 +191,7 @@ class FakeOvsdbSbOvnIdl(object):
         self.is_table_present.return_value = False
         self.get_chassis_by_card_serial_from_cms_options = mock.Mock()
         self.get_schema_version = mock.Mock(return_value='3.6.0')
+        self.get_chassis_host_for_port = mock.Mock(return_value=set())
 
 
 class FakeOvsdbTransaction(object):
@@ -767,7 +769,7 @@ class FakeOVNPort(object):
 
         # Overwrite default attributes.
         port_attrs.update(attrs)
-        return type('Logical_Switch_Port', (object, ), port_attrs)
+        return type('Logical_Switch_Port', (object, ), port_attrs)()
 
     @staticmethod
     def from_neutron_port(port):
@@ -810,7 +812,7 @@ class FakeOVNRouter(object):
 
         # Overwrite default attributes.
         router_attrs.update(attrs)
-        return type('Logical_Router', (object, ), router_attrs)
+        return type('Logical_Router', (object, ), router_attrs)()
 
     @staticmethod
     def from_neutron_router(router):
@@ -856,13 +858,16 @@ class FakeChassis(object):
     def create(attrs=None, az_list=None, chassis_as_gw=False,
                bridge_mappings=None, rp_bandwidths=None,
                rp_inventory_defaults=None, rp_hypervisors=None,
-               card_serial_number=None):
+               card_serial_number=None, chassis_as_extport=False):
         cms_opts = []
         if az_list:
             cms_opts.append("%s=%s" % (ovn_const.CMS_OPT_AVAILABILITY_ZONES,
                                        ':'.join(az_list)))
         if chassis_as_gw:
             cms_opts.append(ovn_const.CMS_OPT_CHASSIS_AS_GW)
+
+        if chassis_as_extport:
+            cms_opts.append(ovn_const.CMS_OPT_CHASSIS_AS_EXTPORT_HOST)
 
         if rp_bandwidths:
             cms_opts.append('%s=%s' % (n_const.RP_BANDWIDTHS,
@@ -910,4 +915,4 @@ class FakeChassis(object):
 
         # Overwrite default attributes.
         chassis_attrs.update(attrs or {})
-        return type('Chassis', (object, ), chassis_attrs)
+        return type('Chassis', (object, ), chassis_attrs)()

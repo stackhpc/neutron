@@ -18,6 +18,7 @@ import signal
 from unittest import mock
 
 from neutron_lib import constants
+from neutron_lib import exceptions as lib_exceptions
 from neutron_lib import fixture as lib_fixtures
 from oslo_config import cfg
 from oslo_utils import uuidutils
@@ -93,7 +94,7 @@ class TestMetadataDriverProcess(base.BaseTestCase):
         mock.patch('neutron.agent.l3.ha.AgentMixin'
                    '._init_ha_conf_path').start()
         self.delete_if_exists = mock.patch.object(linux_utils,
-                                                  'delete_if_exists')
+                                                  'delete_if_exists').start()
         self.mock_get_process = mock.patch.object(
             metadata_driver.MetadataDriver,
             '_get_metadata_proxy_process_manager')
@@ -239,11 +240,34 @@ class TestMetadataDriverProcess(base.BaseTestCase):
                 router_id, metadata_driver.METADATA_SERVICE_NAME,
                 mock.ANY)
 
+            self.delete_if_exists.assert_called_once_with(
+                mock.ANY, run_as_root=True)
+
     def test_spawn_metadata_proxy(self):
         self._test_spawn_metadata_proxy()
 
     def test_spawn_metadata_proxy_dad_failed(self):
         self._test_spawn_metadata_proxy(dad_failed=True)
+
+    @mock.patch.object(metadata_driver.LOG, 'error')
+    def test_spawn_metadata_proxy_handles_process_exception(self, error_log):
+        process_instance = mock.Mock(active=False)
+        process_instance.enable.side_effect = (
+            lib_exceptions.ProcessExecutionError('Something happened', -1))
+        with mock.patch.object(metadata_driver.MetadataDriver,
+                               '_get_metadata_proxy_process_manager',
+                               return_value=process_instance):
+            process_monitor = mock.Mock()
+            network_id = 123456
+            metadata_driver.MetadataDriver.spawn_monitored_metadata_proxy(
+                process_monitor,
+                'dummy_namespace',
+                self.METADATA_PORT,
+                cfg.CONF,
+                network_id=network_id)
+        error_log.assert_called_once()
+        process_monitor.register.assert_not_called()
+        self.assertNotIn(network_id, metadata_driver.MetadataDriver.monitors)
 
     def test_create_config_file_wrong_user(self):
         with mock.patch('pwd.getpwnam', side_effect=KeyError):
@@ -270,9 +294,7 @@ class TestMetadataDriverProcess(base.BaseTestCase):
                               config.create_config_file)
 
     def test_destroy_monitored_metadata_proxy(self):
-        delete_if_exists = self.delete_if_exists.start()
-        mproxy_process = mock.Mock(
-            active=False, get_pid_file_name=mock.Mock(return_value='pid_file'))
+        mproxy_process = mock.Mock(active=False)
         mock_get_process = self.mock_get_process.start()
         mock_get_process.return_value = mproxy_process
         driver = metadata_driver.MetadataDriver(FakeL3NATAgent())
@@ -280,13 +302,11 @@ class TestMetadataDriverProcess(base.BaseTestCase):
                                                 'ns_name')
         mproxy_process.disable.assert_called_once_with(
             sig=str(int(signal.SIGTERM)))
-        delete_if_exists.assert_has_calls([
-            mock.call('pid_file', run_as_root=True)])
+        self.delete_if_exists.assert_called_once_with(
+            mock.ANY, run_as_root=True)
 
     def test_destroy_monitored_metadata_proxy_force(self):
-        delete_if_exists = self.delete_if_exists.start()
-        mproxy_process = mock.Mock(
-            active=True, get_pid_file_name=mock.Mock(return_value='pid_file'))
+        mproxy_process = mock.Mock(active=True)
         mock_get_process = self.mock_get_process.start()
         mock_get_process.return_value = mproxy_process
         driver = metadata_driver.MetadataDriver(FakeL3NATAgent())
@@ -296,5 +316,5 @@ class TestMetadataDriverProcess(base.BaseTestCase):
         mproxy_process.disable.assert_has_calls([
             mock.call(sig=str(int(signal.SIGTERM))),
             mock.call(sig=str(int(signal.SIGKILL)))])
-        delete_if_exists.assert_has_calls([
-            mock.call('pid_file', run_as_root=True)])
+        self.delete_if_exists.assert_called_once_with(
+            mock.ANY, run_as_root=True)

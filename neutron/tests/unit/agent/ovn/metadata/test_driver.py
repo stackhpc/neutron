@@ -16,11 +16,13 @@
 import os
 from unittest import mock
 
+from neutron_lib import exceptions as lib_exceptions
 from neutron_lib import fixture as lib_fixtures
 from oslo_config import cfg
 from oslo_utils import uuidutils
 
 from neutron.agent.linux import external_process as ep
+from neutron.agent.linux import utils as linux_utils
 from neutron.agent.ovn.metadata import agent as metadata_agent
 from neutron.agent.ovn.metadata import driver as metadata_driver
 from neutron.common import metadata as comm_meta
@@ -45,6 +47,8 @@ class TestMetadataDriverProcess(base.BaseTestCase):
     def setUp(self):
         super(TestMetadataDriverProcess, self).setUp()
         mock.patch('eventlet.spawn').start()
+        self.delete_if_exists = mock.patch.object(linux_utils,
+                                                  'delete_if_exists').start()
 
         ovn_meta_conf.register_meta_conf_opts(meta_conf.SHARED_OPTS, cfg.CONF)
         ovn_conf.register_opts()
@@ -116,6 +120,32 @@ class TestMetadataDriverProcess(base.BaseTestCase):
                 mock.call().netns.execute(netns_execute_args, addl_env=env,
                                           run_as_root=True)
             ])
+
+            self.delete_if_exists.assert_called_once_with(
+                mock.ANY, run_as_root=True)
+
+    @mock.patch.object(metadata_driver.LOG, 'error')
+    def test_spawn_metadata_proxy_handles_process_exception(self, error_log):
+        process_instance = mock.Mock(active=False)
+        process_instance.enable.side_effect = (
+            lib_exceptions.ProcessExecutionError('Something happened', -1))
+
+        with mock.patch.object(metadata_driver.MetadataDriver,
+                               '_get_metadata_proxy_process_manager',
+                               return_value=process_instance):
+            process_monitor = mock.Mock()
+            network_id = 123456
+
+            metadata_driver.MetadataDriver.spawn_monitored_metadata_proxy(
+                process_monitor,
+                'dummy_namespace',
+                self.METADATA_PORT,
+                cfg.CONF,
+                network_id=network_id)
+
+        error_log.assert_called_once()
+        process_monitor.register.assert_not_called()
+        self.assertNotIn(network_id, metadata_driver.MetadataDriver.monitors)
 
     def test_create_config_file_wrong_user(self):
         with mock.patch('pwd.getpwnam', side_effect=KeyError):
