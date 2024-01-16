@@ -356,7 +356,7 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
         namespace_obj = ip_wrapper.ensure_namespace(namespace)
         for i in range(9):
             try:
-                namespace_obj.add_device_to_namespace(device)
+                namespace_obj.add_device_to_namespace(device, is_ovs_port=True)
                 break
             except ip_lib.NetworkInterfaceNotFound:
                 # NOTE(slaweq): if the exception was NetworkInterfaceNotFound
@@ -365,6 +365,11 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
                 LOG.warning("Failed to set interface %s into namespace %s. "
                             "Interface not found, attempt: %s, retrying.",
                             device, namespace, i + 1)
+                # NOTE(slaweq) In such case it's required to reset device's
+                # namespace as it was already set to the "namespace"
+                # and after retry neutron will look for it in that namespace
+                # which is wrong
+                device.namespace = None
                 time.sleep(1)
             except utils.WaitTimeout:
                 # NOTE(slaweq): if the exception was WaitTimeout then it means

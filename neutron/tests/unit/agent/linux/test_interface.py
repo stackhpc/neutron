@@ -468,11 +468,11 @@ class TestOVSInterfaceDriver(TestBase):
                 expected.extend(
                     [mock.call().ensure_namespace(namespace),
                      mock.call().ensure_namespace().add_device_to_namespace(
-                         mock.ANY),
+                         mock.ANY, is_ovs_port=True),
                      mock.call().ensure_namespace().add_device_to_namespace(
-                         mock.ANY),
+                         mock.ANY, is_ovs_port=True),
                      mock.call().ensure_namespace().add_device_to_namespace(
-                         mock.ANY)])
+                         mock.ANY, is_ovs_port=True)])
             expected.extend([
                 mock.call(namespace=namespace),
                 mock.call().device('tap0'),
@@ -517,6 +517,20 @@ class TestOVSInterfaceDriver(TestBase):
             ovs.unplug('tap0')
             ovs_br.assert_has_calls([mock.call('br-int'),
                                      mock.call().delete_port('tap0')])
+
+    def test__add_device_to_namespace_retries(self):
+        ovs = interface.OVSInterfaceDriver(self.conf)
+        namespace_obj = self.ip.return_value.ensure_namespace.return_value
+        self.ip.ensure_namespace.return_value = namespace_obj
+        namespace_obj.add_device_to_namespace.side_effect = (
+            ip_lib.NetworkInterfaceNotFound)
+        device = mock.MagicMock()
+        self.assertRaises(
+            ip_lib.NetworkInterfaceNotFound,
+            ovs._add_device_to_namespace,
+            self.ip, device, "test-ns")
+        self.assertEqual(10, namespace_obj.add_device_to_namespace.call_count)
+        self.assertIsNone(device.namespace)
 
 
 class TestOVSInterfaceDriverWithVeth(TestOVSInterfaceDriver):
