@@ -73,8 +73,11 @@ class DhcpOpt(object):
 # A base class where class attributes can also be accessed by treating
 # an instance as a dict.
 class Dictable(object):
-    def __getitem__(self, k):
-        return self.__class__.__dict__.get(k)
+    def __getitem__(self, k, default_value=None):
+        return self.__dict__.get(k, default_value)
+
+    def get(self, k, default_value=None):
+        return self.__getitem__(k, default_value)
 
 
 class FakeDhcpPort(object):
@@ -90,7 +93,7 @@ class FakeDhcpPort(object):
         self.extra_dhcp_opts = []
 
 
-class FakeOvnMetadataPort(object):
+class FakeOvnMetadataPort(Dictable):
     def __init__(self):
         self.id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa'
         self.admin_state_up = True
@@ -1090,6 +1093,12 @@ class FakeV6NetworkStatefulDHCPSameSubnetFixedIps(object):
         self.namespace = 'qdhcp-ns'
 
 
+class FakeSegment(object):
+    def __init__(self):
+        self.id = 'iiiiiiii-iiii-iiii-iiii-iiiiiiiiiiii'
+        self.segmentation_id = 1212
+
+
 class LocalChild(dhcp.DhcpLocalProcess):
     PORTS = {4: [4], 6: [6]}
 
@@ -1288,6 +1297,26 @@ class TestDhcpLocalProcess(TestBase):
                 self.rmtree.assert_called_once()
 
             self._assert_disabled(lp)
+
+        delete_ns.assert_called_with('qdhcp-ns')
+
+    def test_disable_with_segment(self):
+        attrs_to_mock = {'active': mock.DEFAULT}
+
+        self.external_process().uuid = "1212/net-id"
+
+        with mock.patch.multiple(LocalChild, **attrs_to_mock) as mocks:
+            mocks['active'].__get__ = mock.Mock(return_value=False)
+            lp = LocalChild(
+                self.conf, FakeDualNetwork(), segment=FakeSegment())
+            with mock.patch('neutron.agent.linux.ip_lib.'
+                            'delete_network_namespace') as delete_ns:
+                lp.disable()
+                self.rmtree.assert_called_once()
+
+            lp.process_monitor.unregister.assert_called_once_with(
+                '1212/net-id', 'dnsmasq')
+            self.assertTrue(self.external_process().disable.called)
 
         delete_ns.assert_called_with('qdhcp-ns')
 
@@ -3205,8 +3234,8 @@ class TestDnsmasq(TestBase):
     def test__generate_opts_per_subnet_with_metadata_port(self):
         config = {'enable_isolated_metadata': False,
                   'force_metadata': False}
-        self.mock_mgr.return_value.plugin.get_dhcp_port.return_value = \
-            FakeOvnMetadataPort()
+        self.mock_mgr.return_value.plugin.get_ports.return_value = \
+            [FakeOvnMetadataPort()]
         self._test__generate_opts_per_subnet_helper(config, True,
             network_class=FakeNetworkDhcpandOvnMetadataPort)
 

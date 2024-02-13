@@ -17,10 +17,13 @@ from unittest import mock
 
 import netaddr
 
+from neutron_lib.api.definitions import portbindings
+from neutron_lib import constants
 from neutron_lib.db import api as db_api
 from oslo_utils import uuidutils
 
 from neutron.db import l3_attrs_db
+from neutron.objects import ports
 from neutron.objects.qos import binding as qos_binding
 from neutron.objects.qos import policy
 from neutron.objects import router
@@ -297,18 +300,20 @@ class FloatingIPDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
                          obj_v1_1['versioned_object.data'])
 
     def test_get_scoped_floating_ips(self):
-        def compare_results(router_ids, original_fips):
-            self.assertCountEqual(
-                original_fips,
-                [
-                    fip[0].id
-                    for fip in router.FloatingIP.get_scoped_floating_ips(
-                        self.context, router_ids)
-                ]
-            )
+        def compare_results(router_ids, original_fips, host=None):
+            fips_scope = [fip for fip in
+                          router.FloatingIP.get_scoped_floating_ips(
+                              self.context, router_ids, host=host)]
+            fip_ids = [fip[0].id for fip in fips_scope]
+            as_ids = {fip[1] for fip in fips_scope}
+            self.assertCountEqual(original_fips, fip_ids)
+            self.assertEqual(1, len(as_ids))
+            self.assertEqual(address_scope_id, as_ids.pop())
 
         # Setup three routers, networks and external networks
         routers = {}
+        subnet_pool_id, address_scope_id = self._create_test_subnet_pool(
+            '10.0.0.0/16', 24, 16, 28, constants.IP_VERSION_4)
         for i in range(3):
             router_id = self._create_test_router_id(name=f'router-{i}')
             routers[router_id] = []
@@ -318,7 +323,8 @@ class FloatingIPDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
             # Create three subnets and three FIPs using the
             # aforementioned networks and routers
             for j in range(3):
-                self._create_test_subnet_id(net_id)
+                self._create_test_subnet_id(network_id=net_id,
+                                            subnet_pool_id=subnet_pool_id)
                 fip = router.FloatingIP(
                     self.context,
                     floating_ip_address=netaddr.IPAddress(f'10.{i}.{j}.3'),
@@ -332,10 +338,26 @@ class FloatingIPDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
                 fip.create()
                 routers[router_id].append(fip.id)
 
+                # Associate port with a host
+                port_binding = ports.PortBinding(
+                    self.context,
+                    port_id=fip.fixed_port_id,
+                    host=f"compute{j}",
+                    vif_type=portbindings.VIF_TYPE_OTHER,
+                )
+                port_binding.create()
+
         # For each router we created, fetch the fips and ensure the
         # results match what we originally created
         for router_id, original_fips in routers.items():
             compare_results([router_id], original_fips)
+
+        # Fetch the first FIP in each router as we can assume that this is
+        # bound to compute0, then attempt to filter by this compute host
+        host_filtered_fips = []
+        for router_id, original_fips in routers.items():
+            host_filtered_fips.append(original_fips[1])
+        compare_results(routers.keys(), host_filtered_fips, host="compute1")
 
         # Now try to fetch all the fips for all the routers at once
         original_fips = list(chain.from_iterable(routers.values()))
