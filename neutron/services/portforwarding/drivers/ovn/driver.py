@@ -10,20 +10,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_log import log
-
-from ovsdbapp.backend.ovs_idl import idlutils
-from ovsdbapp import constants as ovsdbapp_const
-
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from oslo_log import log
+from oslo_utils import strutils
+from ovsdbapp.backend.ovs_idl import idlutils
+from ovsdbapp import constants as ovsdbapp_const
 
 from neutron.common.ovn import constants as ovn_const
+from neutron.common.ovn import exceptions as ovn_exc
 from neutron.common.ovn import utils as ovn_utils
+from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron import manager
 from neutron.objects import port_forwarding as port_forwarding_obj
@@ -130,7 +131,41 @@ class OVNPortForwardingHandler(object):
                                 "Switch %s failed as it is not found",
                                 lb_name, ls_name)
 
+    def _validate_router_networks(self, nb_ovn, router_id):
+        if not ovn_conf.is_ovn_distributed_floating_ip():
+            return
+        rtr_name = 'neutron-{}'.format(router_id)
+        ovn_lr = nb_ovn.get_lrouter(rtr_name)
+        if not ovn_lr:
+            return
+        for lrouter_port in ovn_lr.ports:
+            is_ext_gw = strutils.bool_from_string(
+                lrouter_port.external_ids.get(ovn_const.OVN_ROUTER_IS_EXT_GW))
+            if is_ext_gw:
+                # NOTE(slaweq): This is external gateway port of the router and
+                # this not needs to be checked
+                continue
+            ovn_network_name = lrouter_port.external_ids.get(
+                ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY)
+            if not ovn_network_name:
+                continue
+            network_id = ovn_network_name.replace('neutron-', '')
+            if not network_id:
+                continue
+            if ovn_utils.is_provider_network(network_id):
+                LOG.warning("Port forwarding configured in the router "
+                            "%(router_id)s will not work properly as "
+                            "distributed floating IPs are enabled "
+                            "and at least one provider network "
+                            "(%(network_id)s) is connected to that router. "
+                            "See bug https://launchpad.net/bugs/2028846 for "
+                            "more details.", {
+                                'router_id': router_id,
+                                'network_id': network_id})
+                return
+
     def port_forwarding_created(self, ovn_txn, nb_ovn, pf_obj):
+        self._validate_router_networks(nb_ovn, pf_obj.router_id)
         pf_objs = pf_obj.unroll_port_ranges()
         is_range = len(pf_objs) > 1
         for pf_obj in pf_objs:
@@ -192,9 +227,26 @@ class OVNPortForwardingHandler(object):
 class OVNPortForwarding(object):
 
     def __init__(self, l3_plugin):
+        self._validate_configuration()
         self._l3_plugin = l3_plugin
         self._pf_plugin_property = None
         self._handler = OVNPortForwardingHandler()
+
+    def _validate_configuration(self):
+        """This method checks if Neutron config is compatible with OVN and PFs.
+
+        It stops process in case when provider network types (vlan/flat)
+        are enabled as tenant networks AND distributed floating IPs are enabled
+        as this configuration is not working fine with FIP PFs in ML2/OVN case.
+        """
+        try:
+            ovn_utils.validate_port_forwarding_configuration()
+        except ovn_exc.InvalidPortForwardingConfiguration:
+            LOG.warning("Neutron configuration is invalid for port "
+                        "forwardings and ML2/OVN backend. "
+                        "It is not valid to use together provider network "
+                        "types (vlan/flat) as tenant networks, distributed "
+                        "floating IPs and port forwardings.")
 
     @property
     def _pf_plugin(self):
