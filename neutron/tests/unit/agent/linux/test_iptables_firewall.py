@@ -489,6 +489,48 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
         egress = None
         self._test_prepare_port_filter(rule, ingress, egress)
 
+    def test_filter_ipv4_ingress_protocol_ipip(self):
+        # We want to use what the system-dependent string here is for 'ipip',
+        # as it could be 'ipencap' or 'ipv4' depending on the distro.
+        # See bug #2054324.
+        rule = {'ethertype': 'IPv4',
+                'direction': 'ingress',
+                'protocol': 'ipip'}
+        expected_proto_name = self.firewall._iptables_protocol_name('ipip')
+        ingress = mock.call.add_rule('ifake_dev',
+                                     '-p %s -j RETURN' % expected_proto_name,
+                                     top=False, comment=None)
+        egress = None
+        self._test_prepare_port_filter(rule, ingress, egress)
+
+    def test_filter_ipv4_ingress_protocol_4(self):
+        # We want to use what the system-dependent string here is for '4',
+        # as it could be 'ipencap' or 'ipv4' depending on the distro.
+        # See bug #2054324.
+        rule = {'ethertype': 'IPv4',
+                'direction': 'ingress',
+                'protocol': '4'}
+        expected_proto_name = self.firewall._iptables_protocol_name('4')
+        ingress = mock.call.add_rule('ifake_dev',
+                                     '-p %s -j RETURN' % expected_proto_name,
+                                     top=False, comment=None)
+        egress = None
+        self._test_prepare_port_filter(rule, ingress, egress)
+
+    def test_filter_ipv4_ingress_protocol_94(self):
+        # We want to use what the system-dependent string here is for '94',
+        # as it could be 'ipip' or something else depending on the distro.
+        # See bug #2054324.
+        rule = {'ethertype': 'IPv4',
+                'direction': 'ingress',
+                'protocol': '94'}
+        expected_proto_name = self.firewall._iptables_protocol_name('94')
+        ingress = mock.call.add_rule('ifake_dev',
+                                     '-p %s -j RETURN' % expected_proto_name,
+                                     top=False, comment=None)
+        egress = None
+        self._test_prepare_port_filter(rule, ingress, egress)
+
     def test_filter_ipv4_ingress_protocol_999_local(self):
         # There is no protocol 999, so let's return a mapping
         # that says there is and make sure the rule is created
