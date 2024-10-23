@@ -221,6 +221,12 @@ ovn_opts = [
                default=0,
                help=_('The number of seconds to keep MAC_Binding entries in '
                       'the OVN DB. 0 to disable aging.')),
+    cfg.BoolOpt('ovn_router_indirect_snat',
+                default=False,
+                help=_('Whether to configure SNAT for all nested subnets '
+                       'connected to the router through any other routers, '
+                       'similar to the default ML2/OVS behavior. Defaults to '
+                       '"False".')),
 ]
 
 nb_global_opts = [
@@ -376,3 +382,7 @@ def get_fdb_removal_limit():
 def get_ovn_mac_binding_age_threshold():
     # This value is always stored as a string in the OVN DB
     return str(cfg.CONF.ovn.mac_binding_age_threshold)
+
+
+def is_ovn_router_indirect_snat_enabled():
+    return cfg.CONF.ovn.ovn_router_indirect_snat
