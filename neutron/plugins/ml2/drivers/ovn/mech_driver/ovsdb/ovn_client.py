@@ -32,6 +32,7 @@ from neutron_lib.plugins import directory
 from neutron_lib.plugins import utils as p_utils
 from neutron_lib.services.logapi import constants as log_const
 from neutron_lib.services.qos import constants as qos_consts
+from neutron_lib.services.trunk import constants as trunk_const
 from neutron_lib.utils import helpers
 from neutron_lib.utils import net as n_net
 from oslo_config import cfg
@@ -289,7 +290,18 @@ class OVNClient(object):
                    Defaults to True.
         """
         cmd = []
+        if db_port.device_owner == trunk_const.TRUNK_SUBPORT_OWNER:
+            # NOTE(ralonsoh): OVN subports don't have host ID information.
+            return
+
+        port_up = self._nb_idl.lsp_get_up(db_port.id).execute(
+            check_error=True)
         if up:
+            if not port_up:
+                LOG.warning('Logical_Switch_Port %s host information not '
+                            'updated, the port state is down')
+                return
+
             if not db_port.port_bindings:
                 return
 
@@ -311,6 +323,11 @@ class OVNClient(object):
                 self._nb_idl.db_set(
                     'Logical_Switch_Port', db_port.id, ext_ids))
         else:
+            if port_up:
+                LOG.warning('Logical_Switch_Port %s host information not '
+                            'removed, the port state is up')
+                return
+
             cmd.append(
                 self._nb_idl.db_remove(
                     'Logical_Switch_Port', db_port.id, 'external_ids',
@@ -818,7 +835,8 @@ class OVNClient(object):
             # to allow at least one maintenance cycle  before we delete the
             # revision number so that the port doesn't stale and eventually
             # gets deleted by the maintenance task.
-            rev_row = db_rev.get_revision_row(context, port_id)
+            rev_row = db_rev.get_revision_row(
+                context, port_id, resource_type=ovn_const.TYPE_PORTS)
             time_ = (timeutils.utcnow() - datetime.timedelta(
                 seconds=ovn_const.DB_CONSISTENCY_CHECK_INTERVAL + 30))
             if rev_row and rev_row.created_at >= time_:
@@ -2425,6 +2443,9 @@ class OVNClient(object):
                 self.is_allow_stateless_supported())
         db_rev.bump_revision(
             context, security_group, ovn_const.TYPE_SECURITY_GROUPS)
+        for sg_rule in security_group['security_group_rules']:
+            db_rev.bump_revision(
+                context, sg_rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
 
     def _add_port_to_drop_port_group(self, port, txn):
         txn.add(self._nb_idl.pg_add_ports(ovn_const.OVN_DROP_PORT_GROUP_NAME,
