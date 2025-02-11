@@ -45,9 +45,11 @@ def get_keepalived_version():
                                   return_stderr=True)
         # First line is the interesting one here from stderr
         version_line = res[1].split('\n')[0]
+        LOG.debug("seunghun1", version_line)
         # Version string is of form 'v2.0.19', must remove 'v'
         keepalived_version = versionutils.convert_version_to_tuple(
             version_line.split()[1].lstrip('v'))
+        LOG.debug("seunghun2", keepalived_version)
         return keepalived_version
     except exceptions.ProcessExecutionError:
         LOG.exception("Failed to get keepalived version")
