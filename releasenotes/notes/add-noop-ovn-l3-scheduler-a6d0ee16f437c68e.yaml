@@ -1,0 +1,15 @@
+---
+features:
+  - |
+    OVN provides tree ways to configure distributed router ports:
+    redirect-chassis, Gateway_Chassis, and HA_Chassis_Group. The first one
+    was deprecated and `removed in ovn v24.09
+    <https://github.com/ovn-org/ovn/commit/f77db41dfdf900442139c111fe267eb9af696102#diff-1ae6327d359b0249584e7aad093f331f5240ddaded53ffb9a34eabb2e473d628R10661>`__
+    The recommended method is to use HA_Chassis_Group. New OVN L3 scheduler
+    called ``noop`` is introduced which uses ``ha_chassis_group`` for
+    Logical Router Ports.
+fixes:
+  - |
+    Fixes an issue when Neutron Logical Routers can't be used together with
+    VLAN/Flat networs and ``external`` ports like Ironic instances and
+    SRIO when ``noop`` l3 ovn scheduler is used.

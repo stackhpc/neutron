@@ -364,3 +364,9 @@ class OVNGatewayLeastLoadedSchedulerWithAZ(OVNGatewayLeastLoadedScheduler):
         # hv2 is in az-0 which is new, so it's the next
         # After, hv4 and hv1 are remaining ones, stay in original order.
         self.assertEqual(['hv5', 'hv3', 'hv2', 'hv4', 'hv1'], chassis)
+
+
+class NoopScheduler(base.BaseTestCase):
+
+    def test_initialize(self):
+        l3_ovn_scheduler.NoopScheduler()

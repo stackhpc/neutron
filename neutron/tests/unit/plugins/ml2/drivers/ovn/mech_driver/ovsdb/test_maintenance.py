@@ -1127,3 +1127,77 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
             utils.ovn_name('lr-id-b'),
             lrb_nat['uuid'],
             gateway_port=lrp.uuid)
+
+    @mock.patch.object(utils, 'sync_ha_chassis_group_network')
+    def test_check_ha_chassis_group_router_gateway_ports(self, mock_shcg):
+        _nb_idl = self.fake_ovn_client._nb_idl
+        ovn_conf.cfg.CONF.set_override('ovn_l3_scheduler', 'noop', 'ovn')
+        ext_net_id = uuidutils.generate_uuid()
+
+        ext_net = {
+            'id': ext_net_id,
+            'provider:network_type': 'flat',
+        }
+        self.fake_ovn_client._plugin.get_ports.return_value = [{
+            'device_owner': n_const.DEVICE_OWNER_ROUTER_GW,
+            'id': 'fake-id',
+            'device_id': 'fake-device-id',
+            'network_id': ext_net_id}]
+        ext_gw_lrp = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'external_ids': {
+                constants.OVN_NETWORK_NAME_EXT_ID_KEY:
+                'neutron-{}'.format(ext_net_id)},
+                'gateway_chassis': ["foo", "bar"],
+                'ha_chassis_group': None})
+
+        self.fake_ovn_client._nb_idl.get_lrouter_port.return_value = (
+            ext_gw_lrp)
+
+        ha_ch_grp = 'fake-ha-ch-group'
+        mock_shcg.return_value = ha_ch_grp, 1234
+
+        self.fake_ovn_client._plugin.get_network.return_value = ext_net
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.periodic.check_ha_chassis_group_router_gateway_ports)
+        _nb_idl.db_clear.assert_called_once_with(
+            'Logical_Router_Port', 'lrp-fake-id',
+            'gateway_chassis')
+        _nb_idl.db_set.assert_called_once_with(
+            'Logical_Router_Port', 'lrp-fake-id',
+            ('ha_chassis_group', ha_ch_grp))
+
+    @mock.patch.object(utils, 'sync_ha_chassis_group_network')
+    def test_check_ha_chassis_group_router_gateway_ports_no_gh(
+            self, mock_shcg):
+        _nb_idl = self.fake_ovn_client._nb_idl
+        ovn_conf.cfg.CONF.set_override('ovn_l3_scheduler', 'noop', 'ovn')
+        ext_net_id = uuidutils.generate_uuid()
+
+        ext_net = {
+            'id': ext_net_id,
+            'provider:network_type': 'flat',
+        }
+        ha_ch_grp = 'fake-ha-ch-group'
+        mock_shcg.return_value = ha_ch_grp, 1234
+        self.fake_ovn_client._plugin.get_ports.return_value = [{
+            'device_owner': n_const.DEVICE_OWNER_ROUTER_GW,
+            'id': 'fake-id',
+            'device_id': 'fake-device-id',
+            'network_id': ext_net_id}]
+        ext_gw_lrp = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'external_ids': {
+                constants.OVN_NETWORK_NAME_EXT_ID_KEY:
+                'neutron-{}'.format(ext_net_id)},
+                'gateway_chassis': [],
+                'ha_chassis_group': ha_ch_grp})
+
+        self.fake_ovn_client._nb_idl.get_lrouter_port.return_value = (
+            ext_gw_lrp)
+
+        self.fake_ovn_client._plugin.get_network.return_value = ext_net
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.periodic.check_ha_chassis_group_router_gateway_ports)
+        _nb_idl.db_clear.assert_not_called()
+        _nb_idl.db_set.assert_not_called()

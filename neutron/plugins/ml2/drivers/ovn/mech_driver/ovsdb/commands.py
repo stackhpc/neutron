@@ -449,6 +449,12 @@ class AddLRouterPortCommand(command.BaseCommand):
         except idlutils.RowNotFound:
             lrouter_port = txn.insert(self.api._tables['Logical_Router_Port'])
             lrouter_port.name = self.name
+
+            ha_chassis_group = self.columns.pop('ha_chassis_group', None)
+            if ha_chassis_group:
+                hcg_uuid = ovsdbapp_utils.get_uuid(ha_chassis_group)
+                lrouter_port.ha_chassis_group = hcg_uuid
+
             for col, val in self.columns.items():
                 if col == 'gateway_chassis':
                     col, val = _add_gateway_chassis(self.api, txn, self.name,

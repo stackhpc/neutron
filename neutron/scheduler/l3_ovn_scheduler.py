@@ -222,9 +222,35 @@ class OVNGatewayLeastLoadedScheduler(OVNGatewayScheduler):
         return self._reorder_by_az(nb_idl, sb_idl, selected_chassis)
 
 
+class NoopScheduler(OVNGatewayScheduler):
+
+    def __init__(self):
+        pass
+
+    def select(self, nb_idl, sb_idl, gateway_name, candidates=None,
+               existing_chassis=None, target_lrouter=None):
+        """Schedule the gateway port of a router to an OVN chassis.
+
+        Schedule the gateway router port only if it is not already
+        scheduled.
+        """
+        return []
+
+    def _select_gateway_chassis(self, nb_idl, sb_idl, candidates,
+                                priority_min, priority_max, target_lrouter):
+        """Choose a chassis from candidates based on a specific policy.
+
+        Returns a list of chassis to use for scheduling. The value at
+        ``ret[0]`` will be used for the chassis with ``priority_max``, the
+        value at ``ret[-1]`` will be used for the chassis with ``priority_min``
+        """
+        return []
+
+
 OVN_SCHEDULER_STR_TO_CLASS = {
     OVN_SCHEDULER_CHANCE: OVNGatewayChanceScheduler,
     OVN_SCHEDULER_LEAST_LOADED: OVNGatewayLeastLoadedScheduler}
+    OVN_SCHEDULER_NOOP: NoopScheduler}
 
 
 def get_scheduler():

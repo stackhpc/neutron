@@ -19,6 +19,7 @@ from neutron_lib import context as ncontext
 from oslo_config import cfg
 
 from neutron.common.ovn import constants
+from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2 import config as ml2_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.plugins.ml2 import db as ml2_db
@@ -356,6 +357,159 @@ class TestOVNClient(TestOVNClientBase):
             cidrs = self.ovn_client._get_snat_cidrs_for_external_router(
                 ctx, 'fake-id')
         self.assertEqual([constants.OVN_DEFAULT_SNAT_CIDR], cidrs)
+
+    def test__create_lrouter_port_router_interface(self):
+        context = mock.MagicMock()
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        subnet = {
+            'id': 'fake-subnet-id',
+            'gateway_ip': '10.42.0.1',
+            'ip_version': const.IP_VERSION_4,
+            'cidr': '10.42.0.0/24',
+        }
+        plugin.get_subnet.return_value = subnet
+        plugin.get_subnets_by_network.return_value = [subnet]
+        router = {
+            'id': 'fake-router-id',
+            'gw_port_id': 'fake-port-id',
+        }
+        txn = mock.MagicMock()
+        port_ext_ids = {'neutron:subnet_ids': subnet.get('id')}
+        self.ovn_client._gen_router_port_ext_ids = mock.MagicMock()
+        self.ovn_client._gen_router_port_ext_ids.return_value = port_ext_ids
+        self.ovn_client._get_router_gw_ports = mock.MagicMock()
+        gw_port = fakes.FakePort().create_one_port(
+            attrs={
+                'id': router['gw_port_id'],
+                'device_owner': 'network:router_interface',
+                'fixed_ips': [{
+                    'subnet_id': subnet.get('id'),
+                    'ip_address': '10.42.0.42'}]
+            })
+        self.ovn_client._create_lrouter_port(context, router, gw_port,
+                                             txn)
+        self.nb_idl.add_lrouter_port.assert_called_once_with(
+            name='lrp-' + gw_port['id'],
+            lrouter='neutron-fake-router-id',
+            mac=gw_port['mac_address'],
+            networks=['10.42.0.42/24'],
+            may_exist=True,
+            external_ids=port_ext_ids,
+            options={},
+        )
+        self.nb_idl.schedule_new_gateway.assert_not_called()
+        plugin.get_network.assert_not_called()
+
+    def test__create_lrouter_port_router_gateway_noop_geneve(self):
+        ovn_conf.cfg.CONF.set_override('ovn_l3_scheduler', 'noop', 'ovn')
+        context = mock.MagicMock()
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        network = {
+            'id': 'neutron-fake-network',
+            'provider:network_type': 'geneve',
+            'mtu': 1500,
+        }
+        subnet = {
+            'id': 'fake-subnet-id',
+            'gateway_ip': '10.42.0.1',
+            'ip_version': const.IP_VERSION_4,
+            'cidr': '10.42.0.0/24',
+        }
+        plugin.get_subnet.return_value = subnet
+        plugin.get_subnets_by_network.return_value = [subnet]
+        router = {
+            'id': 'fake-router-id',
+            'gw_port_id': 'fake-port-id',
+        }
+        plugin.get_network.return_value = network
+        plugin.get_networks.return_value = [network]
+        txn = mock.MagicMock()
+        port_ext_ids = {'neutron:subnet_ids': subnet.get('id')}
+        self.ovn_client._gen_router_port_ext_ids = mock.MagicMock()
+        self.ovn_client._gen_router_port_ext_ids.return_value = port_ext_ids
+        self.ovn_client._get_router_gw_ports = mock.MagicMock()
+        gw_port = fakes.FakePort().create_one_port(
+            attrs={
+                'id': router['gw_port_id'],
+                'device_owner': 'network:router_gateway',
+                'fixed_ips': [{
+                    'subnet_id': subnet.get('id'),
+                    'ip_address': '10.42.0.42'}]
+            })
+        self.ovn_client._create_lrouter_port(context, router, gw_port,
+                                             txn)
+        self.nb_idl.add_lrouter_port.assert_called_once_with(
+            name='lrp-' + gw_port['id'],
+            lrouter='neutron-fake-router-id',
+            mac=gw_port['mac_address'],
+            networks=['10.42.0.42/24'],
+            may_exist=True,
+            external_ids=port_ext_ids,
+            options={'gateway_mtu': '1500'},
+        )
+        self.nb_idl.schedule_new_gateway.assert_not_called()
+        plugin.get_network.assert_called_once_with(
+            mock.ANY, gw_port['network_id']
+        )
+
+    @mock.patch.object(utils, 'sync_ha_chassis_group_network')
+    def test__create_lrouter_port_router_gateway_noop_flat(self, mock_shcg):
+        ovn_conf.cfg.CONF.set_override('ovn_l3_scheduler', 'noop', 'ovn')
+        context = mock.MagicMock()
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        network = {
+            'id': 'neutron-fake-network',
+            'provider:network_type': 'flat',
+            'provider:physical_network': 'foo',
+            'mtu': 1500,
+        }
+        subnet = {
+            'id': 'fake-subnet-id',
+            'gateway_ip': '10.42.0.1',
+            'ip_version': const.IP_VERSION_4,
+            'cidr': '10.42.0.0/24',
+        }
+        plugin.get_subnet.return_value = subnet
+        plugin.get_subnets_by_network.return_value = [subnet]
+        router = {
+            'id': 'fake-router-id',
+            'gw_port_id': 'fake-port-id',
+        }
+        plugin.get_network.return_value = network
+        plugin.get_networks.return_value = [network]
+        txn = mock.MagicMock()
+        port_ext_ids = {'neutron:subnet_ids': subnet.get('id')}
+        self.ovn_client._gen_router_port_ext_ids = mock.MagicMock()
+        self.ovn_client._gen_router_port_ext_ids.return_value = port_ext_ids
+        self.ovn_client._get_router_gw_ports = mock.MagicMock()
+        mock_shcg.return_value = 'fake-ha-chassis', 123
+        gw_port = fakes.FakePort().create_one_port(
+            attrs={
+                'id': router['gw_port_id'],
+                'device_owner': 'network:router_gateway',
+                'fixed_ips': [{
+                    'subnet_id': subnet.get('id'),
+                    'ip_address': '10.42.0.42'}]
+            })
+        self.ovn_client._create_lrouter_port(context, router, gw_port,
+                                             txn)
+        self.nb_idl.add_lrouter_port.assert_called_once_with(
+            name='lrp-' + gw_port['id'],
+            lrouter='neutron-fake-router-id',
+            mac=gw_port['mac_address'],
+            networks=['10.42.0.42/24'],
+            may_exist=True,
+            external_ids=port_ext_ids,
+            options={'gateway_mtu': '1500'},
+            ha_chassis_group='fake-ha-chassis',
+        )
+        self.nb_idl.schedule_new_gateway.assert_not_called()
+        plugin.get_network.assert_called_once_with(
+            mock.ANY, gw_port['network_id']
+        )
 
 
 class TestOVNClientFairMeter(TestOVNClientBase,

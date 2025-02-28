@@ -117,7 +117,7 @@ ovn_opts = [
                       ' OVN.') % {'migrate': MIGRATE_MODE}),
     cfg.StrOpt("ovn_l3_scheduler",
                default='leastloaded',
-               choices=('leastloaded', 'chance'),
+               choices=('leastloaded', 'chance', 'noop'),
                help=_('The OVN L3 Scheduler type used to schedule router '
                       'gateway ports on hypervisors/chassis.\n'
                       'leastloaded - chassis with fewest gateway ports '
@@ -325,6 +325,10 @@ def get_ovn_neutron_sync_mode():
 
 def get_ovn_l3_scheduler():
     return cfg.CONF.ovn.ovn_l3_scheduler
+
+
+def is_ovn_l3_scheduler_noop():
+    return get_ovn_l3_scheduler() == ovn_const.OVN_L3_SCHEDULER_NOOP
 
 
 def is_ovn_distributed_floating_ip():

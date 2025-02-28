@@ -1745,6 +1745,18 @@ class OVNClient(object):
         if ipv6_ra_configs:
             columns['ipv6_ra_configs'] = ipv6_ra_configs
 
+        port_net = None
+        physnet = None
+        if is_gw_port:
+            port_net = self._plugin.get_network(
+                n_context.get_admin_context(), port['network_id'])
+            physnet = self._get_physnet(port_net)
+            if physnet and ovn_conf.is_ovn_l3_scheduler_noop():
+                hacg, _ = (utils.sync_ha_chassis_group_network(
+                    context, self._nb_idl, self._sb_idl, port['id'],
+                    port['network_id'], txn))
+                columns["ha_chassis_group"] = hacg
+
         commands = [
             self._nb_idl.add_lrouter_port(
                 name=lrouter_port_name,
@@ -1757,15 +1769,28 @@ class OVNClient(object):
         ]
 
         if is_gw_port:
-            port_net = self._plugin.get_network(
-                n_context.get_admin_context(), port['network_id'])
-            physnet = self._get_physnet(port_net)
-            az_hints = common_utils.get_az_hints(router)
-            commands.append(
-                self._nb_idl.schedule_new_gateway(lrouter_port_name,
-                                                  self._sb_idl,
-                                                  lrouter, self._l3_plugin,
-                                                  physnet, az_hints))
+            if physnet is None:
+                # The external network is tunnelled, pin the router to a
+                # chassis.
+                _, selected_chassis = utils.sync_ha_chassis_group_router(
+                    context, self._nb_idl, self._sb_idl, router['id'], txn)
+                if selected_chassis:
+                    options = {'chassis': selected_chassis}
+                    commands.append(self._nb_idl.db_set(
+                        'Logical_Router', lrouter, ('options', options)))
+                else:
+                    LOG.info('Router %s is not pinned to any gateway chassis',
+                             router['id'])
+            elif not ovn_conf.is_ovn_l3_scheduler_noop():
+                # VLAN/flat network with a physical network, bind the LRP to
+                # a chassis using the OVN L3 scheduler.
+                az_hints = common_utils.get_az_hints(router)
+                commands.append(
+                    self._nb_idl.schedule_new_gateway(lrouter_port_name,
+                                                      self._sb_idl,
+                                                      lrouter, self._l3_plugin,
+                                                      physnet, az_hints))
+
         commands.append(
             self._nb_idl.set_lrouter_port_in_lswitch_port(
                 port['id'], lrouter_port_name, is_gw_port=is_gw_port,

@@ -237,7 +237,8 @@ class ChassisEvent(row_event.RowEvent):
                     # limit scope of rescheduling only to impacted
                     # gateway chassis.
                     kwargs['event_from_chassis'] = row.name
-            self.l3_plugin.schedule_unhosted_gateways(**kwargs)
+            if not ovn_conf.is_ovn_l3_scheduler_noop():
+                self.l3_plugin.schedule_unhosted_gateways(**kwargs)
 
         self.handle_ha_chassis_group_changes(event, row, old)
 

@@ -605,6 +605,31 @@ class TestOvnSbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
         self.l3_plugin.schedule_unhosted_gateways.assert_called_once_with(
             event_from_chassis=None)
 
+    def test_chassis_create_event_noop(self):
+        ovn_conf.cfg.CONF.set_override('ovn_l3_scheduler', 'noop', 'ovn')
+        old_row_json = {'other_config': ['map', []]}
+        self._test_chassis_helper('create', self.row_json,
+                                  old_row_json=old_row_json)
+        self.mech_driver.update_segment_host_mapping.assert_called_once_with(
+            'fake-hostname', ['fake-phynet1'])
+        self.l3_plugin.schedule_unhosted_gateways.assert_not_called()
+
+    def test_chassis_delete_event_noop(self):
+        ovn_conf.cfg.CONF.set_override('ovn_l3_scheduler', 'noop', 'ovn')
+        old_row_json = {'other_config': ['map', []]}
+        self._test_chassis_helper('delete', self.row_json,
+                                  old_row_json=old_row_json)
+        self.l3_plugin.schedule_unhosted_gateways.assert_not_called()
+
+    def test_chassis_update_event_noop(self):
+        ovn_conf.cfg.CONF.set_override('ovn_l3_scheduler', 'noop', 'ovn')
+        self.l3_plugin.schedule_unhosted_gateways.assert_called
+        old_row_json = copy.deepcopy(self.row_json)
+        old_row_json['other_config'][1][0][1] = (
+            "fake-phynet2:fake-br2")
+        self._test_chassis_helper('update', self.row_json, old_row_json)
+        self.l3_plugin.schedule_unhosted_gateways.assert_not_called()
+
     def test_chassis_update_event_reschedule_not_needed(self):
         self.row_json['other_config'][1].append(['foo_field', 'foo_value_new'])
         old_row_json = copy.deepcopy(self.row_json)

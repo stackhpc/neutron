@@ -1228,6 +1228,46 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
 
         raise periodics.NeverAgain()
 
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    def check_ha_chassis_group_router_gateway_ports(self):
+        """Check OVN router gateway port
+        Check for the option "ha_chassis_group" is set when
+        noop l3 scheduler is used.
+        """
+        if not ovn_conf.is_ovn_l3_scheduler_noop():
+            raise periodics.NeverAgain()
+
+        context = n_context.get_admin_context()
+        gw_ports = self._ovn_client._plugin.get_ports(
+            context, {'device_owner': [n_const.DEVICE_OWNER_ROUTER_GW]})
+        with self._nb_idl.transaction(check_error=True) as txn:
+            for gw_port in gw_ports:
+                network = self._ovn_client._plugin.get_network(
+                    context, gw_port["network_id"])
+                if (network.get(pnet.NETWORK_TYPE) in [n_const.TYPE_VLAN,
+                                                       n_const.TYPE_FLAT]):
+                    lrp_name = utils.ovn_lrouter_port_name(gw_port['id'])
+                    lrp = self._nb_idl.get_lrouter_port(lrp_name)
+
+                    if lrp.gateway_chassis:
+                        txn.add(self._nb_idl.db_clear(
+                            'Logical_Router_Port', lrp_name,
+                            'gateway_chassis'))
+                    if not lrp.ha_chassis_group:
+                        ha_ch_grp, high_prio_ch = (
+                            utils.sync_ha_chassis_group_network(
+                                context, self._nb_idl, self._sb_idl,
+                                gw_port['id'], network['id'], txn))
+                        txn.add(self._nb_idl.db_set(
+                            'Logical_Router_Port', lrp_name,
+                            ('ha_chassis_group', ha_ch_grp)))
+        raise periodics.NeverAgain()
+
 
 class HashRingHealthCheckPeriodics(object):
 
