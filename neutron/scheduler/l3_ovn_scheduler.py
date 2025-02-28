@@ -249,7 +249,7 @@ class NoopScheduler(OVNGatewayScheduler):
 
 OVN_SCHEDULER_STR_TO_CLASS = {
     OVN_SCHEDULER_CHANCE: OVNGatewayChanceScheduler,
-    OVN_SCHEDULER_LEAST_LOADED: OVNGatewayLeastLoadedScheduler}
+    OVN_SCHEDULER_LEAST_LOADED: OVNGatewayLeastLoadedScheduler,
     OVN_SCHEDULER_NOOP: NoopScheduler}
 
 
