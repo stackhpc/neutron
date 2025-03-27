@@ -1480,3 +1480,27 @@ def validate_port_forwarding_configuration():
     if any(net_type in provider_network_types
            for net_type in cfg.CONF.ml2.tenant_network_types):
         raise ovn_exc.InvalidPortForwardingConfiguration()
+
+
+def get_logical_router_port_ha_chassis(nb_idl, lrp, priorities=None):
+    """Get the list of chassis hosting this Logical_Router_Port.
+
+    :param nb_idl: (``OvsdbNbOvnIdl``) OVN Northbound IDL
+    :param lrp: Logical_Router_Port
+    :param priorities: (list of int) a list of HA_Chassis chassis priorities
+           to search for
+    :return: List of tuples (chassis_name, priority) sorted by priority. If
+             ``priorities`` is set then only chassis matching of these
+             priorities are returned.
+    """
+    chassis = []
+    lrp = nb_idl.lookup('Logical_Router_Port', lrp.name, default=None)
+    if not lrp or not lrp.ha_chassis_group:
+        return chassis
+
+    for hc in lrp.ha_chassis_group[0].ha_chassis:
+        if priorities and hc.priority not in priorities:
+            continue
+        chassis.append((hc.chassis_name, hc.priority))
+
+    return chassis
