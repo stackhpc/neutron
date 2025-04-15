@@ -99,6 +99,31 @@ def _add_gateway_chassis(api, txn, lrp_name, val):
         uuid_list.append(gwc.uuid)
     return 'gateway_chassis', uuid_list
 
+def _add_ha_chassis_group(api, txn, lrouter_name, chassis_priority, may_exist=True):
+    hc_uuid_list = []
+    for chassis in chassis_priority:
+        prio = chassis_priority[chassis]
+        try:
+            hc = idlutils.row_by_value(
+                api.idl, 'HA_Chassis', 'chassis_name', chassis)
+        except idlutils.RowNotFound:
+            hc = txn.insert(api._tables.get('HA_Chassis'))
+        hc.chassis_name = chassis
+        hc.priority = prio
+        LOG.info(
+                "Schedule Router %(lr)s on gateway %(gtw)s with priority %(prio)s",
+                {"lr": lrouter_name, "gtw": chassis, "prio": prio})
+        hc_uuid_list.append(hc.uuid)
+    hcg_name = lrouter_name
+    try:
+        hcg = idlutils.row_by_value(
+                api.idl, 'HA_Chassis_Group', 'name', hcg_name)
+    except idlutils.RowNotFound:
+        hcg = txn.insert(api._tables.get('HA_Chassis_Group'))
+    hcg.name = hcg_name
+    hcg.ha_chassis = hc_uuid_list
+    return hcg.uuid
+
 
 class CheckLivenessCommand(command.BaseCommand):
     def run_idl(self, txn):
@@ -388,9 +413,12 @@ class ScheduleUnhostedGatewaysCommand(command.BaseCommand):
                 # the top.
                 index = chassis.index(primary)
                 chassis[0], chassis[index] = chassis[index], chassis[0]
-        setattr(
-            lrouter_port,
-            *_add_gateway_chassis(self.api, txn, self.g_name, chassis))
+        chassis_priority = utils.get_chassis_priority(chassis)
+        lrouter_name = lrouter_port.external_ids[
+            ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY]
+        hcg = _add_ha_chassis_group(self.api, txn, lrouter_name,
+                                    chassis_priority, may_exist=True)
+        setattr(lrouter_port, 'ha_chassis_group', ovsdbapp_utils.get_uuid(hcg))
 
 
 class ScheduleNewGatewayCommand(command.BaseCommand):
@@ -415,8 +443,13 @@ class ScheduleNewGatewayCommand(command.BaseCommand):
             self.api, self.sb_api, self.g_name, candidates=candidates,
             target_lrouter=lrouter)
         if chassis:
-            setattr(lrouter_port,
-                    *_add_gateway_chassis(self.api, txn, self.g_name, chassis))
+            chassis_priority = utils.get_chassis_priority(chassis)
+            lrouter_name = lrouter_port.external_ids[
+                ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY]
+            hcg = _add_ha_chassis_group(self.api, txn, lrouter_name,
+                                        chassis_priority, may_exist=True)
+            setattr(lrouter_port, 'ha_chassis_group',
+                    ovsdbapp_utils.get_uuid(hcg))
 
 
 class LrDelCommand(ovn_nb_commands.LrDelCommand):
@@ -1008,14 +1041,16 @@ class DeleteLRouterExtGwCommand(command.BaseCommand):
         # Remove the router pinning to a chassis (if any).
         lrouter.delkey('options', 'chassis')
 
-        # Remove the HA_Chassis_Group of the router (if any).
+        for gw_port in self.api.get_lrouter_gw_ports(lrouter.name):
+            gw_port.ha_chassis_group = []
+            lrouter.delvalue('ports', gw_port)
+
+        # Remove the HA_Chassis_Group of the router (if any), after
+        # removing it from the gateway Logical_Router_Ports.
         hcg = self.api.lookup('HA_Chassis_Group',
                               lrouter.name, default=None)
         if hcg:
             hcg.delete()
-
-        for gw_port in self.api.get_lrouter_gw_ports(lrouter.name):
-            lrouter.delvalue('ports', gw_port)
 
 
 class SetLSwitchPortToVirtualTypeCommand(command.BaseCommand):
