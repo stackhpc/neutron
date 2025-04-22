@@ -93,15 +93,16 @@ class TestRouter(base.TestOVNFunctionalBase):
         with ovn_client._nb_idl.transaction(check_error=True) as txn:
             for lrp in self.nb_api.tables['Logical_Router_Port'].rows.values():
                 txn.add(ovn_client._nb_idl.update_lrouter_port(
-                    lrp.name, gateway_chassis=[]))
+                    lrp.name, ha_chassis_group=[]))
 
     def _get_gwc_dict(self):
         sched_info = {}
         for row in self.nb_api.db_list_rows("Logical_Router_Port").execute(
                 check_error=True):
-            for gwc in row.gateway_chassis:
-                chassis = sched_info.setdefault(gwc.chassis_name, {})
-                chassis[gwc.priority] = chassis.get(gwc.priority, 0) + 1
+            if row.ha_chassis_group:
+                for hc in row.ha_chassis_group[0].ha_chassis:
+                    chassis = sched_info.setdefault(hc.chassis_name, {})
+                    chassis[hc.priority] = chassis.get(hc.priority, 0) + 1
         return sched_info
 
     def _create_routers_wait_pb(self, begin, n, gw_info=None,
@@ -148,7 +149,8 @@ class TestRouter(base.TestOVNFunctionalBase):
                     self.sb_api.tables['Chassis'].rows.values()]
         for row in self.nb_api.tables[
                 'Logical_Router_Port'].rows.values():
-            chassis = [gwc.chassis_name for gwc in row.gateway_chassis]
+            chassis = [hc.chassis_name for hc in
+                       row.ha_chassis_group[0].ha_chassis]
             self.assertCountEqual(expected, chassis)
 
     def _check_gateway_chassis_candidates(self, candidates,
@@ -298,12 +300,124 @@ class TestRouter(base.TestOVNFunctionalBase):
         sched_info = {}
         for row in self.nb_api.tables[
                 'Logical_Router_Port'].rows.values():
-            for gwc in row.gateway_chassis:
-                chassis = sched_info.setdefault(gwc.chassis_name, {})
-                chassis[gwc.priority] = chassis.get(gwc.priority, 0) + 1
+            for hc in row.ha_chassis_group[0].ha_chassis:
+                chassis = sched_info.setdefault(hc.chassis_name, {})
+                chassis[hc.priority] = chassis.get(hc.priority, 0) + 1
         self.assertEqual(expected, sched_info)
 
+    def test_gateway_chassis_balanced_multiple_gw_networks_3_6(self):
+        self._test_gateway_chassis_balanced_multiple_gw_networks(3, 6)
+
+    def test_gateway_chassis_balanced_multiple_gw_networks_4_8(self):
+        self._test_gateway_chassis_balanced_multiple_gw_networks(4, 8)
+
+    def test_gateway_chassis_balanced_multiple_gw_networks_5_10(self):
+        self._test_gateway_chassis_balanced_multiple_gw_networks(5, 10)
+
+    def _test_gateway_chassis_balanced_multiple_gw_networks(
+            self, num_chassis, num_networks):
+        """Test that gateway_chassis registers are balanced across GW chassis.
+
+        This test creates ``num_chassis`` GW chassis and a router with
+        ``num_networks`` GW networks. The gateway_chassis registers
+        (``num_chassis`` * ``num_networks``) should be balanced across all
+        GW chassis.
+        NOTE: to make a balanced distribution, the relation
+        ``num_networks`` / ``num_chassis`` must be an integer.
+        """
+        ovn_client = self.l3_plugin._ovn_client
+        ovn_client._ovn_scheduler = l3_sched.OVNGatewayLeastLoadedScheduler()
+
+        ch_list = [self.chassis1, self.chassis2]
+        for idx in range(3, num_chassis + 1):
+            ch_list.append(self.add_fake_chassis(
+                f'ovs-host{idx}', physical_nets=['physnet3'],
+                enable_chassis_as_gw=True, azs=[]))
+
+        # Create external network.
+        ext_net = self._create_ext_network(
+            uuidutils.generate_uuid(), 'vlan', 'physnet3',
+            None, '30.0.0.1', '30.0.0.0/24')
+
+        # Create router with 6 gateway networks.
+        router = self._create_router('router-multi-gw')
+        self._add_external_gateways(
+            router['id'],
+            [{'network_id': ext_net['network']['id']}
+             for _ in range(num_networks)])
+
+        # Verify the HA_Chassis_Group registers are balanced.
+        # All LRPs of the same router share a single HA_Chassis_Group,
+        # so each chassis has one priority counted num_networks times.
+        sched_info = self._get_gwc_dict()
+        self.assertEqual(set(ch_list), set(sched_info.keys()))
+        all_prios = set()
+        for ch in ch_list:
+            self.assertEqual(1, len(sched_info[ch]))
+            prio, count = next(iter(sched_info[ch].items()))
+            self.assertEqual(num_networks, count)
+            all_prios.add(prio)
+        self.assertEqual(set(range(1, num_chassis + 1)), all_prios)
+
+    @tests_base.unstable_test("bug 2143336")
     def test_gateway_chassis_least_loaded_scheduler_anti_affinity(self):
+        ovn_client = self.l3_plugin._ovn_client
+        ovn_client._ovn_scheduler = l3_sched.OVNGatewayLeastLoadedScheduler()
+        ext1 = self._create_ext_network(
+            'ext1', 'flat', 'physnet5', None, "10.10.50.1", "10.10.50.0/24")
+        gw_info = {'network_id': ext1['network']['id']}
+
+        chassis_list = []
+        # first fill a few chassis with normal routers
+        chassis_list.extend(
+            self._add_chassis(0, ovn_const.MAX_GW_CHASSIS * 2, ['physnet5']))
+        for i in range(0, (ovn_const.MAX_GW_CHASSIS * 4)):
+            self._create_router('router%d' % i, gw_info=gw_info)
+
+        # add more chassis and create a set of routers with multiple gateway
+        # ports
+        #
+        # This will stage a situation where a few chassis have higher load
+        # which we can use to confirm that the anti-affinity algorithm works as
+        # expected.
+        #
+        # Each router created below will have three LRPs, which should fit
+        # in ovn_const.MAX_GW_CHASSIS * 3 chassis without duplicates when
+        # using the anti affinity scheduler.
+        num_of_gws = 3
+        chassis_list.extend(
+            self._add_chassis(
+                len(chassis_list), ovn_const.MAX_GW_CHASSIS, ['physnet5']))
+        # All LRPs of the same router share a single HA_Chassis_Group.
+        # Verify each router's HCG has MAX_GW_CHASSIS entries with
+        # unique chassis and priorities covering [1, MAX_GW_CHASSIS].
+        router_hcgs = {}
+        for i in range(4):
+            router = self._create_router('router-multi-gw%d' % i)
+            self._add_external_gateways(
+                router['id'],
+                [{'network_id': ext1['network']['id']}
+                 for _ in range(num_of_gws)])
+            for row in self.nb_api.tables[
+                    'Logical_Router_Port'].rows.values():
+                if (ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY
+                        not in row.external_ids):
+                    continue
+                ext_ids_rtr_name = row.external_ids[
+                    ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY]
+                if ext_ids_rtr_name == ovn_utils.ovn_name(router['id']):
+                    chassis = {hc.priority: hc.chassis_name
+                               for hc in row.ha_chassis_group[0].ha_chassis}
+                    router_hcgs[router['id']] = chassis
+                    break
+
+        for router_id, chassis_by_prio in router_hcgs.items():
+            self.assertEqual(ovn_const.MAX_GW_CHASSIS, len(chassis_by_prio))
+            self.assertEqual(
+                set(range(1, ovn_const.MAX_GW_CHASSIS + 1)),
+                set(chassis_by_prio.keys()))
+
+    def test_gateway_chassis_least_loaded_scheduler_anti_affinity_count(self):
         ovn_client = self.l3_plugin._ovn_client
         ovn_client._ovn_scheduler = l3_sched.OVNGatewayLeastLoadedScheduler()
         ext1 = self._create_ext_network(
@@ -378,7 +492,7 @@ class TestRouter(base.TestOVNFunctionalBase):
         has been configured to use that network via "set --external-gateway"
         """
         with mock.patch.object(self.l3_plugin.scheduler, 'select',
-                               return_value=self.chassis1) as plugin_select:
+                               return_value=[self.chassis1]) as plugin_select:
             router1 = self._create_router('router1', gw_info=None)
             router_id = router1['id']
             self.assertIsNone(self._get_gw_port(router_id),
@@ -844,8 +958,10 @@ class TestRouter(base.TestOVNFunctionalBase):
         self.l3_plugin.schedule_unhosted_gateways()
         for row in self.nb_api.tables[
                 'Logical_Router_Port'].rows.values():
+            hcg = getattr(row, 'ha_chassis_group', None)
+            self.assertEqual(1, len(hcg))
             self.assertEqual(ovn_const.MAX_GW_CHASSIS,
-                             len(row.gateway_chassis))
+                             len(hcg[0].ha_chassis))
 
     def test_set_router_mac_age_limit(self):
         name = "macage_router1"
