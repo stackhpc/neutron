@@ -27,12 +27,14 @@ from neutron_lib.callbacks import registry
 from neutron_lib import constants as n_const
 from neutron_lib import context as n_context
 from neutron_lib.exceptions import l3 as lib_l3_exc
+from neutron_lib.utils import net as net_utils
 from oslo_utils import uuidutils
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf as ovn_config
 from neutron.db import ovn_revision_numbers_db as db_rev
+from neutron.objects import ports as ports_obj
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions import qos \
     as qos_extension
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import maintenance
