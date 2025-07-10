@@ -1049,6 +1049,31 @@ def _filter_candidates_for_ha_chassis_group(hcg_info):
 
     return candidates
 
+def _get_gateway_chassis(lrp):
+    chassis = {}
+    if lrp:
+        min_priority = constants.HA_CHASSIS_GROUP_HIGHEST_PRIORITY - len(lrp.gateway_chassis)
+        for gwc in lrp.gateway_chassis:
+            chassis[gwc.chassis_name] = (min_priority + gwc.priority)
+    # make sure that chassis are sorted by priority
+    return chassis
+
+
+def _get_logical_router_external_port(network_id, nb_idl):
+    ls = nb_idl.lookup('Logical_Switch', ovn_name(network_id))
+    for lsp in ls.ports:
+        if lsp.type == "router":
+            lrp_internal = nb_idl.lookup('Logical_Router_Port', ovn_lrouter_port_name(lsp.name))
+            try:
+                lr_name = lrp_internal.external_ids.get(constants.OVN_ROUTER_NAME_EXT_ID_KEY, '')
+                lr = nb_idl.lookup('Logical_Router', ovn_name(lr_name))
+                for lrp in lr.ports:
+                    if lrp.gateway_chassis:
+                        return lrp
+            except:
+                pass
+    return None
+
 
 def sync_ha_chassis_group(context, port_id, network_id, nb_idl, sb_idl, txn):
     """Return the UUID of the HA Chassis Group or the HA Chassis Group cmd.
@@ -1070,6 +1095,9 @@ def sync_ha_chassis_group(context, port_id, network_id, nb_idl, sb_idl, txn):
     hcg_info = _get_info_for_ha_chassis_group(context, port_id, network_id,
                                               sb_idl)
     candidates = _filter_candidates_for_ha_chassis_group(hcg_info)
+
+    lrp = _get_logical_router_external_port(network_id, nb_idl)
+    gateway_chassis = _get_gateway_chassis(lrp)
 
     # Try to get the HA Chassis Group or create if it doesn't exist
     ha_ch_grp = ha_ch_grp_cmd = None
@@ -1101,9 +1129,15 @@ def sync_ha_chassis_group(context, port_id, network_id, nb_idl, sb_idl, txn):
         # Find the highest priority chassis in the HA Chassis Group
         high_prio_ch = max(ha_ch_grp.ha_chassis, key=lambda x: x.priority,
                            default=None)
+        LOG.debug('Highest priority chassis in HA Chassis Group is %s',
+                  high_prio_ch)
         if (high_prio_ch and
                 high_prio_ch.chassis_name in candidates):
+            if gateway_chassis:
+                priority = gateway_chassis[ch]
             # If found, keep it as the highest priority chassis in the group
+            LOG.debug('Updating chassis %s ch: %s priority %s', hcg_info.group_name,
+                      ch, priority)
             txn.add(nb_idl.ha_chassis_group_add_chassis(
                 hcg_info.group_name, high_prio_ch.chassis_name,
                 priority=priority))
@@ -1121,6 +1155,10 @@ def sync_ha_chassis_group(context, port_id, network_id, nb_idl, sb_idl, txn):
     # even if they belonging to the same availability zones do not
     # necessarily end up with the same Chassis as the highest priority one.
     for ch in random.sample(list(candidates), max_chassis_number):
+        if gateway_chassis:
+            priority = gateway_chassis[ch]
+        LOG.debug('Adding chassis %s ch: %s priority %s', hcg_info.group_name,
+                  ch, priority)
         txn.add(nb_idl.ha_chassis_group_add_chassis(
             hcg_info.group_name, ch, priority=priority))
         priority -= 1
