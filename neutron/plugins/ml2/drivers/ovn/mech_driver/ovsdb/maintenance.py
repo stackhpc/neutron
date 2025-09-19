@@ -753,11 +753,6 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         Update baremetal ports DHCP options based on the
         "disable_ovn_dhcp_for_baremetal_ports" configuration option.
         """
-        # If external ports is not supported stop running
-        # this periodic task
-        if not self._ovn_client.is_external_ports_supported():
-            raise periodics.NeverAgain()
-
         context = n_context.get_admin_context()
         ports = ports_obj.Port.get_ports_by_vnic_type_and_host(
             context, portbindings.VNIC_BAREMETAL)

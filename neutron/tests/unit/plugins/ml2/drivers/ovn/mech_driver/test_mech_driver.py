@@ -4577,9 +4577,6 @@ class TestOVNMechanismDriverSecurityGroup(
             self.assertEqual(
                 3, self.mech_driver.nb_ovn.pg_add_ports.call_count)
 
-    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.'
-                'ovn_client.OVNClient.is_external_ports_supported',
-                lambda *_: True)
     @mock.patch.object(ovn_utils, 'sync_ha_chassis_group_network')
     def _test_create_port_with_vnic_type(self, vnic_type, sync_mock):
         fake_grp = 'fake-default-ha-group-uuid'
