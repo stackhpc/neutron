@@ -13,6 +13,7 @@
 #    under the License.
 
 import ddt
+from neutron_lib.api.definitions import external_net
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net
 from oslo_utils import uuidutils
