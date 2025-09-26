@@ -1150,6 +1150,7 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
                                  is_extport_present=False):
         port_device_owner = 'compute:nova' if is_compute_port else ''
         self.mech_driver._plugin.nova_notifier = mock.Mock()
+        mock_sync.return_value = mock.Mock(), mock.Mock()
         mock_is_ext.return_value = is_extport_present
         self.sb_ovn.get_extport_chassis_from_cms_options.return_value = [
             mock.Mock()]
@@ -1187,9 +1188,10 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
             ulsp.assert_called_once_with(mock.ANY, mock.ANY)
 
             if is_extport_present:
-                mock_sync.assert_called_once_with(
+                sync_call = mock.call(
                     mock.ANY, self.nb_ovn, self.sb_ovn, port1['port']['id'],
                     port1['port']['network_id'], mock.ANY)
+                mock_sync.assert_has_calls([sync_call, sync_call])
             else:
                 mock_sync.assert_not_called()
 
