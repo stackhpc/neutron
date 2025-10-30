@@ -1606,6 +1606,94 @@ class TestMaintenance(_TestMaintenanceHelper):
         self.assertIsNotNone(acl_v6_after)
         self.assertIn(ag_as_name_v6, acl_v6_after.match)
 
+    def test_update_virtual_port_parent_hostname(self):
+        net = self._create_network(uuidutils.generate_uuid())
+        self._create_subnet(uuidutils.generate_uuid(), net['id'])
+        port = self._create_port(uuidutils.generate_uuid(), net['id'])
+
+        # Manually add the LSP.external_ids:neutron:host_id and the "virtual"
+        # type to the port.
+        ext_ids = {ovn_const.OVN_HOST_ID_EXT_ID_KEY: 'random_host'}
+        self.nb_api.db_set(
+            'Logical_Switch_Port', port['id'],
+            ('external_ids', ext_ids)).execute(check_error=True)
+        self.nb_api.db_set(
+            'Logical_Switch_Port', port['id'],
+            ('type', ovn_const.LSP_TYPE_VIRTUAL)).execute(check_error=True)
+
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.maint.update_virtual_port_parent_hostname)
+
+        # Check the LSP.external_ids.
+        lsp = self.nb_api.lookup('Logical_Switch_Port', port['id'])
+        self.assertEqual(
+            'random_host',
+            lsp.external_ids[ovn_const.OVN_PARENT_HOSTNAME_EXT_ID_KEY])
+        self.assertIsNone(
+            lsp.external_ids.get(ovn_const.OVN_HOST_ID_EXT_ID_KEY))
+
+        # Check the VIF details and the port bindings host.
+        pbindings = ports_obj.PortBinding.get_objects(
+            self.context, port_id=port['id'])
+        self.assertEqual(1, len(pbindings))
+        self.assertEqual('random_host',
+                         pbindings[0].vif_details['parent_hostname'])
+        self.assertEqual('', pbindings[0].host)
+
+    def test_migrate_lrp_gateway_chassis_to_ha_chassis_group(self):
+        mac = next(net_utils.random_mac_generator(['ca', 'fe', 'ca', 'fe']))
+        networks = ['192.0.2.0/24']
+        lr_name = uuidutils.generate_uuid()
+        lrp_name = uuidutils.generate_uuid()
+        gateway_chassis = ['gw_ch1', 'gw_ch2', 'gw_ch3']
+
+        self.nb_api.lr_add(lr_name).execute(check_error=True)
+        ext_ids = {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY: lr_name}
+        self.nb_api.add_lrouter_port(
+            lrp_name, lr_name, mac=mac,
+            networks=networks,
+            external_ids=ext_ids).execute(check_error=True)
+
+        # Manually create Gateway_Chassis rows and assign them to the LRP
+        # in a single transaction, simulating the legacy state before the
+        # migration to HA_Chassis_Group.
+        with self.nb_api.transaction(check_error=True) as txn:
+            prio = len(gateway_chassis)
+            for chassis in gateway_chassis:
+                gwc_name = f'{lrp_name}_{chassis}'
+                gwc_cmd = txn.add(self.nb_api.db_create(
+                    'Gateway_Chassis', name=gwc_name,
+                    chassis_name=chassis, priority=prio))
+                txn.add(self.nb_api.db_add(
+                    'Logical_Router_Port', lrp_name,
+                    'gateway_chassis', gwc_cmd))
+                prio -= 1
+
+        hcg = self.nb_api.lookup('HA_Chassis_Group', lr_name, default=None)
+        self.assertIsNone(hcg)
+        lr = self.nb_api.lookup('Logical_Router_Port', lrp_name)
+        chassis_prio = {}
+        for gc in lr.gateway_chassis:
+            chassis_prio[gc.chassis_name] = gc.priority
+
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.maint.migrate_lrp_gateway_chassis_to_ha_chassis_group)
+
+        hcg = self.nb_api.lookup('HA_Chassis_Group', lr_name, default=None)
+        self.assertEqual(len(chassis_prio), len(hcg.ha_chassis))
+        for ha_chassis in hcg.ha_chassis:
+            try:
+                # The priority and the chassis_name of the former
+                # Gateway_Chassis registers must match the new HA_Chassis ones.
+                self.assertEqual(ha_chassis.priority,
+                                 chassis_prio.pop(ha_chassis.chassis_name))
+            except KeyError:
+                self.fail(f'HA_Chassis with chassis name '
+                          f'{ha_chassis.chassis_name} not present in the '
+                          f'chassis list')
+
 
 class TestLogMaintenance(_TestMaintenanceHelper,
                          test_log_driver.LogApiTestCaseBase):
