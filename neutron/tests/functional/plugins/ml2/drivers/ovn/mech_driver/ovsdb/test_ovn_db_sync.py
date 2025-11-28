@@ -1353,8 +1353,7 @@ class TestOvnNbSync(testlib_api.MySQLTestCaseMixin,
                 managed_lports = [
                         lport for lport in all_lports
                         if (ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY in
-                            lport.external_ids)
-                        ]
+                            lport.external_ids)]
 
                 plugin_lrouter_port_ids = [lport.name.replace('lrp-', '')
                                            for lport in managed_lports]
@@ -1389,8 +1388,7 @@ class TestOvnNbSync(testlib_api.MySQLTestCaseMixin,
                 managed_lports = [
                         lport for lport in all_lports
                         if (ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY in
-                            lport.external_ids)
-                        ]
+                            lport.external_ids)]
                 monitor_lrouter_port_ids = [lport.name.replace('lrp-', '')
                                             for lport in managed_lports]
                 monitor_lport_networks = {
