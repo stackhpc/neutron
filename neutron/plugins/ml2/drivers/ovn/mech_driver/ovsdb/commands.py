@@ -14,7 +14,6 @@
 
 import abc
 import copy
-import uuid
 
 from oslo_utils import timeutils
 from ovsdbapp.backend.ovs_idl import command
