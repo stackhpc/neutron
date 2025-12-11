@@ -18,6 +18,7 @@ import copy
 from oslo_utils import timeutils
 from ovsdbapp.backend.ovs_idl import command
 from ovsdbapp.backend.ovs_idl import idlutils
+from ovsdbapp.backend.ovs_idl import rowview
 from ovsdbapp.schema.ovn_northbound import commands as ovn_nb_commands
 from ovsdbapp import utils as ovsdbapp_utils
 
