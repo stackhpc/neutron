@@ -36,6 +36,25 @@ OVS_OPTS = [
 ]
 
 
+SEGMENT_BRIDGE_OPTS = [
+    cfg.ListOpt(
+        'segment_bridge_prefixes',
+        default=['br-ex'],
+        help=_('List of segment bridge prefixes managed by the OVN agent '
+               'segment-bridge extension. For a given prefix, there will be '
+               'two types of bridges: one trunk bridge and one or several '
+               'segment bridges. For example, for prefix br-ex, the trunk '
+               'bridge will be br-ex and the segment bridges are expected '
+               'to be named br-ex-<vlan-id>')),
+    cfg.IntOpt(
+        'segment_bridge_reconcile_interval',
+        default=60,
+        min=1,
+        help=_('Reconcile interval in seconds for segment bridge desired '
+               'state.')),
+]
+
+
 def list_ovn_neutron_agent_opts():
     return [
         ('DEFAULT', itertools.chain(meta_conf.SHARED_OPTS,
@@ -43,7 +62,7 @@ def list_ovn_neutron_agent_opts():
                                     meta_conf.METADATA_PROXY_HANDLER_OPTS
                                     )),
         ('agent', ext_manager_conf.AGENT_EXT_MANAGER_OPTS),
-        ('ovn', ovn_conf.ovn_opts),
+        ('ovn', itertools.chain(ovn_conf.ovn_opts, SEGMENT_BRIDGE_OPTS)),
         ('ovs', itertools.chain(OVS_OPTS,
                                 ovsdb_api.API_OPTS,
                                 )
@@ -59,6 +78,7 @@ def register_opts():
     cfg.CONF.register_opts(OVS_OPTS, group='ovs')
     cfg.CONF.register_opts(ovsdb_api.API_OPTS, group='ovs')
     evpn_conf.register_opts()
+    cfg.CONF.register_opts(SEGMENT_BRIDGE_OPTS, group='ovn')
 
 
 def get_root_helper(conf):

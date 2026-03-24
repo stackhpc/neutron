@@ -177,6 +177,7 @@ noop = "neutron.agent.ovn.extensions.noop:NoopOVNAgentExtension"
 testing = "neutron.tests.functional.agent.ovn.agent.fake_ovn_agent_extension:FakeOVNAgentExtension"
 ovn-bgp = "neutron.agent.ovn.extensions.bgp:BGPAgentExtension"
 ovn-evpn = "neutron.agent.ovn.extensions.evpn:EVPNAgentExtension"
+segment_bridge = "neutron.agent.ovn.extensions.segment_bridge:SegmentBridgeExtension"
 
 [project.entry-points."neutron.services.logapi.drivers"]
 ovs = "neutron.services.logapi.drivers.openvswitch.ovs_firewall_log:OVSFirewallLoggingDriver"
