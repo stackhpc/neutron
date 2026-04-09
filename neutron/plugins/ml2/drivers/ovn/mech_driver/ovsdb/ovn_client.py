@@ -2311,7 +2311,73 @@ class OVNClient:
         if check_rev_cmd.result == ovn_const.TXN_COMMITTED:
             db_rev.bump_revision(context, network, ovn_const.TYPE_NETWORKS)
 
-    def _add_subnet_dhcp_options(self, subnet, network,
+    def unlink_network_ha_chassis_group(self, network_id):
+        """Unlink the network HCG to the router
+
+        If the network (including all subnets) has been detached from the
+        router, the "HA_Chassis_Group" in unlinked from the router by removing
+        the router_id tag from the external_ids dictionary.
+        """
+        name = utils.ovn_name(network_id)
+        hcg = self._nb_idl.lookup('HA_Chassis_Group', name, default=None)
+        if hcg:
+            self._nb_idl.db_remove(
+                'HA_Chassis_Group', name, 'external_ids',
+                ovn_const.OVN_ROUTER_ID_EXT_ID_KEY).execute(
+                    check_error=True)
+
+    def link_network_ha_chassis_group(self, context, network_id, router_id):
+        """Link a unified HCG for all network ext. ports if connected to router
+
+        If a network is connected to a router, this method checks if the router
+        has a gateway port and its ``HA_Chassis_Group``. In that case, it
+        creates a unified ``HA_Chassis_Group`` for this network and assigns it
+        to all external ports. That will collocate the external ports in the
+        same gateway chassis as the router gateway port, allowing N/S
+        communication. See LP#2125553
+        """
+        if not self._nb_idl.lookup('Logical_Router', utils.ovn_name(router_id),
+                                   default=None):
+            # The Logical_Router has been deleted.
+            return
+
+        gw_lrps = self.get_router_gateway_ports(router_id)
+        if not gw_lrps:
+            # The router has no GW ports. Remove the "neutron:router_id" tag
+            # from the "HA_Chassis_Group" associated, if any.
+            self.unlink_network_ha_chassis_group(network_id)
+            return
+
+        if not gw_lrps[0].ha_chassis_group:
+            return
+
+        chassis_prio = {}
+        for hc in gw_lrps[0].ha_chassis_group[0].ha_chassis:
+            chassis_prio[hc.chassis_name] = hc.priority
+
+        with self._nb_idl.transaction(check_error=True) as txn:
+            # Create the "HA_Chassis_Group" associated to this network.
+            hcg, _ = utils.sync_ha_chassis_group_network_unified(
+                context, self._nb_idl, self._sb_idl, network_id, router_id,
+                chassis_prio, txn)
+
+            # Retrieve all LSPs from external ports in this network.
+            ls = self._nb_idl.lookup('Logical_Switch',
+                                     utils.ovn_name(network_id))
+            for lsp in (lsp for lsp in ls.ports if
+                        lsp.type == ovn_const.LSP_TYPE_EXTERNAL):
+                # NOTE(ralonsoh): this is a protection check but all external
+                # ports must have "HA_Chassis_Group". If the "HA_Chassis_Group"
+                # register is for this port only, remove it.
+                group_name = utils.ovn_extport_chassis_group_name(lsp.name)
+                if (lsp.ha_chassis_group and
+                        lsp.ha_chassis_group[0].name == group_name):
+                    txn.add(self._nb_idl.ha_chassis_group_del(
+                        lsp.ha_chassis_group[0].name, if_exists=True))
+                txn.add(self._nb_idl.db_set('Logical_Switch_Port', lsp.uuid,
+                                            ('ha_chassis_group', hcg)))
+
+    def _add_subnet_dhcp_options(self, context, subnet, network,
                                  ovn_dhcp_options=None):
         if utils.is_dhcp_options_ignored(subnet):
             return
@@ -2563,7 +2629,7 @@ class OVNClient:
             if subnet['ip_version'] == const.IP_VERSION_6 or not mport_updated:
                 # NOTE(ralonsoh): if IPv4 but the metadata port has not been
                 # updated, the DHPC options register has not been created.
-                self._add_subnet_dhcp_options(subnet, network)
+                self._add_subnet_dhcp_options(context, subnet, network)
         db_rev.bump_revision(context, subnet, ovn_const.TYPE_SUBNETS)
 
     def _modify_subnet_dhcp_options(self, subnet, ovn_subnet, network, txn):

@@ -161,6 +161,25 @@ class OVNL3RouterPlugin(service_base.ServicePluginBase,
         return ("L3 Router Service Plugin for basic L3 forwarding"
                 " using OVN")
 
+    def subscribe(self):
+        # By default, the post fork initialization must be done first in the
+        # ML2 plugin (the lower the priority number, the sooner is attended).
+        registry.subscribe(self._post_fork_initialize,
+                           resources.PROCESS, events.AFTER_INIT,
+                           priority=priority_group.PRIORITY_DEFAULT + 1,
+                           cancellable=True)
+
+    def _post_fork_initialize(self, resource, event, trigger, payload=None):
+        if not self._nb_ovn or not self._sb_ovn:
+            raise ovn_l3_exc.MechanismDriverOVNNotReady()
+
+        # Register needed events.
+        self._nb_ovn.idl.notify_handler.watch_events([
+            ovsdb_monitor.LogicalRouterPortEvent(self),
+            ovsdb_monitor.RouterHAChassisGroupEvent(self),
+        ])
+
+
     def _add_neutron_router_interface(self, context, router_id,
                                       interface_info):
         try:
