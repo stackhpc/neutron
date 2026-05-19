@@ -31,7 +31,7 @@ def get_br_int_port_name(prefix, port_id):
 
     The port name is the one that plumbs into the integration bridge.
     """
-    return ("%si-%s" % (prefix, port_id))[:constants.DEVICE_NAME_MAX_LEN]
+    return (f"{prefix}i-{port_id}")[:constants.DEVICE_NAME_MAX_LEN]
 
 
 def get_br_trunk_port_name(prefix, port_id):
@@ -39,7 +39,7 @@ def get_br_trunk_port_name(prefix, port_id):
 
     The port name is the one that plumbs into the trunk bridge.
     """
-    return ("%st-%s" % (prefix, port_id))[:constants.DEVICE_NAME_MAX_LEN]
+    return (f"{prefix}t-{port_id}")[:constants.DEVICE_NAME_MAX_LEN]
 
 
 def get_patch_peer_attrs(peer_name, port_mac=None, port_id=None):
@@ -61,15 +61,16 @@ class TrunkBridge(ovs_lib.OVSBridge):
 
     A trunk bridge has a name that follows a specific naming convention.
     """
+
     def __init__(self, trunk_id):
         name = utils.gen_trunk_br_name(trunk_id)
-        super(TrunkBridge, self).__init__(name)
+        super().__init__(name)
 
     def exists(self):
         return self.bridge_exists(self.br_name)
 
 
-class TrunkParentPort(object):
+class TrunkParentPort:
     """An OVS trunk parent port.
 
     A trunk parent port is represented in OVS with two patch ports that
@@ -91,7 +92,7 @@ class TrunkParentPort(object):
             self.DEV_PREFIX, port_id)
         self._transaction = None
 
-    def plug(self, br_int):
+    def plug(self, br_int, tag=0):
         """Plug patch ports between trunk bridge and given bridge.
 
         The method plugs one patch port on the given bridge side using
@@ -124,6 +125,9 @@ class TrunkParentPort(object):
                                    self.patch_port_trunk_name))
             txn.add(ovsdb.db_set('Interface', self.patch_port_trunk_name,
                                  *patch_trunk_attrs))
+            txn.add(ovsdb.db_set('Port', self.patch_port_trunk_name,
+                                 ('vlan_mode', 'access'),
+                                 ('tag', tag)))
 
     def unplug(self, bridge):
         """Unplug the trunk from bridge.
@@ -136,7 +140,6 @@ class TrunkParentPort(object):
         """
         ovsdb = self.bridge.ovsdb
         with ovsdb.transaction() as txn:
-            txn.add(ovsdb.del_br(self.bridge.br_name))
             txn.add(ovsdb.del_port(self.patch_port_int_name,
                                    bridge.br_name))
 
@@ -153,7 +156,7 @@ class SubPort(TrunkParentPort):
     DEV_PREFIX = 'sp'
 
     def __init__(self, trunk_id, port_id, port_mac=None, segmentation_id=None):
-        super(SubPort, self).__init__(trunk_id, port_id, port_mac)
+        super().__init__(trunk_id, port_id, port_mac)
         self.segmentation_id = segmentation_id
 
     def plug(self, br_int):
@@ -168,12 +171,7 @@ class SubPort(TrunkParentPort):
         :param br_int: an integration bridge where peer endpoint of patch port
                        will be created.
         """
-        ovsdb = self.bridge.ovsdb
-        with ovsdb.transaction() as txn:
-            super(SubPort, self).plug(br_int)
-            txn.add(ovsdb.db_set(
-                "Port", self.patch_port_trunk_name,
-                ("tag", self.segmentation_id)))
+        super().plug(br_int, tag=self.segmentation_id)
 
     def unplug(self, bridge):
         """Unplug the sub port from the bridge.
@@ -186,13 +184,14 @@ class SubPort(TrunkParentPort):
         """
         ovsdb = self.bridge.ovsdb
         with ovsdb.transaction() as txn:
-            txn.add(ovsdb.del_port(self.patch_port_trunk_name,
-                                   self.bridge.br_name))
+            if self.bridge.exists():
+                txn.add(ovsdb.del_port(self.patch_port_trunk_name,
+                                       self.bridge.br_name))
             txn.add(ovsdb.del_port(self.patch_port_int_name,
                                    bridge.br_name))
 
 
-class TrunkManager(object):
+class TrunkManager:
     """It implements the OVS trunk dataplane.
 
     It interfaces with the OVSDB server to execute OVS commands.
@@ -225,10 +224,7 @@ class TrunkManager(object):
         """Remove the trunk bridge."""
         trunk = TrunkParentPort(trunk_id, port_id)
         try:
-            if trunk.bridge.exists():
-                trunk.unplug(self.br_int)
-            else:
-                LOG.debug("Trunk bridge with ID %s does not exist.", trunk_id)
+            trunk.unplug(self.br_int)
         except RuntimeError as e:
             raise TrunkManagerError(error=e)
 
@@ -283,10 +279,7 @@ class TrunkManager(object):
         # Trunk bridge might have been deleted by calling delete_trunk() before
         # remove_sub_port().
         try:
-            if sub_port.bridge.exists():
-                sub_port.unplug(self.br_int)
-            else:
-                LOG.debug("Trunk bridge with ID %s does not exist.", trunk_id)
+            sub_port.unplug(self.br_int)
         except RuntimeError as e:
             raise TrunkManagerError(error=e)
 

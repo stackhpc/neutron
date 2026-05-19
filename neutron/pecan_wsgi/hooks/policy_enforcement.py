@@ -13,11 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
-
 from neutron_lib import constants as const
 from oslo_log import log as logging
 from oslo_policy import policy as oslo_policy
+from oslo_serialization import jsonutils
 from oslo_utils import excutils
 from pecan import hooks
 import webob
@@ -36,7 +35,7 @@ LOG = logging.getLogger(__name__)
 def _custom_getter(resource, resource_id):
     """Helper function to retrieve resources not served by any plugin."""
     if resource == quotasv2.RESOURCE_NAME:
-        return quota.get_tenant_quotas(resource_id)[quotasv2.RESOURCE_NAME]
+        return quota.get_project_quotas(resource_id)[quotasv2.RESOURCE_NAME]
 
 
 def fetch_resource(method, neutron_context, controller,
@@ -64,11 +63,9 @@ def fetch_resource(method, neutron_context, controller,
         if parent_id:
             getter_args.append(parent_id)
         return getter(*getter_args, fields=field_list)
-    else:
-        # Some legit resources, like quota, do not have a plugin yet.
-        # Retrieving the original object is nevertheless important
-        # for policy checks.
-        return _custom_getter(resource, resource_id)
+    # Some legit resources, like quota, do not have a plugin yet. Retrieving
+    # the original object is nevertheless important for policy checks.
+    return _custom_getter(resource, resource_id)
 
 
 class PolicyHook(hooks.PecanHook):
@@ -92,9 +89,7 @@ class PolicyHook(hooks.PecanHook):
         if not controller or utils.is_member_action(controller):
             return
         collection = state.request.context.get('collection')
-        needs_prefetch = (state.request.method == 'PUT' or
-                          state.request.method == 'DELETE')
-        policy.init()
+        needs_prefetch = state.request.method in ('PUT', 'DELETE')
 
         action = controller.plugin_handlers[
             pecan_constants.ACTION_MAP[state.request.method]]
@@ -119,8 +114,7 @@ class PolicyHook(hooks.PecanHook):
                                           parent_id=parent_id)
             if resource_obj:
                 original_resources.append(resource_obj)
-                obj = copy.copy(resource_obj)
-                obj.update(item)
+                obj = resource_obj | item
                 obj[const.ATTRIBUTES_TO_UPDATE] = list(item)
                 # Put back the item in the list so that policies could be
                 # enforced
@@ -137,7 +131,7 @@ class PolicyHook(hooks.PecanHook):
             except (oslo_policy.PolicyNotAuthorized, oslo_policy.InvalidScope):
                 with excutils.save_and_reraise_exception() as ctxt:
                     controller = utils.get_controller(state)
-                    # If a tenant is modifying it's own object, it's safe to
+                    # If a project is modifying it's own object, it's safe to
                     # return a 403. Otherwise, pretend that it doesn't exist
                     # to avoid giving away information.
                     # It is also safe to return 403 if it's POST (CREATE)
@@ -170,7 +164,6 @@ class PolicyHook(hooks.PecanHook):
             return
         if not data or (resource not in data and collection not in data):
             return
-        policy.init()
         is_single = resource in data
         action_type = pecan_constants.ACTION_MAP[state.request.method]
         if action_type == 'get':
@@ -182,14 +175,12 @@ class PolicyHook(hooks.PecanHook):
         # in the single case, we enforce which raises on violation
         # in the plural case, we just check so violating items are hidden
         policy_method = policy.enforce if is_single else policy.check
-        plugin = manager.NeutronManager.get_plugin_for_resource(collection)
         try:
             resp = [self._get_filtered_item(state.request, controller,
                                             resource, collection, item)
                     for item in to_process
                     if (state.request.method != 'GET' or
                         policy_method(neutron_context, action, item,
-                                      plugin=plugin,
                                       pluralized=collection))]
         except (oslo_policy.PolicyNotAuthorized, oslo_policy.InvalidScope):
             # This exception must be explicitly caught as the exception
@@ -198,6 +189,14 @@ class PolicyHook(hooks.PecanHook):
             # we have to set the status_code here to prevent the catch_errors
             # middleware from turning this into a 500.
             state.response.status_code = 404
+            # replace the original body on NotFound body
+            error_message = {
+                'type': 'HTTPNotFound',
+                'message': 'The resource could not be found.',
+                'detail': ''
+            }
+            state.response.text = jsonutils.dumps(error_message)
+            state.response.content_type = 'application/json'
             return
 
         if is_single:
@@ -228,20 +227,19 @@ class PolicyHook(hooks.PecanHook):
         """
         attributes_to_exclude = []
         for attr_name in list(data):
-            # TODO(amotoki): All attribute maps have tenant_id and
-            # it determines excluded attributes based on tenant_id.
-            # We need to migrate tenant_id to project_id later
-            # as attr_info is referred to in various places and we need
-            # to check all logs carefully.
-            if attr_name == 'project_id':
-                continue
+            # NOTE(haleyb): If no attribute data was found and this
+            # attribute name is 'project_id', we must also check if there
+            # is data for 'tenant_id'. This can happen for some of the
+            # older object definitions like Port, Network, Subnet, etc.
             attr_data = controller.resource_info.get(attr_name)
+            if not attr_data and attr_name == 'project_id':
+                attr_data = self._attr_info.get('tenant_id')
             if attr_data and attr_data['is_visible']:
                 if policy.check(
                         context,
                         # NOTE(kevinbenton): this used to reference a
                         # _plugin_handlers dict, why?
-                        'get_%s:%s' % (resource, attr_name),
+                        f'get_{resource}:{attr_name}',
                         data,
                         might_not_exist=True,
                         pluralized=collection):
@@ -250,11 +248,10 @@ class PolicyHook(hooks.PecanHook):
             # if the code reaches this point then either the policy check
             # failed or the attribute was not visible in the first place
             attributes_to_exclude.append(attr_name)
-            # TODO(amotoki): As mentioned in the above TODO,
-            # we treat project_id and tenant_id equivalently.
-            # This should be migrated to project_id later.
-            if attr_name == 'tenant_id':
-                attributes_to_exclude.append('project_id')
+            # NOTE(haleyb): As mentioned above, we treat 'project_id'
+            # and 'tenant_id' as equivalent.
+            if attr_name == 'project_id':
+                attributes_to_exclude.append('tenant_id')
         if attributes_to_exclude:
             LOG.debug("Attributes excluded by policy engine: %s",
                       attributes_to_exclude)

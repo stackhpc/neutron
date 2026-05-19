@@ -27,16 +27,17 @@ from neutron_lib import context
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import extraroute as xroute_exc
+from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins import utils as plugin_utils
 from oslo_utils import uuidutils
 import testtools
-import webob.exc
 
 from neutron.db import extraroute_db
 from neutron.db import l3_db
 from neutron.db.models import l3 as l3_models
+from neutron.db.models import l3_attrs
 from neutron.db import models_v2
 from neutron.extensions import segment as segment_ext
 from neutron.objects import base as base_obj
@@ -45,7 +46,7 @@ from neutron.objects import ports as port_obj
 from neutron.objects import router as l3_obj
 from neutron.objects import subnet as subnet_obj
 from neutron.tests import base
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
 
 
 @ddt.ddt
@@ -53,7 +54,7 @@ class TestL3_NAT_dbonly_mixin(
         test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
 
     def setUp(self, *args, **kwargs):
-        super(TestL3_NAT_dbonly_mixin, self).setUp(*args, **kwargs)
+        super().setUp(*args, **kwargs)
         # "extraroute_db.ExtraRoute_dbonly_mixin" inherits from
         # "l3_db.L3_NAT_dbonly_mixin()", the class under test. This is used
         # instead to test the validation of router routes and GW change because
@@ -241,6 +242,83 @@ class TestL3_NAT_dbonly_mixin(
         db._get_sync_floating_ips(context, [])
         self.assertFalse(context.session.query.called)
 
+    @mock.patch.object(l3_db.L3_NAT_dbonly_mixin, '_get_floatingip')
+    @mock.patch.object(l3_db.L3_NAT_dbonly_mixin, '_is_fip_qos_supported')
+    @mock.patch.object(l3_obj.FloatingIP, 'update')
+    @mock.patch.object(l3_obj.FloatingIP, 'get_object')
+    @mock.patch.object(l3_db.L3_NAT_dbonly_mixin, '_make_floatingip_dict')
+    def test__update_floatingip_no_update_existing_qos(self, make_fip_dict,
+                                                       mock_get_fip_ovo,
+                                                       mock_update_fip_ovo,
+                                                       mock_qos_support,
+                                                       mock_get_fip):
+        fip_id = uuidutils.generate_uuid()
+        qos_p_id = uuidutils.generate_uuid()
+        db = l3_db.L3_NAT_dbonly_mixin()
+        contxt = mock.Mock()
+
+        mock_qos_support.return_value = True
+
+        mock_get_fip.return_value = l3_obj.FloatingIP(
+            id=fip_id, qos_policy_id=qos_p_id
+        )
+        mock_update_fip_ovo.return_value = None
+        mock_get_fip_ovo.return_value = l3_obj.FloatingIP(
+            id=fip_id, qos_policy_id=qos_p_id
+        )
+        make_fip_dict.return_value = {
+            'id': mock.sentinel.fip_ip,
+            'qos_policy_id': qos_p_id
+        }
+
+        new_fip = {'floatingip': {'name': 'new_name'}}
+        old_fip, fip_dict = db._update_floatingip(contxt, fip_id, new_fip)
+        self.assertEqual(qos_p_id, fip_dict['qos_policy_id'])
+
+    @mock.patch.object(l3_db.L3_NAT_dbonly_mixin, '_get_floatingip')
+    @mock.patch.object(l3_db.L3_NAT_dbonly_mixin, '_is_fip_qos_supported')
+    @mock.patch.object(l3_obj.FloatingIP, 'update')
+    @mock.patch.object(l3_obj.FloatingIP, 'get_object')
+    @mock.patch.object(l3_db.L3_NAT_dbonly_mixin, '_make_floatingip_dict')
+    def test__update_floatingip_update_existing_qos(self, make_fip_dict,
+                                                    mock_get_fip_ovo,
+                                                    mock_update_fip_ovo,
+                                                    mock_qos_support,
+                                                    mock_get_fip):
+        fip_id = uuidutils.generate_uuid()
+        qos_p_id = uuidutils.generate_uuid()
+        db = l3_db.L3_NAT_dbonly_mixin()
+        contxt = context.get_admin_context()
+        mock_qos_support.return_value = True
+
+        fip_ovo = l3_obj.FloatingIP(
+            id=fip_id, qos_policy_id=qos_p_id
+        )
+
+        mock_get_fip.return_value = fip_ovo
+        mock_get_fip_ovo.return_value = fip_ovo
+        make_fip_dict.return_value = {
+            'id': mock.sentinel.fip_ip,
+            'qos_policy_id': qos_p_id
+        }
+
+        # Update the QoS Id with a new one
+        new_qos_id = uuidutils.generate_uuid()
+        new_fip = {'floatingip': {'qos_policy_id': new_qos_id}}
+        db._update_floatingip(contxt, fip_id, new_fip)
+
+        mock_update_fip_ovo.assert_called_once()
+        self.assertEqual(2, make_fip_dict.call_count)
+
+        # Remove the QoS Id (update to None):
+        make_fip_dict.reset_mock()
+        mock_update_fip_ovo.reset_mock()
+        new_fip = {'floatingip': {'qos_policy_id': None}}
+        db._update_floatingip(contxt, fip_id, new_fip)
+
+        mock_update_fip_ovo.assert_called_once()
+        self.assertEqual(2, make_fip_dict.call_count)
+
     @mock.patch.object(l3_db.L3_NAT_dbonly_mixin, '_make_floatingip_dict')
     def test__make_floatingip_dict_with_scope(self, make_fip_dict):
         db = l3_db.L3_NAT_dbonly_mixin()
@@ -250,27 +328,6 @@ class TestL3_NAT_dbonly_mixin(
         self.assertEqual({
             'fixed_ip_address_scope': mock.sentinel.address_scope_id,
             'id': mock.sentinel.fip_ip}, result)
-
-    def test__unique_floatingip_iterator(self):
-        context = mock.MagicMock()
-        query = mock.MagicMock()
-        query.order_by().__iter__.return_value = [
-            ({'id': 'id1'}, 'scope1'),
-            ({'id': 'id1'}, 'scope1'),
-            ({'id': 'id2'}, 'scope2'),
-            ({'id': 'id2'}, 'scope2'),
-            ({'id': 'id2'}, 'scope2'),
-            ({'id': 'id3'}, 'scope3')]
-        query.reset_mock()
-        with mock.patch.object(
-                l3_obj.FloatingIP, '_load_object',
-                side_effect=({'id': 'id1'}, {'id': 'id2'}, {'id': 'id3'})):
-            result = list(
-                l3_obj.FloatingIP._unique_floatingip_iterator(context, query))
-            query.order_by.assert_called_once_with(l3_models.FloatingIP.id)
-            self.assertEqual([({'id': 'id1'}, 'scope1'),
-                              ({'id': 'id2'}, 'scope2'),
-                              ({'id': 'id3'}, 'scope3')], result)
 
     @mock.patch.object(directory, 'get_plugin')
     def test_prevent_l3_port_deletion_port_not_found(self, gp):
@@ -289,9 +346,10 @@ class TestL3_NAT_dbonly_mixin(
         # without fixed IPs is allowed
         gp.return_value.get_port.return_value = {
             'device_owner': n_const.DEVICE_OWNER_ROUTER_INTF, 'fixed_ips': [],
-            'id': 'f'
+            'device_id': '44', 'id': 'f',
         }
-        self.db.prevent_l3_port_deletion(None, None)
+        with testtools.ExpectedException(n_exc.ServicePortInUse):
+            self.db.prevent_l3_port_deletion(mock.Mock(), None)
 
     @mock.patch.object(directory, 'get_plugin')
     def test_prevent_l3_port_no_router(self, gp):
@@ -326,6 +384,46 @@ class TestL3_NAT_dbonly_mixin(
                 testtools.ExpectedException(n_exc.ServicePortInUse):
 
             self.db.prevent_l3_port_deletion(ctx, None)
+
+    @mock.patch.object(l3_obj.FloatingIP, 'objects_exist')
+    @mock.patch.object(l3_obj.FloatingIP, 'get_objects')
+    def test_prevent_internal_ip_change_for_fip(self,
+                                                get_objects,
+                                                objects_exist):
+        ctx = context.get_admin_context()
+        port_id = 'test_internal_port'
+        new_fixed_ips = [{'subnet_id': 'test_subnet',
+                          'ip_address': '192.168.2.110'}]
+        fip_obj_dict = {'fixed_ip_address': '192.168.2.120',
+                        'id': 'floating_ip1',
+                        'port_id': port_id}
+        fip_obj = mock.Mock(**fip_obj_dict)
+        objects_exist.return_value = True
+        get_objects.return_value = [fip_obj]
+        with testtools.ExpectedException(n_exc.BadRequest):
+            self.db.prevent_internal_ip_change_for_fip(ctx, port_id,
+                                                       new_fixed_ips)
+
+    @mock.patch.object(l3_obj.FloatingIP, 'objects_exist')
+    @mock.patch.object(l3_obj.FloatingIP, 'get_objects')
+    def test_disassociate_floatingips_conflict_by_fip_attached(self,
+                                                               get_objects,
+                                                               objects_exist):
+        context_project = context.Context('project', 'project', is_admin=False)
+        objects_exist.return_value = True
+        get_objects.side_effect = [
+            [],
+            [{'id': 'floating_ip1', 'port_id': 'port_id'}]]
+        self.assertRaises(l3_exc.FipAssociated,
+                          self.db.disassociate_floatingips,
+                          context_project,
+                          'port_id')
+        objects_exist.assert_called_once_with(
+            mock.ANY, fixed_port_id='port_id')
+        expected_calls = [
+                mock.call(context_project, fixed_port_id='port_id'),
+                mock.call(mock.ANY, fixed_port_id='port_id')]
+        get_objects.assert_has_calls(expected_calls)
 
     @mock.patch.object(directory, 'get_plugin')
     def test_subscribe_address_scope_of_subnetpool(self, gp):
@@ -576,6 +674,53 @@ class TestL3_NAT_dbonly_mixin(
         self.db._validate_one_router_ipv6_port_per_network(
             router, new_port)
 
+    def test__validate_one_router_ipv6_port_per_network_distributed_port(self):
+        port = models_v2.Port(
+                id=uuidutils.generate_uuid(),
+                network_id='foo_network',
+                device_owner=n_const.DEVICE_OWNER_DVR_INTERFACE,
+                fixed_ips=[models_v2.IPAllocation(
+                    ip_address=str(netaddr.IPNetwork(
+                        '2001:db8::/32').ip + 1),
+                    subnet_id='foo_subnet')])
+        rports = [l3_models.RouterPort(router_id='foo_router', port=port)]
+        router = l3_models.Router(
+            id='foo_router', attached_ports=rports, route_list=[],
+            gw_port_id=None)
+        new_port = models_v2.Port(
+                id=uuidutils.generate_uuid(),
+                network_id='foo_network',
+                device_owner=n_const.DEVICE_OWNER_ROUTER_SNAT,
+                fixed_ips=[models_v2.IPAllocation(
+                    ip_address=str(netaddr.IPNetwork(
+                        '2001:db8::/32').ip + 2),
+                    subnet_id='foo_subnet')])
+        self.db._validate_one_router_ipv6_port_per_network(router, new_port)
+
+    def test__validate_one_router_ipv6_port_per_network_centralized_snat_port(
+            self):
+        port = models_v2.Port(
+                id=uuidutils.generate_uuid(),
+                network_id='foo_network',
+                device_owner=n_const.DEVICE_OWNER_ROUTER_SNAT,
+                fixed_ips=[models_v2.IPAllocation(
+                    ip_address=str(netaddr.IPNetwork(
+                        '2001:db8::/32').ip + 1),
+                    subnet_id='foo_subnet')])
+        rports = [l3_models.RouterPort(router_id='foo_router', port=port)]
+        router = l3_models.Router(
+            id='foo_router', attached_ports=rports, route_list=[],
+            gw_port_id=None)
+        new_port = models_v2.Port(
+                id=uuidutils.generate_uuid(),
+                network_id='foo_network',
+                device_owner=n_const.DEVICE_OWNER_DVR_INTERFACE,
+                fixed_ips=[models_v2.IPAllocation(
+                    ip_address=str(netaddr.IPNetwork(
+                        '2001:db8::/32').ip + 2),
+                    subnet_id='foo_subnet')])
+        self.db._validate_one_router_ipv6_port_per_network(router, new_port)
+
     def test__validate_one_router_ipv6_port_per_network_failed(self):
         port = models_v2.Port(
                 id=uuidutils.generate_uuid(),
@@ -604,12 +749,12 @@ class TestL3_NAT_dbonly_mixin(
 
 class L3_NAT_db_mixin(base.BaseTestCase):
     def setUp(self):
-        super(L3_NAT_db_mixin, self).setUp()
+        super().setUp()
         self.db = l3_db.L3_NAT_db_mixin()
 
     def _test_create_router(self, external_gateway_info=None):
         router_db = l3_models.Router(id='123')
-        router_dict = {'id': '123', 'tenant_id': '456',
+        router_dict = {'id': '123', 'project_id': '456',
                        'external_gateway_info': external_gateway_info}
         # Need to use a copy here as the create_router method pops the gateway
         # information
@@ -666,7 +811,7 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         '"routerport" register: %(port_ids)s')
 
     def setUp(self, *args, **kwargs):
-        super(L3TestCase, self).setUp(plugin='ml2')
+        super().setUp(plugin='ml2')
         self.core_plugin = directory.get_plugin()
         self.ctx = context.get_admin_context()
         self.mixin = FakeL3Plugin()
@@ -678,7 +823,7 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         self.subnets.append(self.create_subnet(self.network, '1.1.2.1',
                                                '1.1.2.0/24'))
         router = {'router': {'name': 'foo_router', 'admin_state_up': True,
-                             'tenant_id': 'foo_tenant'}}
+                             'project_id': 'foo_project'}}
         self.router = self.create_router(router)
         self.ports = []
         for subnet in self.subnets:
@@ -781,7 +926,7 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         interface_info = {'subnet_id': self.subnets[1]['subnet']['id']}
         self.mixin.remove_router_interface(self.ctx, self.router['id'],
                                            interface_info)
-        mock_log.warning.not_called_once()
+        mock_log.warning.assert_not_called()
         self._check_routerports((True, False))
 
     @mock.patch.object(l3_db.L3_NAT_dbonly_mixin,
@@ -857,7 +1002,7 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         with mock.patch.object(l3_db.registry, 'publish') as mock_publish:
             router = {'router': {'name': 'foo_router',
                                  'admin_state_up': True,
-                                 'tenant_id': 'foo_tenant'}}
+                                 'project_id': 'foo_project'}}
             self.create_router(router)
             expected_calls = [
                 mock.call(resources.ROUTER, events.BEFORE_CREATE,
@@ -869,6 +1014,20 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             ]
             mock_publish.assert_has_calls(expected_calls)
 
+    def test_create_router_extra_attr(self):
+        router_args = {'router': {'name': 'foo_router',
+                                  'admin_state_up': True,
+                                  'project_id': 'foo_project'}
+                       }
+        router_dict = self.create_router(router_args)
+        with db_api.CONTEXT_READER.using(self.ctx) as session:
+            r_extra_attrs = session.query(
+                l3_attrs.RouterExtraAttributes).filter(
+                    l3_attrs.RouterExtraAttributes.router_id ==
+                    router_dict['id']).all()
+        self.assertEqual(1, len(r_extra_attrs))
+        self.assertEqual(router_dict['id'], r_extra_attrs[0].router_id)
+
     def test_update_router_notify(self):
         with mock.patch.object(l3_db.registry, 'publish') as mock_publish:
             self.mixin.update_router(self.ctx, self.router['id'],
@@ -877,7 +1036,7 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
                 mock.call(resources.ROUTER, events.PRECOMMIT_UPDATE,
                           self.mixin, payload=mock.ANY),
                 mock.call(resources.ROUTER, events.AFTER_UPDATE,
-                         self.mixin, payload=mock.ANY),
+                          self.mixin, payload=mock.ANY),
             ]
             mock_publish.assert_has_calls(expected_calls)
 
@@ -887,9 +1046,9 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         with db_api.CONTEXT_WRITER.using(self.ctx):
             res = self._create_network(
                 self.fmt, name, True,
-                arg_list=(extnet_apidef.EXTERNAL,), **kwargs)
-            if res.status_int >= webob.exc.HTTPClientError.code:
-                raise webob.exc.HTTPClientError(code=res.status_int)
+                arg_list=(extnet_apidef.EXTERNAL,),
+                as_admin=True, **kwargs)
+            self._check_http_response(res)
             return self.deserialize(self.fmt, res)
 
     def test_update_router_gw_notify(self):
@@ -921,6 +1080,8 @@ class L3TestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
                 mock.call(resources.ROUTER_GATEWAY, events.BEFORE_CREATE,
                           self.mixin, payload=mock.ANY),
                 mock.call(resources.PORT, events.BEFORE_CREATE,
+                          mock.ANY, payload=mock.ANY),
+                mock.call(resources.ALLOWED_ADDRESS_PAIR, events.BEFORE_CREATE,
                           mock.ANY, payload=mock.ANY),
                 mock.call(resources.PORT, events.PRECOMMIT_CREATE,
                           mock.ANY, payload=mock.ANY),

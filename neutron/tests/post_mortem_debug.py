@@ -30,9 +30,8 @@ def _get_debugger(debugger_name):
                          debugger_name)
     if 'post_mortem' in dir(debugger):
         return debugger
-    else:
-        raise ValueError("%s is not a supported post mortem debugger" %
-                         debugger_name)
+    raise ValueError("%s is not a supported post mortem debugger" %
+                     debugger_name)
 
 
 def _exception_handler(debugger, exc_info):
@@ -89,17 +88,16 @@ def get_ignored_traceback(tb):
     # Find all members of an ignored trailing chain
     ignored_tracebacks = []
     for tb in reversed(tb_list):
-        if '__unittest' in tb.tb_frame.f_globals:
-            ignored_tracebacks.append(tb)
-        else:
+        if '__unittest' not in tb.tb_frame.f_globals:
             break
+        ignored_tracebacks.append(tb)
 
     # Return the first member of the ignored trailing chain
     if ignored_tracebacks:
         return ignored_tracebacks[-1]
 
 
-class FilteredTraceback(object):
+class FilteredTraceback:
     """Wraps a traceback to filter unwanted frames."""
 
     def __init__(self, tb, filtered_traceback):

@@ -31,7 +31,7 @@ from sqlalchemy import orm
 LOG = logging.getLogger(__name__)
 
 
-class L3RpcCallback(object):
+class L3RpcCallback:
     """L3 agent RPC callback in plugin implementations."""
 
     # 1.0 L3PluginApi BASE_RPC_API_VERSION
@@ -48,7 +48,8 @@ class L3RpcCallback(object):
     # 1.10 Added update_all_ha_network_port_statuses
     # 1.11 Added get_host_ha_router_count
     # 1.12 Added get_networks
-    target = oslo_messaging.Target(version='1.12')
+    # 1.13 Removed process_prefix_update
+    target = oslo_messaging.Target(version='1.13')
 
     @property
     def plugin(self):
@@ -143,12 +144,9 @@ class L3RpcCallback(object):
     def _routers_to_sync(self, context, router_ids, host=None):
         if extensions.is_extension_supported(
                 self.l3plugin, constants.L3_AGENT_SCHEDULER_EXT_ALIAS):
-            routers = (
-                self.l3plugin.list_active_sync_routers_on_active_l3_agent(
-                    context, host, router_ids))
-        else:
-            routers = self.l3plugin.get_sync_data(context, router_ids)
-        return routers
+            return self.l3plugin.list_active_sync_routers_on_active_l3_agent(
+                context, host, router_ids)
+        return self.l3plugin.get_sync_data(context, router_ids)
 
     def _ensure_host_set_on_ports(self, context, host, routers):
         for router in routers:
@@ -192,9 +190,9 @@ class L3RpcCallback(object):
             portbindings.VIF_TYPE_BINDING_FAILED,
             portbindings.VIF_TYPE_UNBOUND)
         if (port and host is not None and
-            (port.get('device_owner') !=
-             constants.DEVICE_OWNER_DVR_INTERFACE and
-             port.get(portbindings.HOST_ID) != host or not_bound)):
+                (port.get('device_owner') !=
+                 constants.DEVICE_OWNER_DVR_INTERFACE and
+                 port.get(portbindings.HOST_ID) != host or not_bound)):
 
             # Ports owned by non-HA routers are bound again if they're
             # already bound but the router moved to another host.
@@ -329,17 +327,6 @@ class L3RpcCallback(object):
 
         LOG.debug('Updating HA routers states on host %s: %s', host, states)
         self.l3plugin.update_routers_states(context, states, host)
-
-    def process_prefix_update(self, context, **kwargs):
-        subnets = kwargs.get('subnets')
-
-        updated_subnets = []
-        for subnet_id, prefix in subnets.items():
-            updated_subnets.append(self.plugin.update_subnet(
-                                        context,
-                                        subnet_id,
-                                        {'subnet': {'cidr': prefix}}))
-        return updated_subnets
 
     @db_api.retry_db_errors
     def delete_agent_gateway_port(self, context, **kwargs):

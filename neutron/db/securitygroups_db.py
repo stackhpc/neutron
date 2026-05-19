@@ -39,10 +39,14 @@ from neutron.common import _constants as const
 from neutron.db import address_group_db as ag_db
 from neutron.db.models import securitygroup as sg_models
 from neutron.db import rbac_db_mixin as rbac_mixin
+from neutron.extensions import security_groups_default_rules as \
+    ext_sg_default_rules
 from neutron.extensions import securitygroup as ext_sg
 from neutron.objects import base as base_obj
 from neutron.objects import ports as port_obj
+from neutron.objects import rbac_db as rbac_db_obj
 from neutron.objects import securitygroup as sg_obj
+from neutron.objects import securitygroup_default_rules as sg_default_rules_obj
 from neutron import quota
 
 
@@ -53,8 +57,10 @@ DEFAULT_SG_DESCRIPTION = _('Default security group')
 
 @resource_extend.has_resource_extenders
 @registry.has_registry_receivers
-class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
-                           rbac_mixin.RbacPluginMixin):
+class SecurityGroupDbMixin(
+        ext_sg.SecurityGroupPluginBase,
+        ext_sg_default_rules.SecurityGroupDefaultRulesPluginBase,
+        rbac_mixin.RbacPluginMixin):
     """Mixin class to add security group to db_base_plugin_v2."""
 
     __native_bulk_support = True
@@ -81,7 +87,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         """Create security group.
 
         If default_sg is true that means we are a default security group for
-        a given tenant if it does not exist.
+        a given project if it does not exist.
         """
         s = security_group['security_group']
         self._registry_publish(resources.SECURITY_GROUP, events.BEFORE_CREATE,
@@ -92,47 +98,35 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                                    request_body=security_group,
                                    desired_state=s))
 
-        tenant_id = s['tenant_id']
+        project_id = s['project_id']
         stateful = s.get('stateful', True)
 
-        if not default_sg:
-            self._ensure_default_security_group(context, tenant_id)
-        else:
-            existing_def_sg_id = self._get_default_sg_id(context, tenant_id)
+        if default_sg:
+            existing_def_sg_id = self._get_default_sg_id(context, project_id)
             if existing_def_sg_id is not None:
                 # default already exists, return it
                 return self.get_security_group(context, existing_def_sg_id)
+        else:
+            self._ensure_default_security_group(context, project_id)
 
         with db_api.CONTEXT_WRITER.using(context):
-            delta = len(ext_sg.sg_supported_ethertypes)
-            delta = delta * 2 if default_sg else delta
-            quota.QUOTAS.quota_limit_check(context, tenant_id,
+            if default_sg:
+                delta = sg_default_rules_obj.SecurityGroupDefaultRule.count(
+                    context, used_in_default_sg=True)
+            else:
+                delta = sg_default_rules_obj.SecurityGroupDefaultRule.count(
+                    context, used_in_non_default_sg=True)
+            quota.QUOTAS.quota_limit_check(context, project_id,
                                            security_group_rule=delta)
 
             sg = sg_obj.SecurityGroup(
                 context, id=s.get('id') or uuidutils.generate_uuid(),
-                description=s['description'], project_id=tenant_id,
+                description=s['description'], project_id=project_id,
                 name=s['name'], is_default=default_sg, stateful=stateful)
             sg.create()
 
-            for ethertype in ext_sg.sg_supported_ethertypes:
-                if default_sg:
-                    # Allow intercommunication
-                    ingress_rule = sg_obj.SecurityGroupRule(
-                        context, id=uuidutils.generate_uuid(),
-                        project_id=tenant_id, security_group_id=sg.id,
-                        direction='ingress', ethertype=ethertype,
-                        remote_group_id=sg.id)
-                    ingress_rule.create()
-                    sg.rules.append(ingress_rule)
-
-                egress_rule = sg_obj.SecurityGroupRule(
-                    context, id=uuidutils.generate_uuid(),
-                    project_id=tenant_id, security_group_id=sg.id,
-                    direction='egress', ethertype=ethertype)
-                egress_rule.create()
-                sg.rules.append(egress_rule)
-            sg.obj_reset_changes(['rules'])
+            self._create_rules_from_template(
+                context, project_id, sg, default_sg)
 
             # fetch sg from db to load the sg rules with sg model.
             # NOTE(slaweq): With new system/project scopes it may happen that
@@ -142,8 +136,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             # be used here otherwise, SG will not be found and error 500 will
             # be returned through the API
             get_context = context.elevated() if default_sg else context
-            sg = sg_obj.SecurityGroup.get_object(get_context, id=sg.id)
-            secgroup_dict = self._make_security_group_dict(sg)
+            sg = self._get_security_group(get_context, sg.id)
+            secgroup_dict = self._make_security_group_dict(context, sg)
             self._registry_publish(resources.SECURITY_GROUP,
                                    events.PRECOMMIT_CREATE,
                                    exc_cls=ext_sg.SecurityGroupConflict,
@@ -168,26 +162,35 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                             marker=None, page_reverse=False, default_sg=False):
 
         # If default_sg is True do not call _ensure_default_security_group()
-        # so this can be done recursively. Context.tenant_id is checked
+        # so this can be done recursively. Context.project_id is checked
         # because all the unit tests do not explicitly set the context on
         # GETS. TODO(arosen)  context handling can probably be improved here.
         filters = filters or {}
-        if not default_sg and context.tenant_id:
-            tenant_id = filters.get('project_id') or filters.get('tenant_id')
-            if tenant_id:
-                tenant_id = tenant_id[0]
+        if not default_sg and context.project_id:
+            # TODO(haleyb): migrate "tenant_id" to "project_id", remove in G+2
+            project_id = filters.get('project_id')
+            if not project_id and filters.get('tenant_id'):
+                project_id = filters['tenant_id']
+                LOG.warning('project_id key not found in filters, using '
+                            'tenant_id instead. This support has been '
+                            'deprecated and will be removed in a future '
+                            'release.')
+
+            if project_id:
+                project_id = project_id[0]
             else:
-                tenant_id = context.tenant_id
-            self._ensure_default_security_group(context, tenant_id)
+                project_id = context.project_id
+            self._ensure_default_security_group(context, project_id)
 
         pager = base_obj.Pager(
             sorts=sorts, limit=limit, marker=marker, page_reverse=page_reverse)
 
         sg_objs = sg_obj.SecurityGroup.get_objects(
             context, _pager=pager, validate_filters=False,
-            fields=fields, **filters)
+            fields=fields, return_db_obj=True, **filters)
 
-        return [self._make_security_group_dict(obj, fields) for obj in sg_objs]
+        return [self._make_security_group_dict(context, obj, fields)
+                for obj in sg_objs]
 
     @db_api.retry_if_session_inactive()
     def get_security_groups_count(self, context, filters=None):
@@ -196,49 +199,57 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             context, validate_filters=False, **filters)
 
     @db_api.retry_if_session_inactive()
-    def get_security_group(self, context, id, fields=None, tenant_id=None):
-        """Tenant id is given to handle the case when creating a security
+    def get_security_group(self, context, id, fields=None, project_id=None):
+        """Project id is given to handle the case when creating a security
         group rule on behalf of another use.
         """
-        if tenant_id:
-            tmp_context_tenant_id = context.tenant_id
-            context.tenant_id = tenant_id
+        if project_id:
+            tmp_context_project_id = context.project_id
+            context.project_id = project_id
 
         try:
             with db_api.CONTEXT_READER.using(context):
-                ret = self._make_security_group_dict(self._get_security_group(
-                                                     context, id,
-                                                     fields=fields),
-                                                     fields)
-                if (fields is None or len(fields) == 0 or
-                   'security_group_rules' in fields):
-                    rules = self.get_security_group_rules(
-                        context_lib.get_admin_context(),
-                        {'security_group_id': [id]})
-                    ret['security_group_rules'] = rules
+                sg = self._get_security_group(context, id, fields=fields)
+                ret = self._make_security_group_dict(context, sg, fields)
 
         finally:
-            if tenant_id:
-                context.tenant_id = tmp_context_tenant_id
+            if project_id:
+                context.project_id = tmp_context_project_id
         return ret
 
-    def _get_security_group(self, context, id, fields=None):
-        sg = sg_obj.SecurityGroup.get_object(context, fields=fields, id=id)
+    @staticmethod
+    def _get_security_group(context, _id, fields=None):
+        sg = sg_obj.SecurityGroup.get_object(context, fields=fields, id=_id)
         if sg is None:
-            raise ext_sg.SecurityGroupNotFound(id=id)
+            raise ext_sg.SecurityGroupNotFound(id=_id)
         return sg
 
-    def _check_security_group(self, context, id, tenant_id=None):
-        if tenant_id:
-            tmp_context_tenant_id = context.tenant_id
-            context.tenant_id = tenant_id
+    @staticmethod
+    def _get_security_group_db(context, _id, fields=None):
+        sg_db = sg_obj.SecurityGroup.get_object(
+            context, fields=fields, id=_id, return_db_obj=True)
+        if sg_db is None:
+            raise ext_sg.SecurityGroupNotFound(id=_id)
+        return sg_db
+
+    def _check_security_group(self, context, id, project_id=None):
+        if project_id:
+            tmp_context_project_id = context.project_id
+            context.project_id = project_id
 
         try:
             if not sg_obj.SecurityGroup.objects_exist(context, id=id):
                 raise ext_sg.SecurityGroupNotFound(id=id)
         finally:
-            if tenant_id:
-                context.tenant_id = tmp_context_tenant_id
+            if project_id:
+                context.project_id = tmp_context_project_id
+
+    @db_api.retry_if_session_inactive()
+    def get_default_security_group(self, context, project_id):
+        default_sg = sg_obj.DefaultSecurityGroup.get_object(
+            context, project_id=project_id)
+        if default_sg:
+            return default_sg.security_group_id
 
     @db_api.retry_if_session_inactive()
     def delete_security_group(self, context, id):
@@ -264,7 +275,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             # consistency with deleted rules
             sg = self._get_security_group(context, id)
             sgr_ids = [r['id'] for r in sg.rules]
-            sec_group = self._make_security_group_dict(sg)
+            sec_group = self._make_security_group_dict(context, sg)
             self._registry_publish(resources.SECURITY_GROUP,
                                    events.PRECOMMIT_DELETE,
                                    exc_cls=ext_sg.SecurityGroupInUse,
@@ -288,8 +299,8 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
 
         if 'stateful' in s:
             with db_api.CONTEXT_READER.using(context):
-                sg = self._get_security_group(context, id)
-                if s['stateful'] != sg['stateful']:
+                sg_db = self._get_security_group_db(context, id)
+                if s['stateful'] != sg_db['stateful']:
                     filters = {'security_group_id': [id]}
                     ports = self._get_port_security_group_bindings(context,
                                                                    filters)
@@ -305,19 +316,19 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             sg = self._get_security_group(context, id)
             if sg.name == 'default' and 'name' in s:
                 raise ext_sg.SecurityGroupCannotUpdateDefault()
-            sg_dict = self._make_security_group_dict(sg)
+            sg_dict = self._make_security_group_dict(context, sg)
             original_security_group = sg_dict
             sg.update_fields(s)
             sg.update()
-            sg_dict = self._make_security_group_dict(sg)
+            sg_dict = self._make_security_group_dict(context, sg)
             self._registry_publish(
-                    resources.SECURITY_GROUP,
-                    events.PRECOMMIT_UPDATE,
-                    exc_cls=ext_sg.SecurityGroupConflict,
-                    payload=events.DBEventPayload(
-                        context, request_body=s,
-                        states=(original_security_group,),
-                        resource_id=id, desired_state=sg_dict))
+                resources.SECURITY_GROUP,
+                events.PRECOMMIT_UPDATE,
+                exc_cls=ext_sg.SecurityGroupConflict,
+                payload=events.DBEventPayload(
+                    context, request_body=s,
+                    states=(original_security_group,),
+                    resource_id=id, desired_state=sg_dict))
         registry.publish(resources.SECURITY_GROUP, events.AFTER_UPDATE, self,
                          payload=events.DBEventPayload(
                              context, request_body=s,
@@ -326,24 +337,37 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
 
         return sg_dict
 
-    def _make_security_group_dict(self, security_group, fields=None):
+    def _make_security_group_dict(self, context, security_group, fields=None):
+        """Return the security group in a dictionary
+
+        :param context: Neutron API request context.
+        :param security_group: DB object or OVO of the security group.
+        :param fields: list of fields to filter the returned dictionary.
+        :return: a dictionary with the security group definition.
+        """
+        rules = security_group.rules or []
+        if isinstance(security_group, sg_obj.SecurityGroup):
+            shared = security_group.shared
+            security_group = security_group.db_obj
+        else:
+            rbac_entries = security_group['rbac_entries']
+            shared = rbac_db_obj.RbacNeutronDbObjectMixin.is_network_shared(
+                context, rbac_entries)
+
+        # TODO(slaweq): Remove 'tenant_id' in the 2027.1 cycle, when it will
+        # not be registered for OwnerCheck anymore.
         res = {'id': security_group['id'],
                'name': security_group['name'],
                'stateful': security_group['stateful'],
                'tenant_id': security_group['tenant_id'],
+               'project_id': security_group['project_id'],
                'description': security_group['description'],
-               'standard_attr_id': security_group.db_obj.standard_attr.id,
-               'shared': security_group['shared'],
+               'standard_attr_id': security_group.standard_attr_id,
+               'shared': shared,
+               'security_group_rules': [self._make_security_group_rule_dict(r)
+                                        for r in rules],
                }
-        if security_group.rules:
-            res['security_group_rules'] = [
-                self._make_security_group_rule_dict(r.db_obj)
-                for r in security_group.rules
-            ]
-        else:
-            res['security_group_rules'] = []
-        resource_extend.apply_funcs(ext_sg.SECURITYGROUPS, res,
-                                    security_group.db_obj)
+        resource_extend.apply_funcs(ext_sg.SECURITYGROUPS, res, security_group)
         return db_utils.resource_fields(res, fields)
 
     @staticmethod
@@ -411,9 +435,9 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         res = self._create_security_group_rule(context, security_group_rule)
         registry.publish(resources.SECURITY_GROUP_RULE, events.AFTER_CREATE,
                          self, payload=events.DBEventPayload(
-                                   context,
-                                   resource_id=res['id'],
-                                   states=(res,)))
+                             context,
+                             resource_id=res['id'],
+                             states=(res,)))
 
         return res
 
@@ -432,9 +456,17 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             # object expects strings only
             protocol = str(protocol)
 
+        # TODO(haleyb): migrate "tenant_id" to "project_id", remove in G+2
+        if rule_dict.get('tenant_id') and rule_dict.get('project_id') is None:
+            rule_dict['project_id'] = rule_dict['tenant_id']
+            LOG.warning('project_id key not found in security group rule '
+                        'dictionary, using tenant_id instead. This support '
+                        'has been deprecated and will be removed in a '
+                        'future release.')
+
         args = {
             'id': (rule_dict.get('id') or uuidutils.generate_uuid()),
-            'project_id': rule_dict['tenant_id'],
+            'project_id': rule_dict['project_id'],
             'security_group_id': rule_dict['security_group_id'],
             'direction': rule_dict['direction'],
             'remote_group_id': rule_dict.get('remote_group_id'),
@@ -454,13 +486,10 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         if port_range_max is not None:
             args['port_range_max'] = port_range_max
 
-        self._registry_publish(
-            resources.SECURITY_GROUP_RULE,
-            events.BEFORE_CREATE,
-            exc_cls=ext_sg.SecurityGroupConflict,
-            payload=events.DBEventPayload(
-                context, resource_id=args['id'],
-                states=(args,)))
+        registry.publish(
+            resources.SECURITY_GROUP_RULE, events.BEFORE_CREATE, self,
+            payload=events.DBEventPayload(context, resource_id=args['id'],
+                                          states=(args,)))
 
         with db_api.CONTEXT_WRITER.using(context):
             if validate:
@@ -473,7 +502,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             # otherwise a DetachedInstanceError can occur for model extensions
             sg_rule = sg_obj.SecurityGroupRule.get_object(context,
                                                           id=sg_rule.id)
-            res_rule_dict = self._make_security_group_rule_dict(sg_rule.db_obj)
+            res_rule_dict = self._make_security_group_rule_dict(sg_rule)
             self._registry_publish(
                 resources.SECURITY_GROUP_RULE,
                 events.PRECOMMIT_CREATE,
@@ -484,19 +513,229 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
 
         return res_rule_dict
 
+    def _validate_multiple_remote_entites(self, rule):
+        remote = None
+        for key in ['remote_ip_prefix', 'remote_group_id',
+                    'remote_address_group_id']:
+            if remote and rule.get(key):
+                raise ext_sg.SecurityGroupMultipleRemoteEntites()
+            remote = rule.get(key) or remote
+
+    def _validate_default_security_group_rule(self, rule):
+        self._validate_base_security_group_rule_attributes(rule)
+
+    def _make_default_security_group_rule_dict(self, rule_obj, fields=None):
+        res = {
+            'id': rule_obj['id'],
+            'ethertype': rule_obj['ethertype'],
+            'direction': rule_obj['direction'],
+            'protocol': rule_obj['protocol'],
+            'port_range_min': rule_obj['port_range_min'],
+            'port_range_max': rule_obj['port_range_max'],
+            'remote_ip_prefix': rule_obj['remote_ip_prefix'],
+            'remote_address_group_id': rule_obj[
+                'remote_address_group_id'],
+            'remote_group_id': rule_obj['remote_group_id'],
+            'standard_attr_id': rule_obj.db_obj.standard_attr_id,
+            'description': rule_obj['description'],
+            'used_in_default_sg': rule_obj['used_in_default_sg'],
+            'used_in_non_default_sg': rule_obj['used_in_non_default_sg']
+        }
+        return db_utils.resource_fields(res, fields)
+
+    def _get_default_security_group_rule(self, context, rule_id):
+        rule_obj = sg_default_rules_obj.SecurityGroupDefaultRule.get_object(
+            context, id=rule_id)
+        if rule_obj is None:
+            raise ext_sg_default_rules.DefaultSecurityGroupRuleNotFound(
+                id=rule_id)
+        return rule_obj
+
+    def _check_for_duplicate_default_rules(self, context, new_rules):
+        # We need to divide rules for those used in default security groups for
+        # projects and for those which are used only for custom security groups
+        self._check_for_duplicate_default_rules_in_template(
+            context,
+            rules=[rule['default_security_group_rule'] for rule in new_rules
+                   if rule.get('used_in_default_sg', False)],
+            filters={'used_in_default_sg': True})
+        self._check_for_duplicate_default_rules_in_template(
+            context,
+            rules=[rule['default_security_group_rule'] for rule in new_rules
+                   if rule.get('used_in_non_default_sg', True)],
+            filters={'used_in_non_default_sg': True})
+
+    def _check_for_duplicate_default_rules_in_template(self, context,
+                                                       rules, filters):
+        new_rules_set = set()
+        for i in rules:
+            rule_key = self._rule_to_key(rule=i)
+            if rule_key in new_rules_set:
+                raise ext_sg_default_rules.DuplicateDefaultSgRuleInPost(rule=i)
+            new_rules_set.add(rule_key)
+
+        # Now, let's make sure none of the new rules conflict with
+        # existing rules; note that we do *not* store the db rules
+        # in the set, as we assume they were already checked,
+        # when added.
+        template_sg_rules = self.get_default_security_group_rules(
+            context, filters=filters) or []
+        for i in template_sg_rules:
+            rule_key = self._rule_to_key(i)
+            if rule_key in new_rules_set:
+                raise ext_sg_default_rules.DefaultSecurityGroupRuleExists(
+                    rule_id=i.get('id'))
+
+    def create_default_security_group_rule(self, context,
+                                           default_security_group_rule):
+        """Create a default security rule template.
+
+        :param context: neutron api request context
+        :type context: neutron.context.Context
+        :param default_security_group_rule: security group rule template data
+                                            to be applied
+        :type sg_rule_template: dict
+
+        :returns: a SecurityGroupDefaultRule object
+        """
+        self._validate_default_security_group_rule(
+            default_security_group_rule['default_security_group_rule'])
+        self._check_for_duplicate_default_rules(context,
+                                                [default_security_group_rule])
+        rule_dict = default_security_group_rule['default_security_group_rule']
+        remote_ip_prefix = rule_dict.get('remote_ip_prefix')
+        if remote_ip_prefix:
+            remote_ip_prefix = net.AuthenticIPNetwork(remote_ip_prefix)
+
+        protocol = rule_dict.get('protocol')
+        if protocol:
+            # object expects strings only
+            protocol = str(protocol)
+
+        args = {
+            'id': (rule_dict.get('id') or
+                   uuidutils.generate_uuid()),
+            'direction': rule_dict.get('direction'),
+            'remote_group_id': rule_dict.get('remote_group_id'),
+            'remote_address_group_id': rule_dict.get(
+                'remote_address_group_id'),
+            'ethertype': rule_dict.get('ethertype'),
+            'protocol': protocol,
+            'remote_ip_prefix': remote_ip_prefix,
+            'description': rule_dict.get('description'),
+            'used_in_default_sg': rule_dict.get('used_in_default_sg'),
+            'used_in_non_default_sg': rule_dict.get('used_in_non_default_sg')
+        }
+
+        port_range_min = self._safe_int(rule_dict.get('port_range_min'))
+        if port_range_min is not None:
+            args['port_range_min'] = port_range_min
+
+        port_range_max = self._safe_int(rule_dict.get('port_range_max'))
+        if port_range_max is not None:
+            args['port_range_max'] = port_range_max
+
+        with db_api.CONTEXT_WRITER.using(context):
+            default_sg_rule_obj = (
+                sg_default_rules_obj.SecurityGroupDefaultRule(context, **args))
+            default_sg_rule_obj.create()
+        return self._make_default_security_group_rule_dict(default_sg_rule_obj)
+
+    @db_api.CONTEXT_WRITER
+    def delete_default_security_group_rule(self, context, sg_rule_template_id):
+        """Delete a default security rule template.
+
+        :param context: neutron api request context
+        :type context: neutron.context.Context
+        :param sg_rule_template_id: the id of the SecurityGroupDefaultRule to
+                                    delete
+        :type sg_rule_template_id: str uuid
+
+        :returns: None
+        """
+        default_sg_rule_obj = (
+            sg_default_rules_obj.SecurityGroupDefaultRule(context))
+        default_sg_rule_obj.id = sg_rule_template_id
+        default_sg_rule_obj.delete()
+
+    def _create_rules_from_template(self, context, project_id, sg, default_sg):
+        if default_sg:
+            filters = {'used_in_default_sg': True}
+        else:
+            filters = {'used_in_non_default_sg': True}
+        template_sg_rules = self.get_default_security_group_rules(
+            context, filters=filters)
+        for rule_args in template_sg_rules:
+            # We need to filter out attributes which are relevant only to
+            # the template rule and not to the rule itself
+            rule_args.pop('standard_attr_id', None)
+            rule_args.pop('description', None)
+            rule_args.pop('used_in_default_sg', None)
+            rule_args.pop('used_in_non_default_sg', None)
+            rule_args.pop('id', None)
+            if rule_args.get(
+                    'remote_group_id') == ext_sg_default_rules.PARENT_SG:
+                rule_args['remote_group_id'] = sg.id
+            new_rule = sg_obj.SecurityGroupRule(
+                context, id=uuidutils.generate_uuid(),
+                project_id=project_id, security_group_id=sg.id,
+                **rule_args)
+            new_rule.create()
+            sg.rules.append(new_rule)
+        sg.obj_reset_changes(['rules'])
+
+    def get_default_security_group_rules(self, context, filters=None,
+                                         fields=None, sorts=None, limit=None,
+                                         marker=None, page_reverse=False):
+        """Get default security rule templates.
+
+        :param context: neutron api request context
+        :type context: neutron.context.Context
+        :param filters: search criteria
+        :type filters: dict
+
+        :returns: SecurityGroupDefaultRule objects meeting the search criteria
+        """
+        filters = filters or {}
+        pager = base_obj.Pager(
+            sorts=sorts, marker=marker, limit=limit, page_reverse=page_reverse)
+        rule_objs = sg_default_rules_obj.SecurityGroupDefaultRule.get_objects(
+            context, _pager=pager, **filters)
+        return [
+            self._make_default_security_group_rule_dict(obj, fields)
+            for obj in rule_objs
+        ]
+
+    def get_default_security_group_rule(self, context, sg_rule_template_id,
+                                        fields=None):
+        """Get default security rule template.
+
+        :param context: neutron api request context
+        :type context: neutron.context.Context
+        :param sg_rule_template_id: the id of the SecurityGroupDefaultRule to
+                                    get
+        :type sg_rule_template_id: str uuid
+
+        :returns: a SecurityGroupDefaultRule object
+        """
+        rule_obj = self._get_default_security_group_rule(context,
+                                                         sg_rule_template_id)
+        return self._make_default_security_group_rule_dict(
+            rule_obj, fields=fields)
+
     def _get_ip_proto_number(self, protocol):
-        if protocol is None:
+        if protocol in const.SG_RULE_PROTO_ANY:
             return
-        # According to bug 1381379, protocol is always set to string to avoid
-        # problems with comparing int and string in PostgreSQL. Here this
-        # string is converted to int to give an opportunity to use it as
-        # before.
+        # According to bug 1381379, protocol is always set to string. This was
+        # done to avoid problems with comparing int and string in PostgreSQL.
+        # (Since then, the backend is no longer supported.) Here this string is
+        # converted to int to give an opportunity to use it as before.
         if protocol in constants.IP_PROTOCOL_NAME_ALIASES:
             protocol = constants.IP_PROTOCOL_NAME_ALIASES[protocol]
         return int(constants.IP_PROTOCOL_MAP.get(protocol, protocol))
 
     def _get_ip_proto_name_and_num(self, protocol, ethertype=None):
-        if protocol is None:
+        if protocol in const.SG_RULE_PROTO_ANY:
             return
         protocol = str(protocol)
         # Force all legacy IPv6 ICMP protocol names to be 'ipv6-icmp', and
@@ -508,7 +747,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                 protocol = str(constants.PROTO_NUM_IPV6_ICMP)
         if protocol in constants.IP_PROTOCOL_MAP:
             return [protocol, str(constants.IP_PROTOCOL_MAP.get(protocol))]
-        elif protocol in constants.IP_PROTOCOL_NUM_TO_NAME_MAP:
+        if protocol in constants.IP_PROTOCOL_NUM_TO_NAME_MAP:
             return [constants.IP_PROTOCOL_NUM_TO_NAME_MAP.get(protocol),
                     protocol]
         return [protocol, protocol]
@@ -535,13 +774,11 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                 ip_proto in const.SG_PORT_PROTO_NAMES):
             if rule['port_range_min'] == 0 or rule['port_range_max'] == 0:
                 raise ext_sg.SecurityGroupInvalidPortValue(port=0)
-            if (rule['port_range_min'] is not None and
+            if not (rule['port_range_min'] is not None and
                     rule['port_range_max'] is not None and
                     rule['port_range_min'] <= rule['port_range_max']):
-                # When min/max are the same it is just a single port
-                pass
-            else:
                 raise ext_sg.SecurityGroupInvalidPortRange()
+            # When min/max are the same it is just a single port
         elif ip_proto in [constants.PROTO_NUM_ICMP,
                           constants.PROTO_NUM_IPV6_ICMP]:
             for attr, field in [('port_range_min', 'type'),
@@ -570,7 +807,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                      '%(max)s). It was automatically converted to not '
                      'have a range to better optimize it for the backend '
                      'security group implementation(s).',
-                     {'project': rule['tenant_id'],
+                     {'project': rule['project_id'],
                       'min': rule['port_range_min'],
                       'max': rule['port_range_max']})
             rule['port_range_min'] = rule['port_range_max'] = None
@@ -592,22 +829,22 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                                 str(constants.PROTO_NUM_IPV6_ROUTE)]:
             if rule['ethertype'] == constants.IPv4:
                 raise ext_sg.SecurityGroupEthertypeConflictWithProtocol(
-                        ethertype=rule['ethertype'], protocol=rule['protocol'])
+                    ethertype=rule['ethertype'], protocol=rule['protocol'])
 
-    def _validate_single_tenant_and_group(self, security_group_rules):
-        """Check that all rules belong to the same security group and tenant
+    def _validate_single_project_and_group(self, security_group_rules):
+        """Check that all rules belong to the same security group and project
         """
         sg_groups = set()
-        tenants = set()
+        projects = set()
         for rule_dict in security_group_rules['security_group_rules']:
             rule = rule_dict['security_group_rule']
             sg_groups.add(rule['security_group_id'])
             if len(sg_groups) > 1:
                 raise ext_sg.SecurityGroupNotSingleGroupRules()
 
-            tenants.add(rule['tenant_id'])
-            if len(tenants) > 1:
-                raise ext_sg.SecurityGroupRulesNotSingleTenant()
+            projects.add(rule['project_id'])
+            if len(projects) > 1:
+                raise ext_sg.SecurityGroupRulesNotSingleProject()
         return sg_groups.pop()
 
     def _make_canonical_ipv6_icmp_protocol(self, rule):
@@ -617,7 +854,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                          'with legacy IPv6 ICMP protocol name %(protocol)s, '
                          '%(new_protocol)s should be used instead. It was '
                          'automatically converted.',
-                         {'project': rule['tenant_id'],
+                         {'project': rule['project_id'],
                           'protocol': rule['protocol'],
                           'new_protocol': constants.PROTO_NAME_IPV6_ICMP})
                 rule['protocol'] = constants.PROTO_NAME_IPV6_ICMP
@@ -626,31 +863,33 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                          'with legacy IPv6 ICMP protocol number %(protocol)s, '
                          '%(new_protocol)s should be used instead. It was '
                          'automatically converted.',
-                         {'project': rule['tenant_id'],
+                         {'project': rule['project_id'],
                           'protocol': rule['protocol'],
                           'new_protocol': str(constants.PROTO_NUM_IPV6_ICMP)})
                 rule['protocol'] = str(constants.PROTO_NUM_IPV6_ICMP)
 
-    def _validate_security_group_rule(self, context, security_group_rule):
-        rule = security_group_rule['security_group_rule']
+    def _validate_base_security_group_rule_attributes(self, rule):
+        """Validate values of the basic attributes of the SG rule.
+
+        This method validates attributes which are common for the actual SG
+        rule as well as SG rule template.
+        """
         self._make_canonical_ipv6_icmp_protocol(rule)
         self._make_canonical_port_range(rule)
         self._validate_port_range(rule)
         self._validate_ip_prefix(rule)
         self._validate_ethertype_and_protocol(rule)
+        self._validate_multiple_remote_entites(rule)
 
-        remote = None
-        for key in ['remote_ip_prefix', 'remote_group_id',
-                    'remote_address_group_id']:
-            if remote and rule.get(key):
-                raise ext_sg.SecurityGroupMultipleRemoteEntites()
-            remote = rule.get(key) or remote
+    def _validate_security_group_rule(self, context, security_group_rule):
+        rule = security_group_rule['security_group_rule']
+        self._validate_base_security_group_rule_attributes(rule)
 
         remote_group_id = rule['remote_group_id']
-        # Check that remote_group_id exists for tenant
+        # Check that remote_group_id exists for project
         if remote_group_id:
             self._check_security_group(context, remote_group_id,
-                                       tenant_id=rule['tenant_id'])
+                                       project_id=rule['project_id'])
 
         remote_address_group_id = rule['remote_address_group_id']
         # Check that remote_address_group_id exists for project
@@ -660,53 +899,58 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
                 project_id=rule['project_id'])
 
         security_group_id = rule['security_group_id']
-        # Confirm that the tenant has permission
+        # Confirm that the project has permission
         # to add rules to this security group.
         self._check_security_group(context, security_group_id,
-                                   tenant_id=rule['tenant_id'])
+                                   project_id=rule['project_id'])
         return security_group_id
 
     @staticmethod
     def _validate_sgs_for_port(security_groups):
-        if not security_groups:
-            return
-        if not len(set(sg.stateful for sg in security_groups)) == 1:
+        if (security_groups and
+                any(sg.stateful for sg in security_groups) and
+                any(not sg.stateful for sg in security_groups)):
             msg = ("Cannot apply both stateful and stateless security "
                    "groups on the same port at the same time")
             raise ext_sg.SecurityGroupConflict(reason=msg)
 
     def _validate_security_group_rules(self, context, security_group_rules):
-        sg_id = self._validate_single_tenant_and_group(security_group_rules)
+        sg_id = self._validate_single_project_and_group(security_group_rules)
         for rule in security_group_rules['security_group_rules']:
             self._validate_security_group_rule(context, rule)
         return sg_id
 
     def _make_security_group_rule_dict(self, security_group_rule, fields=None):
-        res = {'id': security_group_rule['id'],
-               'tenant_id': security_group_rule['tenant_id'],
-               'security_group_id': security_group_rule['security_group_id'],
-               'ethertype': security_group_rule['ethertype'],
-               'direction': security_group_rule['direction'],
-               'protocol': security_group_rule['protocol'],
-               'port_range_min': security_group_rule['port_range_min'],
-               'port_range_max': security_group_rule['port_range_max'],
-               'remote_ip_prefix': security_group_rule['remote_ip_prefix'],
-               'remote_address_group_id': security_group_rule[
-                   'remote_address_group_id'],
+        if isinstance(security_group_rule, base_obj.NeutronDbObject):
+            sg_rule_db = security_group_rule.db_obj
+            belongs_to_default_sg = security_group_rule.belongs_to_default_sg
+        else:
+            sg_rule_db = security_group_rule
+            belongs_to_default_sg = None
+        res = {'id': sg_rule_db.id,
+               'project_id': sg_rule_db.project_id,
+               'security_group_id': sg_rule_db.security_group_id,
+               'ethertype': sg_rule_db.ethertype,
+               'direction': sg_rule_db.direction,
+               'protocol': sg_rule_db.protocol,
+               'port_range_min': sg_rule_db.port_range_min,
+               'port_range_max': sg_rule_db.port_range_max,
+               'remote_ip_prefix': sg_rule_db.remote_ip_prefix,
+               'remote_address_group_id': sg_rule_db.remote_address_group_id,
                'normalized_cidr': self._get_normalized_cidr_from_rule(
-                   security_group_rule),
-               'remote_group_id': security_group_rule['remote_group_id'],
-               'standard_attr_id': security_group_rule.standard_attr.id,
+                   sg_rule_db),
+               'remote_group_id': sg_rule_db.remote_group_id,
+               'standard_attr_id': sg_rule_db.standard_attr_id,
+               'belongs_to_default_sg': belongs_to_default_sg,
                }
 
-        resource_extend.apply_funcs(ext_sg.SECURITYGROUPRULES, res,
-                                    security_group_rule)
+        resource_extend.apply_funcs(ext_sg.SECURITYGROUPRULES, res, sg_rule_db)
         return db_utils.resource_fields(res, fields)
 
     @staticmethod
     def _get_normalized_cidr_from_rule(rule):
         normalized_cidr = None
-        remote_ip_prefix = rule.get('remote_ip_prefix')
+        remote_ip_prefix = rule.remote_ip_prefix
         if remote_ip_prefix:
             normalized_cidr = str(
                 net.AuthenticIPNetwork(remote_ip_prefix).cidr)
@@ -718,14 +962,14 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             none_char = '+'
 
             if key == 'remote_ip_prefix':
-                all_address = ['0.0.0.0/0', '::/0', None]
+                all_address = [constants.IPv4_ANY, constants.IPv6_ANY, None]
                 if value in all_address:
                     return none_char
             elif value is None:
                 return none_char
             elif key == 'protocol':
                 return str(self._get_ip_proto_name_and_num(
-                               value, ethertype=rule.get('ethertype')))
+                    value, ethertype=rule.get('ethertype')))
             return str(value)
 
         comparison_keys = [
@@ -800,7 +1044,14 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         pager = base_obj.Pager(
             sorts=sorts, marker=marker, limit=limit, page_reverse=page_reverse)
 
-        project_id = filters.get('project_id') or filters.get('tenant_id')
+        # TODO(haleyb): migrate "tenant_id" to "project_id", remove in G+2
+        project_id = filters.get('project_id')
+        if not project_id and filters.get('tenant_id'):
+            project_id = filters['tenant_id']
+            LOG.warning('project_id key not found in filters, using tenant_id '
+                        'instead. This support has been deprecated and will '
+                        'be removed in a future release.')
+
         if project_id:
             project_id = project_id[0]
         else:
@@ -819,8 +1070,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         # be returned
         rule_objs = sg_obj.SecurityGroupRule.get_objects(
             context_lib.get_admin_context(), _pager=pager,
-            validate_filters=False, return_db_obj=True, **filters
-        )
+            validate_filters=False, **filters)
         return [
             self._make_security_group_rule_dict(obj, fields)
             for obj in rule_objs
@@ -834,8 +1084,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         # be returned
         security_group_rule = self._get_security_group_rule(
             context_lib.get_admin_context(), id)
-        return self._make_security_group_rule_dict(
-            security_group_rule.db_obj, fields)
+        return self._make_security_group_rule_dict(security_group_rule, fields)
 
     def _get_security_group_rule(self, context, id):
         sgr = sg_obj.SecurityGroupRule.get_object(context, id=id)
@@ -845,11 +1094,11 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
 
     @db_api.retry_if_session_inactive()
     def delete_security_group_rule(self, context, id):
-        self._registry_publish(resources.SECURITY_GROUP_RULE,
-                               events.BEFORE_DELETE,
-                               exc_cls=ext_sg.SecurityGroupRuleInUse,
-                               payload=events.DBEventPayload(
-                                   context, resource_id=id,))
+        registry.publish(resources.SECURITY_GROUP_RULE,
+                         events.BEFORE_DELETE,
+                         self,
+                         payload=events.DBEventPayload(
+                             context, resource_id=id))
 
         with db_api.CONTEXT_WRITER.using(context):
             sgr = self._get_security_group_rule(context, id)
@@ -900,13 +1149,13 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         port[ext_sg.SECURITYGROUPS] = ([sg.id for sg in security_groups] if
                                        security_groups else [])
 
-    def _get_default_sg_id(self, context, tenant_id):
+    def _get_default_sg_id(self, context, project_id):
         # NOTE(slaweq): With new system/project scopes it may happen that
         # project admin will try to find default SG for different
         # project. In such case elevated context needs to be used.
         default_group = sg_obj.DefaultSecurityGroup.get_object(
             context.elevated(),
-            project_id=tenant_id,
+            project_id=project_id,
         )
         if default_group:
             return default_group.security_group_id
@@ -919,41 +1168,41 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         _state = (payload.states[0] if event == events.BEFORE_UPDATE else
                   payload.latest_state)
         # TODO(ralonsoh): "tenant_id" reference should be removed.
-        project_id = _state.get('project_id') or _state['tenant_id']
+        project_id = _state.get('project_id') or _state.get('tenant_id')
         if project_id:
             self._ensure_default_security_group(payload.context, project_id)
 
-    def _ensure_default_security_group(self, context, tenant_id):
+    def _ensure_default_security_group(self, context, project_id):
         """Create a default security group if one doesn't exist.
 
-        :returns: the default security group id for given tenant.
+        :returns: the default security group id for given project.
         """
-        # Do not allow a tenant to create a default SG for another one.
+        # Do not allow a project to create a default SG for another one.
         # See Bug 1987410.
-        if tenant_id != context.tenant_id and not context.is_admin:
+        if project_id != context.project_id and not context.is_admin:
             return
         if not extensions.is_extension_supported(self, 'security-group'):
             return
-        default_group_id = self._get_default_sg_id(context, tenant_id)
+        default_group_id = self._get_default_sg_id(context, project_id)
         if default_group_id:
             return default_group_id
 
         security_group = {
             'security_group':
                 {'name': 'default',
-                 'tenant_id': tenant_id,
+                 'project_id': project_id,
                  'description': DEFAULT_SG_DESCRIPTION}
         }
         try:
             return self.create_security_group(context, security_group,
                                               default_sg=True)['id']
         except obj_exc.NeutronDbObjectDuplicateEntry:
-            return self._get_default_sg_id(context, tenant_id)
+            return self._get_default_sg_id(context, project_id)
 
     def _get_security_groups_on_port(self, context, port):
-        """Check that all security groups on port belong to tenant.
+        """Check that all security groups on port belong to project.
 
-        :returns: all security groups on port belonging to tenant)
+        :returns: all security groups on port belonging to project)
 
         """
         port = port['port']
@@ -963,17 +1212,17 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             return
 
         port_sg = port.get(ext_sg.SECURITYGROUPS, [])
-        tenant_id = port.get('tenant_id')
+        project_id = port.get('project_id')
 
         sg_objs = sg_obj.SecurityGroup.get_objects(context, id=port_sg)
 
-        valid_groups = set(
+        valid_groups = {
             g.id for g in sg_objs
-            if (context.is_admin or not tenant_id or
-                g.tenant_id == tenant_id or
+            if (context.is_admin or not project_id or
+                g.project_id == project_id or
                 sg_obj.SecurityGroup.is_shared_with_project(
-                    context, g.id, tenant_id))
-        )
+                    context, g.id, project_id))
+        }
 
         requested_groups = set(port_sg)
         port_sg_missing = requested_groups - valid_groups
@@ -989,8 +1238,7 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
             return
         port_sg = port.get(ext_sg.SECURITYGROUPS)
         if port_sg is None or not validators.is_attr_set(port_sg):
-            # TODO(ralonsoh): "tenant_id" reference should be removed.
-            port_project = port.get('project_id') or port.get('tenant_id')
+            port_project = port.get('project_id')
             default_sg = self._ensure_default_security_group(context,
                                                              port_project)
             if default_sg:
@@ -1001,9 +1249,9 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         is either [] or not is_attr_set, otherwise return False
         """
         if (ext_sg.SECURITYGROUPS in port['port'] and
-            not (validators.is_attr_set(
-                     port['port'][ext_sg.SECURITYGROUPS]) and
-                 port['port'][ext_sg.SECURITYGROUPS] != [])):
+                not (validators.is_attr_set(
+                    port['port'][ext_sg.SECURITYGROUPS]) and
+                     port['port'][ext_sg.SECURITYGROUPS] != [])):
             return True
         return False
 
@@ -1013,8 +1261,9 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         This method is called both for port create and port update.
         """
         if (ext_sg.SECURITYGROUPS in port['port'] and
-            (validators.is_attr_set(port['port'][ext_sg.SECURITYGROUPS]) and
-             port['port'][ext_sg.SECURITYGROUPS] != [])):
+                (validators.is_attr_set(
+                    port['port'][ext_sg.SECURITYGROUPS]) and
+                 port['port'][ext_sg.SECURITYGROUPS] != [])):
             return True
         return False
 
@@ -1030,9 +1279,9 @@ class SecurityGroupDbMixin(ext_sg.SecurityGroupPluginBase,
         need_notify = False
         port_updates = port['port']
         if (ext_sg.SECURITYGROUPS in port_updates and
-            not helpers.compare_elements(
-                original_port.get(ext_sg.SECURITYGROUPS),
-                port_updates[ext_sg.SECURITYGROUPS])):
+                not helpers.compare_elements(
+                    original_port.get(ext_sg.SECURITYGROUPS),
+                    port_updates[ext_sg.SECURITYGROUPS])):
             # delete the port binding and read it with the new rules
             sgs = self._get_security_groups_on_port(context, port)
             port_updates[ext_sg.SECURITYGROUPS] = [sg.id for sg in sgs]

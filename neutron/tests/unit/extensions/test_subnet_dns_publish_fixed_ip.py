@@ -21,7 +21,7 @@ from neutron.extensions import subnet_dns_publish_fixed_ip
 from neutron.tests.unit.plugins.ml2 import test_plugin
 
 
-class SubnetDNSPublishFixedIPExtensionManager(object):
+class SubnetDNSPublishFixedIPExtensionManager:
 
     def get_resources(self):
         return []
@@ -58,8 +58,7 @@ class SubnetDNSPublishFixedIPExtensionTestCase(
         cfg.CONF.set_override('extension_drivers',
                               self._extension_drivers,
                               group='ml2')
-        super(SubnetDNSPublishFixedIPExtensionTestCase,
-              self).setUp()
+        super().setUp()
 
     def _create_subnet(
             self, network, ip_version=constants.IP_VERSION_4, cidr=None,
@@ -67,11 +66,11 @@ class SubnetDNSPublishFixedIPExtensionTestCase(
 
         cidr = cidr or '192.0.2.0/24'
         network_id = network['network']['id']
-        tenant_id = network['network']['tenant_id']
+        project_id = network['network']['project_id']
         data = {'subnet': {
                     'network_id': network_id,
                     'ip_version': str(ip_version),
-                    'tenant_id': tenant_id,
+                    'project_id': project_id,
                     'cidr': cidr}}
         data['subnet'].update(kwargs)
         subnet_req = self.new_create_request('subnets', data)

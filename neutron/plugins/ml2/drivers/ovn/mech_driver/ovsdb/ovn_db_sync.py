@@ -10,21 +10,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import abc
 from datetime import datetime
-import itertools
 
-from eventlet import greenthread
-from neutron_lib.api.definitions import l3
 from neutron_lib.api.definitions import segment as segment_def
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as n_exc
+from neutron_lib.ovn import constants as n_lib_ovn_const
+from neutron_lib.ovn import db_sync as db_sync_base
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.utils import helpers
 from oslo_log import log
+from oslo_utils import strutils
+from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron.common.ovn import acl as acl_utils
 from neutron.common.ovn import constants as ovn_const
@@ -32,87 +32,89 @@ from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron import manager
 from neutron.objects.port_forwarding import PortForwarding
+from neutron.plugins.ml2.drivers.ovn.agent import neutron_agent
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions import qos \
     as ovn_qos
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_client
+from neutron.services.logapi.drivers.ovn import driver as log_driver
 from neutron.services.segments import db as segments_db
 
 
 LOG = log.getLogger(__name__)
 
-SYNC_MODE_OFF = 'off'
-SYNC_MODE_LOG = 'log'
-SYNC_MODE_REPAIR = 'repair'
 
-
-class OvnDbSynchronizer(object, metaclass=abc.ABCMeta):
-
-    def __init__(self, core_plugin, ovn_api, ovn_driver):
-        self.ovn_driver = ovn_driver
-        self.ovn_api = ovn_api
-        self.core_plugin = core_plugin
-
-    def sync(self, delay_seconds=10):
-        self._gt = greenthread.spawn_after_local(delay_seconds, self.do_sync)
-
-    @abc.abstractmethod
-    def do_sync(self):
-        """Method to sync the OVN DB."""
-
-    def stop(self):
-        try:
-            self._gt.kill()
-        except AttributeError:
-            # Haven't started syncing
-            pass
-
-
-class OvnNbSynchronizer(OvnDbSynchronizer):
+class OvnNbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
     """Synchronizer class for NB."""
 
-    def __init__(self, core_plugin, ovn_api, sb_ovn, mode, ovn_driver):
-        super(OvnNbSynchronizer, self).__init__(
-            core_plugin, ovn_api, ovn_driver)
-        self.mode = mode
+    _required_mechanism_drivers = ['ovn-sync']
+    _required_service_plugins = [
+        'neutron.services.ovn_l3.plugin.OVNL3RouterPlugin',
+        'neutron.services.segments.plugin.Plugin',
+        'port_forwarding',
+        'qos'
+    ]
+    _required_ml2_ext_drivers = ['qos']
+
+    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False):
+        super().__init__(
+            core_plugin, ovn_driver, mode, is_maintenance)
         self.l3_plugin = directory.get_plugin(plugin_constants.L3)
         self.pf_plugin = directory.get_plugin(plugin_constants.PORTFORWARDING)
         if not self.pf_plugin:
             self.pf_plugin = (
                 manager.NeutronManager.load_class_for_provider(
                     'neutron.service_plugins', 'port_forwarding')())
-        self._ovn_client = ovn_client.OVNClient(ovn_api, sb_ovn)
+        self._ovn_client = ovn_client.OVNClient(
+            self.ovn_nb_api, self.ovn_sb_api)
         self.segments_plugin = directory.get_plugin('segments')
         if not self.segments_plugin:
             self.segments_plugin = (
                 manager.NeutronManager.load_class_for_provider(
                     'neutron.service_plugins', 'segments')())
+        self.log_plugin = directory.get_plugin(plugin_constants.LOG_API)
+        if not self.log_plugin:
+            self.log_plugin = (
+                manager.NeutronManager.load_class_for_provider(
+                    'neutron.service_plugins', 'log')())
+            directory.add_plugin(plugin_constants.LOG_API, self.log_plugin)
+        for driver in self.log_plugin.driver_manager.drivers:
+            if driver.name == "ovn":
+                self.ovn_log_driver = driver
+        if not hasattr(self, 'ovn_log_driver'):
+            self.ovn_log_driver = log_driver.OVNDriver()
+            self.log_plugin.driver_manager.register_driver(self.ovn_log_driver)
 
     def stop(self):
         if utils.is_ovn_l3(self.l3_plugin):
             self.l3_plugin._nb_ovn.ovsdb_connection.stop()
             self.l3_plugin._sb_ovn.ovsdb_connection.stop()
-        super(OvnNbSynchronizer, self).stop()
+        super().stop()
 
     def do_sync(self):
-        if self.mode == SYNC_MODE_OFF:
-            LOG.debug("Neutron sync mode is off")
+        if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_OFF:
+            LOG.debug("Neutron sync mode is off, not checking OVN "
+                      "Northbound DB for consistency")
             return
-        LOG.debug("Starting OVN-Northbound DB sync process")
+
+        LOG.debug("OVN-Northbound DB sync process started @ %s",
+                  str(datetime.now()))
 
         ctx = context.get_admin_context()
-
         self.sync_port_groups(ctx)
         self.sync_networks_ports_and_dhcp_opts(ctx)
         self.sync_port_dns_records(ctx)
         self.sync_acls(ctx)
         self.sync_routers_and_rports(ctx)
-        self.migrate_to_stateful_fips(ctx)
         self.sync_port_qos_policies(ctx)
         self.sync_fip_qos_policies(ctx)
+        self.sync_fip_dnat_rules()
+
+        LOG.debug("OVN-Northbound DB sync process completed @ %s",
+                  str(datetime.now()))
 
     def _create_port_in_ovn(self, ctx, port):
         # Remove any old ACLs for the port to avoid creating duplicate ACLs.
-        self.ovn_api.delete_acl(
+        self.ovn_nb_api.delete_acl(
             utils.ovn_name(port['network_id']),
             port['id']).execute(check_error=True)
 
@@ -120,54 +122,14 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         # updates as needed.
         self._ovn_client.create_port(ctx, port)
 
-    def remove_common_acls(self, neutron_acls, nb_acls):
-        """Take out common acls of the two acl dictionaries.
-
-        @param   neutron_acls: neutron dictionary of port vs acls
-        @type    neutron_acls: {}
-        @param   nb_acls: nb dictionary of port vs acls
-        @type    nb_acls: {}
-        @return: Nothing, original dictionary modified
-        """
-        for port in neutron_acls.keys():
-            for acl in list(neutron_acls[port]):
-                if port in nb_acls and acl in nb_acls[port]:
-                    neutron_acls[port].remove(acl)
-                    nb_acls[port].remove(acl)
-
-    def get_acls(self, context):
-        """create the list of ACLS in OVN.
-
-        @param context: neutron_lib.context
-        @type  context: object of type neutron_lib.context.Context
-        @var   lswitch_names: List of lswitch names
-        @var   acl_list: List of NB acls
-        @var   acl_list_dict: Dictionary of acl-lists based on lport as key
-        @return: acl_list-dict
-        """
-        lswitch_names = set([])
-        for network in self.core_plugin.get_networks(context):
-            lswitch_names.add(network['id'])
-        acl_dict, ignore1, ignore2 = (
-            self.ovn_api.get_acls_for_lswitches(lswitch_names))
-        acl_list = list(itertools.chain(*acl_dict.values()))
-        acl_list_dict = {}
-        for acl in acl_list:
-            acl = acl_utils.filter_acl_dict(
-                acl, extra_fields=['lport', 'lswitch'])
-            key = acl['lport']
-            if key in acl_list_dict:
-                acl_list_dict[key].append(acl)
-            else:
-                acl_list_dict[key] = list([acl])
-        return acl_list_dict
-
     def sync_port_groups(self, ctx):
         """Sync Port Groups between neutron and NB.
 
         @param ctx: neutron_lib.context
         @type  ctx: object of type neutron_lib.context.Context
         """
+
+        LOG.debug('OVN-NB Sync port groups started @ %s', str(datetime.now()))
 
         neutron_sgs = {}
         neutron_pgs = set()
@@ -179,66 +141,92 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
             neutron_pgs.add(ovn_const.OVN_DROP_PORT_GROUP_NAME)
 
         ovn_pgs = set()
-        port_groups = self.ovn_api.db_list_rows('Port_Group').execute() or []
+        port_groups = (
+            self.ovn_nb_api.db_list_rows('Port_Group').execute() or [])
         for pg in port_groups:
-            ovn_pgs.add(pg.name)
+            # Default neutron "drop pg" does NOT have any external IDs, but
+            # we still want to manage it, so we match it on its name.
+            if (ovn_const.OVN_SG_EXT_ID_KEY in pg.external_ids or
+                    pg.name == ovn_const.OVN_DROP_PORT_GROUP_NAME):
+                ovn_pgs.add(pg.name)
 
         add_pgs = neutron_pgs.difference(ovn_pgs)
         remove_pgs = ovn_pgs.difference(neutron_pgs)
 
-        LOG.debug('Port Groups added %d, removed %d',
-                  len(add_pgs), len(remove_pgs))
+        if add_pgs or remove_pgs:
+            LOG.warning('Number of Port Groups to add: %d, remove: %d',
+                        len(add_pgs), len(remove_pgs))
 
-        if self.mode == SYNC_MODE_REPAIR:
-            LOG.debug('Port-Group-SYNC: transaction started @ %s',
-                      str(datetime.now()))
+        if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR and (
+                add_pgs or remove_pgs):
             if add_pgs:
                 db_ports = self.core_plugin.get_ports(ctx)
-                ovn_ports = set(p.name for p in
-                                self.ovn_api.lsp_list().execute())
-            with self.ovn_api.transaction(check_error=True) as txn:
+                ovn_ports = {p.name for p in
+                             self.ovn_nb_api.lsp_list().execute()}
+            with self.ovn_nb_api.transaction(check_error=True) as txn:
                 pg = ovn_const.OVN_DROP_PORT_GROUP_NAME
                 # Process default drop port group first
                 if pg in add_pgs:
-                    txn.add(self.ovn_api.pg_add(name=pg, acls=[]))
+                    txn.add(self.ovn_nb_api.pg_add(name=pg, acls=[]))
                     add_pgs.remove(pg)
                     # Add ports to the drop port group. Only add those that
                     # already exists in OVN. The rest will be added during the
                     # ports sync operation later.
                     for n_port in db_ports:
                         if ((utils.is_security_groups_enabled(n_port) or
-                                utils.is_port_security_enabled(n_port)) and
+                             utils.is_port_security_enabled(n_port)) and
                                 n_port['id'] in ovn_ports):
-                            txn.add(self.ovn_api.pg_add_ports(
+                            txn.add(self.ovn_nb_api.pg_add_ports(
                                 pg, n_port['id']))
 
                 for pg in add_pgs:
                     # If it's a security group PG, add the ext id
                     ext_ids = {ovn_const.OVN_SG_EXT_ID_KEY: neutron_sgs[pg]}
-                    txn.add(self.ovn_api.pg_add(name=pg, acls=[],
+                    txn.add(self.ovn_nb_api.pg_add(name=pg, acls=[],
                                                 external_ids=ext_ids))
                     # Add the ports belonging to the SG to this port group
                     for n_port in db_ports:
                         if (neutron_sgs[pg] in n_port['security_groups'] and
                                 n_port['id'] in ovn_ports):
-                            txn.add(self.ovn_api.pg_add_ports(
+                            txn.add(self.ovn_nb_api.pg_add_ports(
                                 pg, n_port['id']))
                 for pg in remove_pgs:
-                    txn.add(self.ovn_api.pg_del(pg))
-            LOG.debug('Port-Group-SYNC: transaction finished @ %s',
-                      str(datetime.now()))
+                    txn.add(self.ovn_nb_api.pg_del(pg))
+
+        LOG.debug('OVN-NB Sync port groups completed @ %s',
+                  str(datetime.now()))
 
     def _get_acls_from_port_groups(self):
         ovn_acls = []
-        acl_columns = (self.ovn_api._tables['ACL'].columns.keys() &
+        # Options and label columns are only present for OVN >= 22.03.
+        # Furthermore label is a randint so it cannot be compared with any
+        # expected neutron value. They are added later on the ACL addition.
+        acl_columns = (self.ovn_nb_api._tables['ACL'].columns.keys() &
                        set(ovn_const.ACL_EXPECTED_COLUMNS_NBDB))
         acl_columns.discard('external_ids')
-        for pg in self.ovn_api.db_list_rows('Port_Group').execute():
+        id_key = ovn_const.OVN_SG_RULE_EXT_ID_KEY
+        for pg in self.ovn_nb_api.db_list_rows('Port_Group').execute():
             acls = getattr(pg, 'acls', [])
             for acl in acls:
                 acl_string = {k: getattr(acl, k) for k in acl_columns}
                 acl_string['port_group'] = pg.name
+                if id_key in acl.external_ids:
+                    acl_string[id_key] = acl.external_ids[id_key]
+                elif pg.name != ovn_const.OVN_DROP_PORT_GROUP_NAME:
+                    # If ACL is not associated with a security group rule,
+                    # nor it belongs to the default neutron_pg_drop port group,
+                    # it don't need to be synced.
+                    continue
+                # This properties are present as lists of one item,
+                # converting them to string.
+                if acl_string['name']:
+                    acl_string['name'] = acl_string['name'][0]
+                if acl_string['meter']:
+                    acl_string['meter'] = acl_string['meter'][0]
+                if acl_string['severity']:
+                    acl_string['severity'] = acl_string['severity'][0]
                 ovn_acls.append(acl_string)
+
         return ovn_acls
 
     def sync_acls(self, ctx):
@@ -248,69 +236,152 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         @type  ctx: object of type neutron_lib.context.Context
         @return: Nothing
         """
-        LOG.debug('ACL-SYNC: started @ %s', str(datetime.now()))
+        LOG.debug('OVN-NB Sync ACLs started @ %s', str(datetime.now()))
 
         neutron_acls = []
-        # if allow-stateless supported, we have to fetch groups to determine if
-        # stateful is set
-        if self._ovn_client.is_allow_stateless_supported():
-            for sg in self.core_plugin.get_security_groups(ctx):
-                stateful = sg.get("stateful", True)
-                pg_name = utils.ovn_port_group_name(sg['id'])
-                for sgr in self.core_plugin.get_security_group_rules(
-                        ctx, {'security_group_id': sg['id']}):
-                    neutron_acls.append(
-                        acl_utils._add_sg_rule_acl_for_port_group(
-                            pg_name, stateful, sgr)
-                    )
-        else:
-            # TODO(ihrachys) remove when min OVN version >= 21.06
-            for sgr in self.core_plugin.get_security_group_rules(ctx):
-                pg_name = utils.ovn_port_group_name(sgr['security_group_id'])
-                neutron_acls.append(acl_utils._add_sg_rule_acl_for_port_group(
-                    pg_name, True, sgr))
-        neutron_acls += acl_utils.add_acls_for_drop_port_group(
+        # we have to fetch groups to determine if stateful is set
+        for sg in self.core_plugin.get_security_groups(ctx):
+            stateful = sg.get("stateful", True)
+            pg_name = utils.ovn_port_group_name(sg['id'])
+            for sgr in self.core_plugin.get_security_group_rules(
+                    ctx, {'security_group_id': sg['id']}):
+                neutron_acls.append(
+                    acl_utils._add_sg_rule_acl_for_port_group(
+                        pg_name, stateful, sgr)
+                )
+
+        # Sort the acls in the Neutron database according to the security
+        # group rule ID for easy comparison in the future.
+        neutron_acls.sort(key=lambda x: x[ovn_const.OVN_SG_RULE_EXT_ID_KEY])
+        neutron_default_acls = acl_utils.add_acls_for_drop_port_group(
             ovn_const.OVN_DROP_PORT_GROUP_NAME)
 
+        # Add logging options
+        self.ovn_log_driver.add_logging_options_to_acls(neutron_acls, ctx)
+        self.ovn_log_driver.add_logging_options_to_acls(neutron_default_acls,
+                                                        ctx)
         ovn_acls = self._get_acls_from_port_groups()
+        # Sort the acls in the ovn database according to the security
+        # group rule id for easy comparison in the future.
+        ovn_acls.sort(key=lambda x: x.get(
+            ovn_const.OVN_SG_RULE_EXT_ID_KEY, ""))
+        neutron_num, ovn_num = len(neutron_acls), len(ovn_acls)
+        add_acls, remove_acls, ovn_default_acls = [], [], []
+        n_index = o_index = 0
+        # neutron_acls and ovn_acls have been sorted, and we need to traverse
+        # both arrays from scratch until we reach the end of one of them.
+        # If it is found that the elements of two arrays are consistent,
+        # it is considered that the data is consistent. If it is found during
+        # comparison that the security group rule id in neutron_acls is
+        # smaller than the security group rule id in ovn_acls, as the arrays
+        # have been sorted, this security group rule will no longer appear in
+        # the future. This indicates that this security group rule only
+        # exists in neutron_acls. If it is a related situation, this security
+        # group rule only appears in ovn_acls.
+        while n_index < neutron_num and o_index < ovn_num:
+            na, oa = neutron_acls[n_index], ovn_acls[o_index]
+            n_id = na[ovn_const.OVN_SG_RULE_EXT_ID_KEY]
+            o_id = oa.get(ovn_const.OVN_SG_RULE_EXT_ID_KEY)
+            if not o_id:
+                # There may be some ACLs in the OVN database that do not have
+                # security group rule id. These are the default rules, which
+                # will be specially compared and processed later.
+                ovn_default_acls.append(oa)
+                o_index += 1
+            elif n_id == o_id:
+                if any(item not in na.items() for item in oa.items()):
+                    for item in oa.items():
+                        if item not in na.items():
+                            LOG.warning('Property %(item)s from OVN ACL not '
+                                        'found in Neutron ACL: %(n_acl)s',
+                                        {'item': item,
+                                         'n_acl': na})
+                    add_acls.append(na)
+                    remove_acls.append(oa)
+                n_index += 1
+                o_index += 1
+            elif n_id > o_id:
+                LOG.warning('ACL should not be present in OVN, removing'
+                            '%(acl)s', {'acl': oa})
+                remove_acls.append(oa)
+                o_index += 1
+            else:
+                LOG.warning('ACL should be present in OVN but is not, adding:'
+                            '%(acl)s', {'acl': na})
+                add_acls.append(na)
+                n_index += 1
+
+        # Check any ACLs we found to add against existing ACLs, ignoring the
+        # SG rule ID key. This eliminates any false-positives where the
+        # normalized cidr for two SG rules is the same value, since there
+        # will only be a single ACL that matches exactly with the SG rule ID.
+        if add_acls:
+            def copy_acl_rem_id_key(acl):
+                acl_copy = acl.copy()
+                del acl_copy[ovn_const.OVN_SG_RULE_EXT_ID_KEY]
+                return acl_copy
+
+            add_rem_acls = []
+            # Make a list of non-default rule ACLs (they have a security group
+            # rule id). See ovn_default_acls code/comment above for more info.
+            nd_ovn_acls = [copy_acl_rem_id_key(oa) for oa in ovn_acls
+                           if ovn_const.OVN_SG_RULE_EXT_ID_KEY in oa]
+            # We must copy here since we need to keep the original
+            # 'add_acl' intact for removal
+            for add_acl in add_acls:
+                add_acl_copy = copy_acl_rem_id_key(add_acl)
+                if add_acl_copy in nd_ovn_acls:
+                    add_rem_acls.append(add_acl)
+
+            # Remove any of the false-positive ACLs
+            LOG.warning('False-positive ACLs to remove: (%s)', add_rem_acls)
+            for add_rem in add_rem_acls:
+                add_acls.remove(add_rem)
+
+        if n_index < neutron_num:
+            # We didn't find the OVN ACLs matching the Neutron ACLs
+            # in "ovn_acls" and we are just adding the pending Neutron ACLs.
+            add_acls.extend(neutron_acls[n_index:])
+        if o_index < ovn_num:
+            # Any OVN ACLs not matching the Neutron ACLs is removed.
+            remove_acls.extend(ovn_acls[o_index:])
 
         # We need to remove also all the ACLs applied to Logical Switches
         def get_num_acls(ovn_acls):
             return len([item for sublist in ovn_acls for item in sublist[1]])
 
-        ovn_acls_from_ls = [(row.name, row.acls) for row in (
-            self.ovn_api._tables['Logical_Switch'].rows.values())]
+        ovn_acls_from_ls = [
+            (row.name, row.acls)
+            for row in self.ovn_nb_api._tables['Logical_Switch'].rows.values()
+            if ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY in row.external_ids]
         num_acls_to_remove_from_ls = get_num_acls(ovn_acls_from_ls)
 
         # Remove the common ones
-        for na in list(neutron_acls):
-            for ovn_a in ovn_acls:
+        for na in list(neutron_default_acls):
+            for ovn_a in ovn_default_acls.copy():
                 if all(item in na.items() for item in ovn_a.items()):
-                    neutron_acls.remove(na)
-                    ovn_acls.remove(ovn_a)
+                    neutron_default_acls.remove(na)
+                    ovn_default_acls.remove(ovn_a)
                     break
-
+        neutron_acls = add_acls + neutron_default_acls
+        ovn_acls = remove_acls + ovn_default_acls
         num_acls_to_add = len(neutron_acls)
         num_acls_to_remove = len(ovn_acls) + num_acls_to_remove_from_ls
-        if num_acls_to_add != 0 or num_acls_to_remove != 0:
-            LOG.warning('ACLs-to-be-added %(add)d '
-                        'ACLs-to-be-removed %(remove)d',
+        if num_acls_to_add or num_acls_to_remove:
+            LOG.warning('ACLs to be added: %(add)d '
+                        'ACLs to be removed: %(remove)d',
                         {'add': num_acls_to_add,
                          'remove': num_acls_to_remove})
 
-        if self.mode == SYNC_MODE_REPAIR:
-            with self.ovn_api.transaction(check_error=True) as txn:
-                for acla in neutron_acls:
-                    LOG.warning('ACL found in Neutron but not in '
-                                'OVN DB for port group %s', acla['port_group'])
-                    txn.add(self.ovn_api.pg_acl_add(**acla, may_exist=True))
-
-            with self.ovn_api.transaction(check_error=True) as txn:
+        if (self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR and
+                (num_acls_to_add or num_acls_to_remove)):
+            one_time_pg_resync = True
+            with self.ovn_nb_api.transaction(check_error=True) as txn:
                 for aclr in ovn_acls:
-                    LOG.warning('ACLs found in OVN DB but not in '
+                    LOG.warning('ACLs found in OVN NB DB but not in '
                                 'Neutron for port group %s',
                                 aclr['port_group'])
-                    txn.add(self.ovn_api.pg_acl_del(aclr['port_group'],
+                    txn.add(self.ovn_nb_api.pg_acl_del(aclr['port_group'],
                                                     aclr['direction'],
                                                     aclr['priority'],
                                                     aclr['match']))
@@ -320,9 +391,44 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                     if len(aclr[1]) > 0:
                         LOG.warning('Removing ACLs from OVN from Logical '
                                     'Switch %s', aclr[0])
-                        txn.add(self.ovn_api.acl_del(aclr[0]))
+                        txn.add(self.ovn_nb_api.acl_del(aclr[0]))
+            while True:
+                try:
+                    with self.ovn_nb_api.transaction(check_error=True) as txn:
+                        for acla in neutron_acls:
+                            LOG.warning('ACL found in Neutron but not in '
+                                        'OVN NB DB for port group %s',
+                                        acla['port_group'])
+                            acl = txn.add(self.ovn_nb_api.pg_acl_add(**acla,
+                                                               may_exist=True))
+                            # We need to do this now since label should be
+                            # random and not 0. We can use options as a way
+                            # to see if label is supported or not.
+                            if acla.get('log'):
+                                self.ovn_log_driver.add_label_related(acla,
+                                                                      ctx)
+                                txn.add(self.ovn_nb_api.db_set('ACL', acl,
+                                    label=acla['label'],
+                                    options=acla['options']))
 
-        LOG.debug('ACL-SYNC: finished @ %s', str(datetime.now()))
+                except idlutils.RowNotFound as row_err:
+                    if row_err.msg.startswith("Cannot find Port_Group"):
+                        if one_time_pg_resync:
+                            LOG.warning('Port group row was not found during '
+                                        'ACLs sync. Will attempt to sync port '
+                                        'groups one more time. The caught '
+                                        'exception is: %s', row_err)
+                            self.sync_port_groups(ctx)
+                            one_time_pg_resync = False
+                            continue
+                        LOG.error('Port group exception during ACL sync '
+                                  'even after one more port group resync. '
+                                  'The caught exception is: %s', row_err)
+                    else:
+                        raise
+                break
+
+        LOG.debug('OVN-NB Sync ACLs completed @ %s', str(datetime.now()))
 
     def _calculate_routes_differences(self, ovn_routes, db_routes):
         to_add = []
@@ -330,7 +436,7 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         for db_route in db_routes:
             for ovn_route in ovn_routes:
                 if (ovn_route['destination'] == db_route['destination'] and
-                   ovn_route['nexthop'] == db_route['nexthop']):
+                        ovn_route['nexthop'] == db_route['nexthop']):
                     break
             else:
                 to_add.append(db_route)
@@ -338,10 +444,19 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         for ovn_route in ovn_routes:
             for db_route in db_routes:
                 if (ovn_route['destination'] == db_route['destination'] and
-                   ovn_route['nexthop'] == db_route['nexthop']):
+                        ovn_route['nexthop'] == db_route['nexthop']):
                     break
             else:
-                to_remove.append(ovn_route)
+                external_ids = ovn_route.get('external_ids', {})
+
+                # NOTE(tpsilva): only add Neutron-managed routes
+                if (strutils.bool_from_string(
+                    external_ids.get(
+                        ovn_const.OVN_LRSR_EXT_ID_KEY, 'false')) or
+                        strutils.bool_from_string(
+                        external_ids.get(
+                        ovn_const.OVN_ROUTER_IS_EXT_GW, 'false'))):
+                    to_remove.append(ovn_route)
 
         return to_add, to_remove
 
@@ -355,7 +470,8 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                 continue
             for ovn_fip in ovn_fips:
                 if (ovn_fip['logical_ip'] == db_fip['fixed_ip_address'] and
-                   ovn_fip['external_ip'] == db_fip['floating_ip_address']):
+                        ovn_fip['external_ip'] ==
+                        db_fip['floating_ip_address']):
                     break
             else:
                 to_add.append(db_fip)
@@ -363,7 +479,8 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         for ovn_fip in ovn_fips:
             for db_fip in db_fips:
                 if (ovn_fip['logical_ip'] == db_fip['fixed_ip_address'] and
-                   ovn_fip['external_ip'] == db_fip['floating_ip_address']):
+                        ovn_fip['external_ip'] ==
+                        db_fip['floating_ip_address']):
                     break
             else:
                 to_remove.append(ovn_fip)
@@ -432,6 +549,169 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         self.l3_plugin.port_forwarding.db_sync_delete(
             context, fip_id, txn)
 
+    def _is_router_port_changed(self, db_router_port, lrport_nets):
+        """Check if the router port needs to be updated.
+
+        This method checks for networks and ipv6_ra_configs (if supported)
+        changes on a given router port.
+         """
+        db_lrport_nets = db_router_port['networks']
+        if db_lrport_nets != lrport_nets:
+            return True
+
+        # Check for ipv6_ra_configs changes
+        db_lrport_ra = db_router_port['ipv6_ra_configs']
+        lrp_name = utils.ovn_lrouter_port_name(db_router_port['id'])
+        try:
+            ovn_lrport = self.ovn_nb_api.lrp_get(
+                lrp_name).execute(check_error=True)
+        except idlutils.RowNotFound:
+            # If the port is not found in the OVN database the
+            # ovn-db-sync script will recreate this port later
+            # and it will have the latest information. No need
+            # to update it.
+            return False
+        lrport_ra = ovn_lrport.ipv6_ra_configs
+        return db_lrport_ra != lrport_ra
+
+    def _add_routers_del_txn(self, txn, del_lrouters_list):
+        for lrouter in del_lrouters_list:
+            LOG.warning("Router found in OVN NB DB but not in "
+                        "Neutron, router id=%s", lrouter['name'])
+            if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                continue
+            LOG.warning("Deleting the router %s from OVN NB DB",
+                        lrouter['name'])
+            txn.add(self.ovn_nb_api.lr_del(
+                utils.ovn_name(lrouter['name']), if_exists=True))
+
+    def _add_router_ports_del_txn(self, txn, del_lrouter_ports_list):
+        for lrport_info in del_lrouter_ports_list:
+            LOG.warning("Router Port found in OVN NB DB but not in "
+                        "Neutron, port_id=%s", lrport_info['port'])
+            if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                continue
+            LOG.warning("Deleting the port %s from OVN NB DB",
+                        lrport_info['port'])
+            txn.add(self.ovn_nb_api.delete_lrouter_port(
+                utils.ovn_lrouter_port_name(lrport_info['port']),
+                utils.ovn_name(lrport_info['lrouter']),
+                if_exists=False))
+
+    def _add_sroutes_update_txn(self, txn, update_sroutes_list):
+        for sroute in update_sroutes_list:
+            if sroute['add']:
+                LOG.warning("Router %(id)s static routes %(route)s "
+                            "found in Neutron but not in OVN NB DB",
+                            {'id': sroute['id'], 'route': sroute['add']})
+                if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    continue
+                LOG.warning("Add static routes %s to OVN NB DB", sroute['add'])
+                for route in sroute['add']:
+                    columns = {'external_ids': {
+                               ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}
+                    if 'external_ids' in route:
+                        columns['external_ids'] = route['external_ids']
+                    txn.add(self.ovn_nb_api.add_static_route(
+                        utils.ovn_name(sroute['id']),
+                        ip_prefix=route['destination'],
+                        nexthop=route['nexthop'],
+                        **columns))
+            if sroute['del']:
+                LOG.warning("Router %(id)s static routes %(route)s "
+                            "found in OVN NB DB but not in Neutron",
+                            {'id': sroute['id'], 'route': sroute['del']})
+                if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    continue
+                LOG.warning("Delete static routes %s from OVN NB DB",
+                            sroute['del'])
+                routes_to_delete = [
+                    (r['destination'], r['nexthop'])
+                    for r in sroute['del']
+                ]
+                txn.add(self.ovn_nb_api.delete_static_routes(
+                    utils.ovn_name(sroute['id']), routes_to_delete))
+
+    def _add_fips_update_txn(self, ctx, txn, update_fips_list):
+        for fip in update_fips_list:
+            if fip['del']:
+                LOG.warning("Router %(id)s floating IPs %(fip)s "
+                            "found in OVN NB DB but not in Neutron",
+                            {'id': fip['id'], 'fip': fip['del']})
+                if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    continue
+                LOG.warning(
+                    "Delete floating IPs %s from OVN NB DB", fip['del'])
+                for nat in fip['del']:
+                    self._ovn_client._delete_floatingip(
+                        ctx, nat, utils.ovn_name(fip['id']), txn=txn)
+            if fip['add']:
+                LOG.warning("Router %(id)s floating IPs %(fip)s "
+                            "found in Neutron but not in OVN NB DB",
+                            {'id': fip['id'], 'fip': fip['add']})
+                if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    continue
+                LOG.warning("Add floating IPs %s to OVN NB DB", fip['add'])
+                for nat in fip['add']:
+                    self._ovn_client._create_or_update_floatingip(
+                        ctx, nat, txn=txn)
+
+    def _add_pfs_update_txn(self, ctx, txn, update_pfs_list):
+        for pf in update_pfs_list:
+            if pf['del']:
+                LOG.warning("Router %(id)s port forwarding for floating "
+                            "IPs %(fip)s found in OVN NB DB but not in "
+                            "Neutron",
+                            {'id': pf['id'], 'fip': pf['del']})
+                if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    continue
+                LOG.warning(
+                    "Delete port forwarding for floating IPs %s from "
+                    "OVN NB DB", pf['del'])
+                for pf_id in pf['del']:
+                    self._delete_floatingip_pfs(ctx, pf_id, txn)
+            if pf['add']:
+                LOG.warning("Router %(id)s port forwarding for floating "
+                            "IPs %(fip)s Neutron out of sync or missing "
+                            "in OVN NB DB",
+                            {'id': pf['id'], 'fip': pf['add']})
+                if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    continue
+                LOG.warning("Add port forwarding for floating IPs %s "
+                            "to OVN NB DB", pf['add'])
+                for pf_fip_id in pf['add']:
+                    self._create_or_update_floatingip_pfs(
+                        ctx, pf_fip_id, txn)
+
+    def _add_snats_update_txn(self, txn, update_snats_list):
+        for snat in update_snats_list:
+            if snat['del']:
+                LOG.warning("Router %(id)s SNAT %(snat)s "
+                            "found in OVN NB DB but not in Neutron",
+                            {'id': snat['id'], 'snat': snat['del']})
+                if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    continue
+                LOG.warning("Delete SNATs %s from OVN NB DB", snat['del'])
+                for nat in snat['del']:
+                    txn.add(self.ovn_nb_api.delete_nat_rule_in_lrouter(
+                        utils.ovn_name(snat['id']),
+                        logical_ip=nat['logical_ip'],
+                        external_ip=nat['external_ip'],
+                        type='snat'))
+            if snat['add']:
+                LOG.warning("Router %(id)s SNAT %(snat)s "
+                            "found in Neutron but not in OVN NB DB",
+                            {'id': snat['id'], 'snat': snat['add']})
+                if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    continue
+                LOG.warning("Add SNATs %s to OVN NB DB", snat['add'])
+                for nat in snat['add']:
+                    txn.add(self.ovn_nb_api.add_nat_rule_in_lrouter(
+                        utils.ovn_name(snat['id']),
+                        logical_ip=nat['logical_ip'],
+                        external_ip=nat['external_ip'],
+                        type='snat'))
+
     def sync_routers_and_rports(self, ctx):
         """Sync Routers between neutron and NB.
 
@@ -453,29 +733,36 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                       "sync routers and router ports")
             return
 
-        LOG.debug('OVN-NB Sync Routers and Router ports started @ %s',
+        LOG.debug('OVN-NB Sync routers and router ports started @ %s',
                   str(datetime.now()))
 
         db_routers = {}
         db_extends = {}
         db_router_ports = {}
         for router in self.l3_plugin.get_routers(ctx):
+            if not utils.is_ovn_provider_router(router):
+                continue
             db_routers[router['id']] = router
             db_extends[router['id']] = {}
             db_extends[router['id']]['routes'] = []
             db_extends[router['id']]['snats'] = []
             db_extends[router['id']]['fips'] = []
             db_extends[router['id']]['fips_pfs'] = []
-            if not router.get(l3.EXTERNAL_GW_INFO):
-                continue
-            gateways = self._ovn_client._get_gw_info(ctx, router)
-            for gw_info in gateways:
-                prefix = (constants.IPv4_ANY if
-                          gw_info.ip_version == constants.IP_VERSION_4 else
-                          constants.IPv6_ANY)
+
+            gw_infos = [gw_info for gw_port in
+                        self._ovn_client._get_router_gw_ports(ctx,
+                            router['id'])
+                        for gw_info in
+                        self._ovn_client._get_gw_info(ctx, gw_port)]
+
+            # Only make one call outside of for() loop
+            cidrs = (self._ovn_client._get_snat_cidrs_for_external_router(ctx,
+                     router['id']))
+
+            for gw_info in gw_infos:
                 if gw_info.gateway_ip:
                     db_extends[router['id']]['routes'].append(
-                        {'destination': prefix,
+                        {'destination': gw_info.ip_prefix,
                          'nexthop': gw_info.gateway_ip,
                          'external_ids': {
                              ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
@@ -483,25 +770,25 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                              gw_info.subnet_id}})
                 if gw_info.ip_version == constants.IP_VERSION_6:
                     continue
-                if gw_info.router_ip and utils.is_snat_enabled(router):
-                    networks = (
-                        self._ovn_client._get_v4_network_of_all_router_ports(
-                            ctx, router['id']))
-                    for network in networks:
-                        db_extends[router['id']]['snats'].append({
-                            'logical_ip': network,
-                            'external_ip': gw_info.router_ip,
-                            'type': 'snat'})
+                if not (gw_info.router_ip and
+                        utils.is_snat_enabled(router)):
+                    continue
+                for cidr in cidrs:
+                    db_extends[router['id']]['snats'].append({
+                        'logical_ip': cidr,
+                        'external_ip': gw_info.router_ip,
+                        'type': 'snat'})
 
         fips = self.l3_plugin.get_floatingips(
             ctx, {'router_id': list(db_routers.keys())})
         for fip in fips:
             db_extends[fip['router_id']]['fips'].append(fip)
-            if self.pf_plugin:
-                fip_pfs = self.pf_plugin.get_floatingip_port_forwardings(
-                    ctx, fip['id'])
-                for fip_pf in fip_pfs:
-                    db_extends[fip['router_id']]['fips_pfs'].append(fip_pf)
+            if not self.pf_plugin:
+                continue
+            fip_pfs = self.pf_plugin.get_floatingip_port_forwardings(
+                ctx, fip['id'])
+            for fip_pf in fip_pfs:
+                db_extends[fip['router_id']]['fips_pfs'].append(fip_pf)
         interfaces = self.l3_plugin._get_sync_interfaces(
             ctx, list(db_routers.keys()),
             [constants.DEVICE_OWNER_ROUTER_INTF,
@@ -511,8 +798,14 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
              constants.DEVICE_OWNER_HA_REPLICATED_INT])
         for interface in interfaces:
             db_router_ports[interface['id']] = interface
+            networks, ipv6_ra_configs = (
+                self._ovn_client._get_nets_and_ipv6_ra_confs_for_router_port(
+                    ctx, interface))
+            db_router_ports[interface['id']]['networks'] = networks
+            db_router_ports[interface['id']][
+                'ipv6_ra_configs'] = ipv6_ra_configs
 
-        lrouters = self.ovn_api.get_all_logical_routers_with_rports()
+        lrouters = self.ovn_nb_api.get_all_logical_routers_with_rports()
 
         del_lrouters_list = []
         del_lrouter_ports_list = []
@@ -522,253 +815,133 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         update_fips_list = []
         update_pfs_list = []
         for lrouter in lrouters:
-            ovn_rtr_lb_pfs = self.ovn_api.get_router_floatingip_lbs(
-                utils.ovn_name(lrouter['name']))
-            if lrouter['name'] in db_routers:
-                for lrport, lrport_nets in lrouter['ports'].items():
-                    if lrport in db_router_ports:
-                        # We dont have to check for the networks and
-                        # ipv6_ra_configs values. Lets add it to the
-                        # update_lrport_list. If they are in sync, then
-                        # update_router_port will be a no-op.
-                        update_lrport_list.append(db_router_ports[lrport])
-                        del db_router_ports[lrport]
-                    else:
-                        del_lrouter_ports_list.append(
-                            {'port': lrport, 'lrouter': lrouter['name']})
-                if 'routes' in db_routers[lrouter['name']]:
-                    db_routes = db_routers[lrouter['name']]['routes']
-                else:
-                    db_routes = []
-                if 'routes' in db_extends[lrouter['name']]:
-                    db_routes.extend(db_extends[lrouter['name']]['routes'])
-
-                ovn_routes = lrouter['static_routes']
-                add_routes, del_routes = self._calculate_routes_differences(
-                    ovn_routes, db_routes)
-                update_sroutes_list.append({'id': lrouter['name'],
-                                            'add': add_routes,
-                                            'del': del_routes})
-                ovn_fips = lrouter['dnat_and_snats']
-                db_fips = db_extends[lrouter['name']]['fips']
-                add_fips, del_fips = self._calculate_fips_differences(
-                    ovn_fips, ovn_rtr_lb_pfs, db_fips)
-                update_fips_list.append({'id': lrouter['name'],
-                                         'add': add_fips,
-                                         'del': del_fips})
-                db_fips_pfs = db_extends[lrouter['name']]['fips_pfs']
-                add_fip_pfs, del_fip_pfs = self._calculate_fip_pfs_differences(
-                    ovn_rtr_lb_pfs, db_fips_pfs)
-                update_pfs_list.append({'id': lrouter['name'],
-                                        'add': add_fip_pfs,
-                                        'del': del_fip_pfs})
-                ovn_nats = lrouter['snats']
-                db_snats = db_extends[lrouter['name']]['snats']
-                add_snats, del_snats = helpers.diff_list_of_dict(
-                    ovn_nats, db_snats)
-                update_snats_list.append({'id': lrouter['name'],
-                                          'add': add_snats,
-                                          'del': del_snats})
-            else:
+            if lrouter['name'] not in db_routers:
                 del_lrouters_list.append(lrouter)
+                continue
+            for lrport, lrport_nets in lrouter['ports'].items():
+                if lrport not in db_router_ports:
+                    del_lrouter_ports_list.append(
+                        {'port': lrport, 'lrouter': lrouter['name']})
+                    continue
+                if self._is_router_port_changed(
+                        db_router_ports[lrport], lrport_nets):
+                    update_lrport_list.append(db_router_ports[lrport])
+                del db_router_ports[lrport]
+            db_routes = []
+            if 'routes' in db_routers[lrouter['name']]:
+                db_routes = db_routers[lrouter['name']]['routes']
+            if 'routes' in db_extends[lrouter['name']]:
+                db_routes.extend(db_extends[lrouter['name']]['routes'])
+
+            ovn_routes = lrouter['static_routes']
+            add_routes, del_routes = self._calculate_routes_differences(
+                ovn_routes, db_routes)
+            update_sroutes_list.append({'id': lrouter['name'],
+                                        'add': add_routes,
+                                        'del': del_routes})
+            ovn_fips = lrouter['dnat_and_snats']
+            db_fips = db_extends[lrouter['name']]['fips']
+            ovn_rtr_lb_pfs = self.ovn_nb_api.get_router_floatingip_lbs(
+                utils.ovn_name(lrouter['name']))
+            add_fips, del_fips = self._calculate_fips_differences(
+                ovn_fips, ovn_rtr_lb_pfs, db_fips)
+            update_fips_list.append({'id': lrouter['name'],
+                                     'add': add_fips,
+                                     'del': del_fips})
+            db_fips_pfs = db_extends[lrouter['name']]['fips_pfs']
+            add_fip_pfs, del_fip_pfs = self._calculate_fip_pfs_differences(
+                ovn_rtr_lb_pfs, db_fips_pfs)
+            update_pfs_list.append({'id': lrouter['name'],
+                                    'add': add_fip_pfs,
+                                    'del': del_fip_pfs})
+            ovn_nats = lrouter['snats']
+            db_snats = db_extends[lrouter['name']]['snats']
+            add_snats, del_snats = helpers.diff_list_of_dict(
+                ovn_nats, db_snats)
+            update_snats_list.append({'id': lrouter['name'],
+                                      'add': add_snats,
+                                      'del': del_snats})
 
         lrouters_names = {lr['name'] for lr in lrouters}
         for r_id, router in db_routers.items():
             if r_id in lrouters_names:
                 continue
             LOG.warning("Router found in Neutron but not in "
-                        "OVN DB, router id=%s", router['id'])
-            if self.mode == SYNC_MODE_REPAIR:
-                try:
-                    LOG.warning("Creating the router %s in OVN NB DB",
-                                router['id'])
-                    self._ovn_client.create_router(
-                        ctx, router, add_external_gateway=False)
-                    if 'routes' in router:
-                        update_sroutes_list.append(
-                            {'id': router['id'], 'add': router['routes'],
-                             'del': []})
-                    if 'routes' in db_extends[router['id']]:
-                        update_sroutes_list.append(
-                            {'id': router['id'],
-                             'add': db_extends[router['id']]['routes'],
-                             'del': []})
-                    if 'snats' in db_extends[router['id']]:
-                        update_snats_list.append(
-                            {'id': router['id'],
-                             'add': db_extends[router['id']]['snats'],
-                             'del': []})
-                    if 'fips' in db_extends[router['id']]:
-                        update_fips_list.append(
-                            {'id': router['id'],
-                             'add': db_extends[router['id']]['fips'],
-                             'del': []})
-                    if 'fips_pfs' in db_extends[router['id']]:
-                        add_fip_pfs = {
-                            db_pf['floatingip_id'] for
-                            db_pf in db_extends[router['id']]['fips_pfs']}
-                        update_pfs_list.append(
-                            {'id': router['id'],
-                             'add': list(add_fip_pfs),
-                             'del': []})
-                except RuntimeError:
-                    LOG.warning("Create router in OVN NB failed for router %s",
-                                router['id'])
+                        "OVN NB DB, router id=%s", router['id'])
+            if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                continue
+            LOG.warning("Creating the router %s in OVN NB DB", router['id'])
+            try:
+                self._ovn_client.create_router(
+                    ctx, router, add_external_gateway=False)
+            except RuntimeError:
+                LOG.warning("Create router in OVN NB DB failed for router %s",
+                            router['id'])
+            if 'routes' in router:
+                update_sroutes_list.append(
+                    {'id': router['id'], 'add': router['routes'], 'del': []})
+            if 'routes' in db_extends[router['id']]:
+                update_sroutes_list.append(
+                    {'id': router['id'],
+                     'add': db_extends[router['id']]['routes'],
+                     'del': []})
+            if 'snats' in db_extends[router['id']]:
+                update_snats_list.append(
+                    {'id': router['id'],
+                     'add': db_extends[router['id']]['snats'],
+                     'del': []})
+            if 'fips' in db_extends[router['id']]:
+                update_fips_list.append(
+                    {'id': router['id'],
+                     'add': db_extends[router['id']]['fips'],
+                     'del': []})
+            if 'fips_pfs' in db_extends[router['id']]:
+                add_fip_pfs = {
+                    db_pf['floatingip_id'] for
+                    db_pf in db_extends[router['id']]['fips_pfs']}
+                update_pfs_list.append(
+                    {'id': router['id'],
+                     'add': list(add_fip_pfs),
+                     'del': []})
 
         for rp_id, rrport in db_router_ports.items():
-            LOG.warning("Router Port found in Neutron but not in OVN "
+            LOG.warning("Router Port found in Neutron but not in OVN NB "
                         "DB, router port_id=%s", rrport['id'])
-            if self.mode == SYNC_MODE_REPAIR:
-                try:
-                    LOG.warning("Creating the router port %s in OVN NB DB",
-                                rrport['id'])
-                    router = db_routers[rrport['device_id']]
-                    self._ovn_client._create_lrouter_port(
-                        ctx, router, rrport)
-                except RuntimeError:
-                    LOG.warning("Create router port in OVN "
-                                "NB failed for router port %s", rrport['id'])
+            if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                continue
+            LOG.warning("Creating the router port %s in OVN NB DB",
+                        rrport['id'])
+            router = db_routers[rrport['device_id']]
+            try:
+                self._ovn_client._create_lrouter_port(ctx, router, rrport)
+            except RuntimeError:
+                LOG.warning("Create router port in OVN NB DB "
+                            "failed for router port %s", rrport['id'])
 
         for rport in update_lrport_list:
-            LOG.warning("Router Port port_id=%s needs to be updated "
-                        "for networks changed",
+            LOG.warning("Router Port port_id=%s needs to be updated in OVN NB "
+                        "DB as network(s) have changed",
                         rport['id'])
-            if self.mode == SYNC_MODE_REPAIR:
-                try:
-                    LOG.warning(
-                        "Updating networks on router port %s in OVN NB DB",
-                        rport['id'])
-                    self._ovn_client.update_router_port(ctx, rport)
-                except RuntimeError:
-                    LOG.warning("Update router port networks in OVN "
-                                "NB failed for router port %s", rport['id'])
+            if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                continue
+            LOG.warning(
+                "Updating networks on router port %s in OVN NB DB",
+                rport['id'])
+            try:
+                self._ovn_client.update_router_port(ctx, rport)
+            except RuntimeError:
+                LOG.warning("Update router port networks in OVN "
+                            "NB DB failed for router port %s", rport['id'])
 
-        with self.ovn_api.transaction(check_error=True) as txn:
-            for lrouter in del_lrouters_list:
-                LOG.warning("Router found in OVN but not in "
-                            "Neutron, router id=%s", lrouter['name'])
-                if self.mode == SYNC_MODE_REPAIR:
-                    LOG.warning("Deleting the router %s from OVN NB DB",
-                                lrouter['name'])
-                    txn.add(self.ovn_api.delete_lrouter(
-                            utils.ovn_name(lrouter['name'])))
+        with self.ovn_nb_api.transaction(check_error=True) as txn:
+            self._add_routers_del_txn(txn, del_lrouters_list)
+            self._add_router_ports_del_txn(txn, del_lrouter_ports_list)
+            self._add_sroutes_update_txn(txn, update_sroutes_list)
+            self._add_fips_update_txn(ctx, txn, update_fips_list)
+            self._add_pfs_update_txn(ctx, txn, update_pfs_list)
+            self._add_snats_update_txn(txn, update_snats_list)
 
-            for lrport_info in del_lrouter_ports_list:
-                LOG.warning("Router Port found in OVN but not in "
-                            "Neutron, port_id=%s", lrport_info['port'])
-                if self.mode == SYNC_MODE_REPAIR:
-                    LOG.warning("Deleting the port %s from OVN NB DB",
-                                lrport_info['port'])
-                    txn.add(self.ovn_api.delete_lrouter_port(
-                            utils.ovn_lrouter_port_name(lrport_info['port']),
-                            utils.ovn_name(lrport_info['lrouter']),
-                            if_exists=False))
-            for sroute in update_sroutes_list:
-                if sroute['add']:
-                    LOG.warning("Router %(id)s static routes %(route)s "
-                                "found in Neutron but not in OVN",
-                                {'id': sroute['id'], 'route': sroute['add']})
-                    if self.mode == SYNC_MODE_REPAIR:
-                        LOG.warning("Add static routes %s to OVN NB DB",
-                                    sroute['add'])
-                        for route in sroute['add']:
-                            columns = {}
-                            if 'external_ids' in route:
-                                columns['external_ids'] = route['external_ids']
-                            txn.add(self.ovn_api.add_static_route(
-                                utils.ovn_name(sroute['id']),
-                                ip_prefix=route['destination'],
-                                nexthop=route['nexthop'],
-                                **columns))
-
-                if sroute['del']:
-                    LOG.warning("Router %(id)s static routes %(route)s "
-                                "found in OVN but not in Neutron",
-                                {'id': sroute['id'], 'route': sroute['del']})
-                    if self.mode == SYNC_MODE_REPAIR:
-                        LOG.warning("Delete static routes %s from OVN NB DB",
-                                    sroute['del'])
-                        for route in sroute['del']:
-                            txn.add(self.ovn_api.delete_static_route(
-                                utils.ovn_name(sroute['id']),
-                                ip_prefix=route['destination'],
-                                nexthop=route['nexthop']))
-            for fip in update_fips_list:
-                if fip['del']:
-                    LOG.warning("Router %(id)s floating ips %(fip)s "
-                                "found in OVN but not in Neutron",
-                                {'id': fip['id'], 'fip': fip['del']})
-                    if self.mode == SYNC_MODE_REPAIR:
-                        LOG.warning(
-                            "Delete floating ips %s from OVN NB DB",
-                            fip['del'])
-                        for nat in fip['del']:
-                            self._ovn_client._delete_floatingip(
-                                nat, utils.ovn_name(fip['id']), txn=txn)
-                if fip['add']:
-                    LOG.warning("Router %(id)s floating ips %(fip)s "
-                                "found in Neutron but not in OVN",
-                                {'id': fip['id'], 'fip': fip['add']})
-                    if self.mode == SYNC_MODE_REPAIR:
-                        LOG.warning("Add floating ips %s to OVN NB DB",
-                                    fip['add'])
-                        for nat in fip['add']:
-                            self._ovn_client._create_or_update_floatingip(
-                                nat, txn=txn)
-
-            for pf in update_pfs_list:
-                if pf['del']:
-                    LOG.warning("Router %(id)s port forwarding for floating "
-                                "ips %(fip)s found in OVN but not in Neutron",
-                                {'id': pf['id'], 'fip': pf['del']})
-                    if self.mode == SYNC_MODE_REPAIR:
-                        LOG.warning(
-                            "Delete port forwarding for fips %s from "
-                            "OVN NB DB",
-                            pf['del'])
-                        for pf_id in pf['del']:
-                            self._delete_floatingip_pfs(ctx, pf_id, txn)
-                if pf['add']:
-                    LOG.warning("Router %(id)s port forwarding for floating "
-                                "ips %(fip)s Neutron out of sync or missing "
-                                "in OVN",
-                                {'id': pf['id'], 'fip': pf['add']})
-                    if self.mode == SYNC_MODE_REPAIR:
-                        LOG.warning("Add port forwarding for fips %s "
-                                    "to OVN NB DB",
-                                    pf['add'])
-                        for pf_fip_id in pf['add']:
-                            self._create_or_update_floatingip_pfs(
-                                ctx, pf_fip_id, txn)
-
-            for snat in update_snats_list:
-                if snat['del']:
-                    LOG.warning("Router %(id)s snat %(snat)s "
-                                "found in OVN but not in Neutron",
-                                {'id': snat['id'], 'snat': snat['del']})
-                    if self.mode == SYNC_MODE_REPAIR:
-                        LOG.warning("Delete snats %s from OVN NB DB",
-                                    snat['del'])
-                        for nat in snat['del']:
-                            txn.add(self.ovn_api.delete_nat_rule_in_lrouter(
-                                utils.ovn_name(snat['id']),
-                                logical_ip=nat['logical_ip'],
-                                external_ip=nat['external_ip'],
-                                type='snat'))
-                if snat['add']:
-                    LOG.warning("Router %(id)s snat %(snat)s "
-                                "found in Neutron but not in OVN",
-                                {'id': snat['id'], 'snat': snat['add']})
-                    if self.mode == SYNC_MODE_REPAIR:
-                        LOG.warning("Add snats %s to OVN NB DB",
-                                    snat['add'])
-                        for nat in snat['add']:
-                            txn.add(self.ovn_api.add_nat_rule_in_lrouter(
-                                utils.ovn_name(snat['id']),
-                                logical_ip=nat['logical_ip'],
-                                external_ip=nat['external_ip'],
-                                type='snat'))
-        LOG.debug('OVN-NB Sync routers and router ports finished %s',
+        LOG.debug('OVN-NB Sync routers and router ports completed @ %s',
                   str(datetime.now()))
 
     def _sync_subnet_dhcp_options(self, ctx, db_networks,
@@ -776,7 +949,7 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         LOG.debug('OVN-NB Sync DHCP options for Neutron subnets started')
 
         db_subnets = {}
-        filters = {'enable_dhcp': [1]}
+        filters = {'enable_dhcp': [True]}
         for subnet in self.core_plugin.get_subnets(ctx, filters=filters):
             if (subnet['ip_version'] == constants.IP_VERSION_6 and
                     subnet.get('ipv6_address_mode') == constants.IPV6_SLAAC):
@@ -794,7 +967,7 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                 else:
                     server_mac = ovn_dhcp_opts['options'].get('server_mac')
                 dhcp_options = self._ovn_client._get_ovn_dhcp_options(
-                    db_subnets[subnet_id], network, server_mac=server_mac)
+                    ctx, db_subnets[subnet_id], network, server_mac=server_mac)
                 # Verify that the cidr and options are also in sync.
                 if dhcp_options['cidr'] == ovn_dhcp_opts['cidr'] and (
                         dhcp_options['options'] == ovn_dhcp_opts['options']):
@@ -805,40 +978,51 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                 del_subnet_dhcp_opts_list.append(ovn_dhcp_opts)
 
         for subnet_id, subnet in db_subnets.items():
-            LOG.warning('DHCP options for subnet %s is present in '
-                        'Neutron but out of sync for OVN', subnet_id)
-            if self.mode == SYNC_MODE_REPAIR:
+            LOG.warning('DHCP options for subnet %s present in '
+                        'Neutron but out of sync with OVN NB DB', subnet_id)
+            if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                # If neutron-server is running we could race and find a
+                # subnet without a cached network, just skip it to avoid
+                # a KeyError below.
+                network_id = utils.ovn_name(subnet['network_id'])
+                if network_id not in db_networks:
+                    LOG.warning('Network %s for subnet %s not found in OVN NB '
+                                'DB network cache, possible race condition, '
+                                'please check that neutron-server is stopped! '
+                                'Skipping subnet.', network_id, subnet_id)
+                    continue
                 try:
-                    LOG.debug('Adding/Updating DHCP options for subnet %s in '
-                              ' OVN NB DB', subnet_id)
-                    network = db_networks[utils.ovn_name(subnet['network_id'])]
+                    LOG.warning('Adding/Updating DHCP options for subnet %s '
+                                'in OVN NB DB', subnet_id)
+                    network = db_networks[network_id]
                     # _ovn_client._add_subnet_dhcp_options doesn't create
                     # a new row in DHCP_Options if the row already exists.
                     # See commands.AddDHCPOptionsCommand.
                     self._ovn_client._add_subnet_dhcp_options(
-                        subnet, network, subnet.get('ovn_dhcp_options'))
+                        ctx, subnet, network, subnet.get('ovn_dhcp_options'))
                 except RuntimeError:
                     LOG.warning('Adding/Updating DHCP options for subnet '
                                 '%s failed in OVN NB DB', subnet_id)
 
         txn_commands = []
         for dhcp_opt in del_subnet_dhcp_opts_list:
-            LOG.warning('Out of sync subnet DHCP options for subnet %s '
-                        'found in OVN NB DB which needs to be deleted',
+            LOG.warning('Out of sync DHCP options for subnet %s '
+                        'found in OVN NB DB which need to be deleted',
                         dhcp_opt['external_ids']['subnet_id'])
-            if self.mode == SYNC_MODE_REPAIR:
-                LOG.debug('Deleting subnet DHCP options for subnet %s ',
-                          dhcp_opt['external_ids']['subnet_id'])
-                txn_commands.append(self.ovn_api.delete_dhcp_options(
+            if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                LOG.warning('Deleting DHCP options for subnet %s ',
+                            dhcp_opt['external_ids']['subnet_id'])
+                txn_commands.append(self.ovn_nb_api.delete_dhcp_options(
                     dhcp_opt['uuid']))
 
         if txn_commands:
-            with self.ovn_api.transaction(check_error=True) as txn:
+            with self.ovn_nb_api.transaction(check_error=True) as txn:
                 for cmd in txn_commands:
                     txn.add(cmd)
-        LOG.debug('OVN-NB Sync DHCP options for Neutron subnets finished')
+        LOG.debug('OVN-NB Sync DHCP options for Neutron subnets completed @ '
+                  '%s', str(datetime.now()))
 
-    def _sync_port_dhcp_options(self, ctx, ports_need_sync_dhcp_opts,
+    def _sync_port_dhcp_options(self, ports_need_sync_dhcp_opts,
                                 ovn_port_dhcpv4_opts, ovn_port_dhcpv6_opts):
         LOG.debug('OVN-NB Sync DHCP options for Neutron ports with extra '
                   'dhcp options assigned started')
@@ -848,10 +1032,10 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                         constants.IP_VERSION_6: 'dhcpv6_options'}
         ovn_port_dhcp_opts = {constants.IP_VERSION_4: ovn_port_dhcpv4_opts,
                               constants.IP_VERSION_6: ovn_port_dhcpv6_opts}
-        for port in ports_need_sync_dhcp_opts:
-            if self.mode == SYNC_MODE_REPAIR:
-                LOG.debug('Updating DHCP options for port %s in OVN NB DB',
-                          port['id'])
+        if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+            for port in ports_need_sync_dhcp_opts:
+                LOG.warning('Updating DHCP options for port %s in OVN NB DB',
+                            port['id'])
                 set_lsp = {}
                 for ip_v in [constants.IP_VERSION_4, constants.IP_VERSION_6]:
                     dhcp_opts = (
@@ -875,7 +1059,7 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                         txn_commands.append(dhcp_options)
                         set_lsp[lsp_dhcp_key[ip_v]] = dhcp_options
                 if set_lsp:
-                    txn_commands.append(self.ovn_api.set_lswitch_port(
+                    txn_commands.append(self.ovn_nb_api.set_lswitch_port(
                         lport_name=port['id'], **set_lsp))
 
         for ip_v in [constants.IP_VERSION_4, constants.IP_VERSION_6]:
@@ -888,19 +1072,19 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                      'subnet_id': dhcp_opt['external_ids']['subnet_id'],
                      'port_id': port_id})
 
-                if self.mode == SYNC_MODE_REPAIR:
-                    LOG.debug('Deleting port DHCPv%d options for (subnet %s, '
-                              'port %s)', ip_v,
-                              dhcp_opt['external_ids']['subnet_id'], port_id)
-                    txn_commands.append(self.ovn_api.delete_dhcp_options(
+                if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    LOG.warning('Deleting port DHCPv%d options for '
+                                '(subnet %s, port %s)', ip_v,
+                                dhcp_opt['external_ids']['subnet_id'], port_id)
+                    txn_commands.append(self.ovn_nb_api.delete_dhcp_options(
                         dhcp_opt['uuid']))
 
         if txn_commands:
-            with self.ovn_api.transaction(check_error=True) as txn:
+            with self.ovn_nb_api.transaction(check_error=True) as txn:
                 for cmd in txn_commands:
                     txn.add(cmd)
         LOG.debug('OVN-NB Sync DHCP options for Neutron ports with extra '
-                  'dhcp options assigned finished')
+                  'dhcp options assigned completed')
 
     def _sync_metadata_ports(self, ctx, db_ports):
         """Ensure metadata ports in all Neutron networks.
@@ -910,25 +1094,25 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         """
         if not ovn_conf.is_ovn_metadata_enabled():
             return
-        LOG.debug('OVN sync metadata ports started')
+        LOG.debug('OVN-NB Sync metadata ports started')
         for net in self.core_plugin.get_networks(ctx):
             metadata_ports = self.core_plugin.get_ports(
-                    ctx, filters=dict(
-                        network_id=[net['id']],
-                        device_owner=[constants.DEVICE_OWNER_DISTRIBUTED]))
+                ctx, filters=dict(
+                    network_id=[net['id']],
+                    device_owner=[constants.DEVICE_OWNER_DISTRIBUTED]))
 
             if not metadata_ports:
                 LOG.warning('Missing metadata port found in Neutron for '
                             'network %s', net['id'])
-                if self.mode == SYNC_MODE_REPAIR:
+                if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
                     try:
                         # Create the missing port in both Neutron and OVN.
                         LOG.warning('Creating missing metadata port in '
-                                    'Neutron and OVN for network %s',
+                                    'Neutron and OVN NB DB for network %s',
                                     net['id'])
                         self._ovn_client.create_metadata_port(ctx, net)
                     except n_exc.IpAddressGenerationFailure:
-                        LOG.error('Could not allocate IP addresses for '
+                        LOG.error('Could not allocate IP address for '
                                   'metadata port in network %s', net['id'])
                         continue
             else:
@@ -937,7 +1121,7 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                 for port in metadata_ports[1:]:
                     LOG.warning('Unnecessary DHCP port %s for network %s '
                                 'found in Neutron', port['id'], net['id'])
-                    if self.mode == SYNC_MODE_REPAIR:
+                    if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
                         LOG.warning('Deleting unnecessary DHCP port %s for '
                                     'network %s', port['id'], net['id'])
                         self.core_plugin.delete_port(ctx, port['id'])
@@ -945,27 +1129,28 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                 port = metadata_ports[0]
                 if port['id'] in db_ports.keys():
                     LOG.warning('Metadata port %s for network %s found in '
-                                'Neutron but not in OVN',
+                                'Neutron but not in OVN NB DB',
                                 port['id'], net['id'])
-                    if self.mode == SYNC_MODE_REPAIR:
+                    if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
                         LOG.warning('Creating metadata port %s for network '
-                                    '%s in OVN',
+                                    '%s in OVN NB DB',
                                     port['id'], net['id'])
                         self._create_port_in_ovn(ctx, port)
                     db_ports.pop(port['id'])
 
-            if self.mode == SYNC_MODE_REPAIR:
+            if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
                 try:
                     # Make sure that this port has an IP address in all the
                     # subnets
-                    self._ovn_client.update_metadata_port(ctx, net['id'])
+                    self._ovn_client.update_metadata_port(ctx, net)
                 except n_exc.IpAddressGenerationFailure:
-                    LOG.error('Could not allocate IP addresses for '
+                    LOG.error('Could not allocate IP address for '
                               'metadata port in network %s', net['id'])
-        LOG.debug('OVN sync metadata ports finished')
+        LOG.debug('OVN-NB Sync metadata ports completed')
 
     def sync_networks_ports_and_dhcp_opts(self, ctx):
-        LOG.debug('OVN-NB Sync networks, ports and DHCP options started')
+        LOG.debug('OVN-NB Sync networks, ports and DHCP options started @ %s',
+                  str(datetime.now()))
         db_networks = {}
         for net in self.core_plugin.get_networks(ctx):
             db_networks[utils.ovn_name(net['id'])] = net
@@ -976,11 +1161,11 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                     self.core_plugin.get_ports(ctx) if not
                     utils.is_lsp_ignored(port)}
 
-        ovn_all_dhcp_options = self.ovn_api.get_all_dhcp_options()
+        ovn_all_dhcp_options = self.ovn_nb_api.get_all_dhcp_options()
         db_network_cache = dict(db_networks)
 
         ports_need_sync_dhcp_opts = []
-        lswitches = self.ovn_api.get_all_logical_switches_with_ports()
+        lswitches = self.ovn_nb_api.get_all_logical_switches_with_ports()
         del_lswitchs_list = []
         del_lports_list = []
         add_provnet_ports_list = []
@@ -997,7 +1182,8 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                                                 'lswitch': lswitch['name']})
                 db_network = db_networks[lswitch['name']]
                 db_segments = self.segments_plugin.get_segments(
-                    ctx, filters={'network_id': [db_network['id']]})
+                    ctx, filters={'network_id': [db_network['id']],
+                                  'is_dynamic': False})
                 segments_provnet_port_names = []
                 for db_segment in db_segments:
                     physnet = db_segment.get(segment_def.PHYSICAL_NETWORK)
@@ -1024,16 +1210,20 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
             else:
                 del_lswitchs_list.append(lswitch)
 
-        for net_id, network in db_networks.items():
+        for network in db_networks.values():
             LOG.warning("Network found in Neutron but not in "
-                        "OVN DB, network_id=%s", network['id'])
-            if self.mode == SYNC_MODE_REPAIR:
+                        "OVN NB DB, network_id=%s", network['id'])
+            if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
                 try:
-                    LOG.debug('Creating the network %s in OVN NB DB',
-                              network['id'])
+                    LOG.warning('Creating network %s in OVN NB DB',
+                                network['id'])
                     self._ovn_client.create_network(ctx, network)
                 except RuntimeError:
-                    LOG.warning("Create network in OVN NB failed for "
+                    LOG.warning("Create network in OVN NB DB failed for "
+                                "network %s", network['id'])
+                except n_exc.IpAddressGenerationFailure:
+                    LOG.warning("No more IP addresses available during "
+                                "implicit port creation while creating "
                                 "network %s", network['id'])
 
         self._sync_metadata_ports(ctx, db_ports)
@@ -1042,97 +1232,100 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
             ctx, db_network_cache, ovn_all_dhcp_options['subnets'])
 
         for port_id, port in db_ports.items():
-            LOG.warning("Port found in Neutron but not in OVN "
+            LOG.warning("Port found in Neutron but not in OVN NB "
                         "DB, port_id=%s", port['id'])
-            if self.mode == SYNC_MODE_REPAIR:
+            if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
                 try:
-                    LOG.debug('Creating the port %s in OVN NB DB',
-                              port['id'])
+                    LOG.warning('Creating the port %s in OVN NB DB',
+                                port['id'])
                     self._create_port_in_ovn(ctx, port)
                     if port_id in ovn_all_dhcp_options['ports_v4']:
-                        dhcp_disable, lsp_opts = utils.get_lsp_dhcp_opts(
+                        __, lsp_opts = utils.get_lsp_dhcp_opts(
                             port, constants.IP_VERSION_4)
                         if lsp_opts:
                             ovn_all_dhcp_options['ports_v4'].pop(port_id)
                     if port_id in ovn_all_dhcp_options['ports_v6']:
-                        dhcp_disable, lsp_opts = utils.get_lsp_dhcp_opts(
+                        __, lsp_opts = utils.get_lsp_dhcp_opts(
                             port, constants.IP_VERSION_6)
                         if lsp_opts:
                             ovn_all_dhcp_options['ports_v6'].pop(port_id)
                 except RuntimeError:
-                    LOG.warning("Create port in OVN NB failed for"
+                    LOG.warning("Create port in OVN NB DB failed for"
                                 " port %s", port['id'])
 
-        with self.ovn_api.transaction(check_error=True) as txn:
+        with self.ovn_nb_api.transaction(check_error=True) as txn:
             for lswitch in del_lswitchs_list:
-                LOG.warning("Network found in OVN but not in "
+                LOG.warning("Network found in OVN NB DB but not in "
                             "Neutron, network_id=%s", lswitch['name'])
-                if self.mode == SYNC_MODE_REPAIR:
-                    LOG.debug('Deleting the network %s from OVN NB DB',
-                              lswitch['name'])
-                    txn.add(self.ovn_api.ls_del(lswitch['name']))
+                if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    LOG.warning('Deleting network %s from OVN NB DB',
+                                lswitch['name'])
+                    txn.add(self.ovn_nb_api.ls_del(lswitch['name']))
 
             for provnet_port_info in add_provnet_ports_list:
                 network = provnet_port_info['network']
                 segment = provnet_port_info['segment']
                 LOG.warning("Provider network found in Neutron but "
-                            "provider network port not found in OVN DB, "
+                            "provider network port not found in OVN NB DB, "
                             "network_id=%(net)s segment_id=%(seg)s",
                             {'net': network['id'],
                              'seg': segment['id']})
-                if self.mode == SYNC_MODE_REPAIR:
-                    LOG.debug('Creating the provnet port %s in OVN NB DB',
-                              utils.ovn_provnet_port_name(segment['id']))
+                if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    LOG.warning('Creating provider network port %s in '
+                                'OVN NB DB',
+                                utils.ovn_provnet_port_name(segment['id']))
                     self._ovn_client.create_provnet_port(
-                        network['id'], segment, txn=txn)
+                        ctx, network['id'], segment, txn=txn, network=network)
 
             for provnet_port_info in del_provnet_ports_list:
                 network = provnet_port_info['network']
                 lport = provnet_port_info['lport']
                 lswitch = provnet_port_info['lswitch']
-                LOG.warning("Provider network port found in OVN DB, "
-                            "but not in neutron network_id=%(net)s "
+                LOG.warning("Provider network port found in OVN NB DB, "
+                            "but not in Neutron network_id=%(net)s "
                             "port_name=%(lport)s",
                             {'net': network,
                              'seg': lport})
-                if self.mode == SYNC_MODE_REPAIR:
-                    LOG.debug('Deleting the port %s from OVN NB DB',
-                              lport)
-                    txn.add(self.ovn_api.delete_lswitch_port(
+                if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    LOG.warning('Deleting provider network port %s from '
+                                'OVN NB DB', lport)
+                    txn.add(self.ovn_nb_api.delete_lswitch_port(
                         lport_name=lport,
                         lswitch_name=lswitch))
 
             for lport_info in del_lports_list:
-                LOG.warning("Port found in OVN but not in "
+                LOG.warning("Port found in OVN NB DB but not in "
                             "Neutron, port_id=%s", lport_info['port'])
-                if self.mode == SYNC_MODE_REPAIR:
-                    LOG.debug('Deleting the port %s from OVN NB DB',
-                              lport_info['port'])
-                    txn.add(self.ovn_api.delete_lswitch_port(
+                if self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
+                    LOG.warning('Deleting port %s from OVN NB DB',
+                                lport_info['port'])
+                    txn.add(self.ovn_nb_api.delete_lswitch_port(
                         lport_name=lport_info['port'],
                         lswitch_name=lport_info['lswitch']))
                     if lport_info['port'] in ovn_all_dhcp_options['ports_v4']:
-                        LOG.debug('Deleting port DHCPv4 options for (port %s)',
-                                  lport_info['port'])
-                        txn.add(self.ovn_api.delete_dhcp_options(
-                                ovn_all_dhcp_options['ports_v4'].pop(
-                                    lport_info['port'])['uuid']))
+                        LOG.warning('Deleting port DHCPv4 options for '
+                                    '(port %s)', lport_info['port'])
+                        txn.add(self.ovn_nb_api.delete_dhcp_options(
+                            ovn_all_dhcp_options['ports_v4'].pop(
+                                lport_info['port'])['uuid']))
                     if lport_info['port'] in ovn_all_dhcp_options['ports_v6']:
-                        LOG.debug('Deleting port DHCPv6 options for (port %s)',
-                                  lport_info['port'])
-                        txn.add(self.ovn_api.delete_dhcp_options(
-                                ovn_all_dhcp_options['ports_v6'].pop(
-                                    lport_info['port'])['uuid']))
+                        LOG.warning('Deleting port DHCPv6 options for '
+                                    '(port %s)', lport_info['port'])
+                        txn.add(self.ovn_nb_api.delete_dhcp_options(
+                            ovn_all_dhcp_options['ports_v6'].pop(
+                                lport_info['port'])['uuid']))
 
-        self._sync_port_dhcp_options(ctx, ports_need_sync_dhcp_opts,
+        self._sync_port_dhcp_options(ports_need_sync_dhcp_opts,
                                      ovn_all_dhcp_options['ports_v4'],
                                      ovn_all_dhcp_options['ports_v6'])
-        LOG.debug('OVN-NB Sync networks, ports and DHCP options finished')
+        LOG.debug('OVN-NB Sync networks, ports and DHCP options completed @ '
+                  '%s', str(datetime.now()))
 
     def sync_port_dns_records(self, ctx):
-        if self.mode != SYNC_MODE_REPAIR:
+        if self.mode != n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR:
             return
-        LOG.debug('OVN-NB Sync port dns records')
+        LOG.debug('OVN-NB Sync port DNS records started @ %s',
+                  str(datetime.now()))
         # Ignore the floating ip ports with device_owner set to
         # constants.DEVICE_OWNER_FLOATINGIP
         db_ports = [port for port in
@@ -1150,87 +1343,22 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         for network_id, port_dns_records in dns_records.items():
             self._set_dns_records(network_id, port_dns_records)
 
+        LOG.debug('OVN-NB Sync port DNS records completed @ %s',
+                  str(datetime.now()))
+
     def _set_dns_records(self, network_id, dns_records):
         lswitch_name = utils.ovn_name(network_id)
-        ls, ls_dns_record = self.ovn_api.get_ls_and_dns_record(lswitch_name)
+        ls, ls_dns_record = self.ovn_nb_api.get_ls_and_dns_record(lswitch_name)
 
-        with self.ovn_api.transaction(check_error=True) as txn:
+        with self.ovn_nb_api.transaction(check_error=True) as txn:
             if not ls_dns_record:
-                dns_add_txn = txn.add(self.ovn_api.dns_add(
+                dns_add_txn = txn.add(self.ovn_nb_api.dns_add(
                     external_ids={'ls_name': ls.name}, records=dns_records))
-                txn.add(self.ovn_api.ls_set_dns_records(ls.uuid, dns_add_txn))
+                txn.add(self.ovn_nb_api.ls_set_dns_records(ls.uuid,
+                                                           dns_add_txn))
             else:
-                txn.add(self.ovn_api.dns_set_records(ls_dns_record.uuid,
-                                                     **dns_records))
-
-    def _delete_address_sets(self, ctx):
-        with self.ovn_api.transaction(check_error=True) as txn:
-            for sg in self.core_plugin.get_security_groups(ctx):
-                for ip_version in ['ip4', 'ip6']:
-                    txn.add(self.ovn_api.delete_address_set(
-                        utils.ovn_addrset_name(sg['id'], ip_version)))
-
-    def _delete_acls_from_lswitches(self, ctx):
-        with self.ovn_api.transaction(check_error=True) as txn:
-            for net in self.core_plugin.get_networks(ctx):
-                # Calling acl_del from ovsdbapp with no ACL will delete
-                # all the ACLs belonging to that Logical Switch.
-                txn.add(self.ovn_api.acl_del(utils.ovn_name(net['id'])))
-
-    def _create_sg_port_groups_and_acls(self, ctx, db_ports):
-        # Create a Port Group per Neutron Security Group
-        with self.ovn_api.transaction(check_error=True) as txn:
-            for sg in self.core_plugin.get_security_groups(ctx):
-                pg_name = utils.ovn_port_group_name(sg['id'])
-                if self.ovn_api.get_port_group(pg_name):
-                    continue
-                ext_ids = {ovn_const.OVN_SG_EXT_ID_KEY: sg['id']}
-                txn.add(self.ovn_api.pg_add(
-                    name=pg_name, acls=[], external_ids=ext_ids))
-                acl_utils.add_acls_for_sg_port_group(
-                    self.ovn_api, sg, txn,
-                    self._ovn_client.is_allow_stateless_supported())
-            for port in db_ports:
-                for sg in port['security_groups']:
-                    txn.add(self.ovn_api.pg_add_ports(
-                        utils.ovn_port_group_name(sg), port['id']))
-
-    def migrate_to_stateful_fips(self, ctx):
-        # This routine will clear options:stateless=true for all dnat_and_snats
-        # that belong to neutron fips. Since we don't set any other options,
-        # just clear the whole column.
-        with self.ovn_api.transaction(check_error=True) as txn:
-            for nat in self.ovn_api.get_all_stateless_fip_nats():
-                txn.add(self.ovn_api.db_clear('NAT', nat['_uuid'], 'options'))
-
-    def migrate_to_port_groups(self, ctx):
-        # This routine is responsible for migrating the current Security
-        # Groups and SG Rules to the new Port Groups implementation.
-        # 1. Create a Port Group for every existing Neutron Security Group and
-        #    add all its Security Group Rules as ACLs to that Port Group.
-        # 2. Delete all existing Address Sets in NorthBound database which
-        #    correspond to a Neutron Security Group.
-        # 3. Delete all the ACLs in every Logical Switch (Neutron network).
-
-        # If we've already migrated, return
-        if not self.ovn_api.get_address_sets():
-            return
-
-        LOG.debug('Port Groups Migration task started')
-
-        # Ignore the floating ip ports with device_owner set to
-        # constants.DEVICE_OWNER_FLOATINGIP
-        db_ports = [port for port in
-                    self.core_plugin.get_ports(ctx) if not
-                    utils.is_lsp_ignored(port) and not
-                    utils.is_lsp_trusted(port) and
-                    utils.is_port_security_enabled(port)]
-
-        self._create_sg_port_groups_and_acls(ctx, db_ports)
-        self._delete_address_sets(ctx)
-        self._delete_acls_from_lswitches(ctx)
-
-        LOG.debug('Port Groups Migration task finished')
+                txn.add(self.ovn_nb_api.dns_set_records(ls_dns_record.uuid,
+                                                        **dns_records))
 
     def sync_port_qos_policies(self, ctx):
         """Sync port QoS policies.
@@ -1238,38 +1366,109 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         This method reads the port QoS policy assigned or the one inherited
         from the network. Does not apply to "network" owned ports.
         """
-        LOG.debug('Port QoS policies migration task started')
-        ovn_qos_ext = ovn_qos.OVNClientQosExtension(nb_idl=self.ovn_api)
-        with db_api.CONTEXT_READER.using(ctx), \
-                self.ovn_api.transaction(check_error=True) as txn:
+        LOG.debug('OVN-NB Sync port QoS policies started @ %s',
+                  str(datetime.now()))
+        ovn_qos_ext = ovn_qos.OVNClientQosExtension(nb_idl=self.ovn_nb_api)
+        _ports = []
+        with db_api.CONTEXT_READER.using(ctx):
             for port in self.core_plugin.get_ports(ctx):
                 if not ovn_qos_ext.port_effective_qos_policy_id(port)[0]:
                     continue
-                ovn_qos_ext.create_port(txn, port, None)
+                _ports.append(port)
 
-        LOG.debug('Port QoS policies migration task finished')
+        if not _ports:
+            # Nothing to do.
+            pass
+        elif not (self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR or
+                  self.is_maintenance):
+            for port in _ports:
+                LOG.warning('Port QoS policy missing in OVN NB DB, port_id=%s',
+                            port['id'])
+        else:
+            with self.ovn_nb_api.transaction(check_error=True) as txn:
+                for port in _ports:
+                    ovn_qos_ext.create_port(ctx, txn, port, None)
+
+        LOG.debug('OVN-NB Sync port QoS policies completed @ %s',
+                  str(datetime.now()))
 
     def sync_fip_qos_policies(self, ctx):
         """Sync floating IP QoS policies."""
-        LOG.debug('Floating IP QoS policies migration task started')
-        ovn_qos_ext = ovn_qos.OVNClientQosExtension(nb_idl=self.ovn_api)
-        with db_api.CONTEXT_READER.using(ctx), \
-                self.ovn_api.transaction(check_error=True) as txn:
+        LOG.debug('OVN-NB Sync Floating IP QoS policies started @ %s',
+                  str(datetime.now()))
+        ovn_qos_ext = ovn_qos.OVNClientQosExtension(nb_idl=self.ovn_nb_api)
+        _fips = []
+        with db_api.CONTEXT_READER.using(ctx):
             for fip in self.l3_plugin.get_floatingips(ctx):
                 if not fip.get('qos_policy_id'):
                     continue
-                ovn_qos_ext.create_floatingip(txn, fip)
+                _fips.append(fip)
 
-        LOG.debug('Floating IP QoS policies migration task finished')
+        if not _fips:
+            # Nothing to do.
+            pass
+        elif not (self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR or
+                  self.is_maintenance):
+            for fip in _fips:
+                LOG.warning('Floating IP QoS policy missing in OVN NB DB, '
+                            'fip_id=%s', fip['id'])
+        else:
+            with self.ovn_nb_api.transaction(check_error=True) as txn:
+                for fip in _fips:
+                    ovn_qos_ext.create_floatingip(ctx, txn, fip)
+
+        LOG.debug('OVN-NB Sync Floating IP QoS policies completed @ %s',
+                  str(datetime.now()))
+
+    def sync_fip_dnat_rules(self):
+        """Sync all FIPs NAT rules, setting the configured stateless option"""
+        LOG.debug('OVN-NB Sync Floating IP NAT rules started @ %s',
+                  str(datetime.now()))
+        stateless_nat = ('true' if ovn_conf.is_stateless_nat_enabled() else
+                         'false')
+        nat_rules = []
+        for nat_rule in self.ovn_nb_api.get_floatingips():
+            if ovn_const.OVN_FIP_EXT_ID_KEY not in nat_rule.get(
+                    'external_ids', {}):
+                continue
+            if nat_rule.get('options', {}).get('stateless') != stateless_nat:
+                nat_rules.append(nat_rule)
+
+        if not nat_rules:
+            # Nothing to do.
+            pass
+        elif not (self.mode == n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR or
+                  self.is_maintenance):
+            LOG.warning('The floating IP NAT rules must be updated to match '
+                        'the ``stateless_nat_enabled`` configuration flag.')
+        else:
+            with self.ovn_nb_api.transaction(check_error=True) as txn:
+                for nat_rule in nat_rules:
+                    txn.add(self.ovn_nb_api.db_set(
+                        'NAT', nat_rule['_uuid'],
+                        ('options', {'stateless': stateless_nat})))
+
+        LOG.debug('OVN-NB Sync Floating IP NAT rules completed @ %s',
+                  str(datetime.now()))
 
 
-class OvnSbSynchronizer(OvnDbSynchronizer):
+class OvnSbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
     """Synchronizer class for SB."""
 
-    def __init__(self, core_plugin, ovn_api, ovn_driver):
-        super(OvnSbSynchronizer, self).__init__(
-            core_plugin, ovn_api, ovn_driver)
+    _required_mechanism_drivers = ['ovn-sync']
+    _required_service_plugins = [
+        'neutron.services.ovn_l3.plugin.OVNL3RouterPlugin',
+        'neutron.services.segments.plugin.Plugin',
+        'port_forwarding',
+        'qos'
+    ]
+    _required_ml2_ext_drivers = ['qos']
+
+    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False):
+        super().__init__(
+            core_plugin, ovn_driver, mode, is_maintenance)
         self.l3_plugin = directory.get_plugin(plugin_constants.L3)
+        self.agent_cache = neutron_agent.AgentCache(self.ovn_driver)
 
     def do_sync(self):
         """Method to sync the OVN_Southbound DB with neutron DB.
@@ -1278,41 +1477,63 @@ class OvnSbSynchronizer(OvnDbSynchronizer):
         the synchronization will always be performed, no matter what mode it
         is.
         """
-        LOG.debug("Starting OVN-Southbound DB sync process")
+        LOG.debug("OVN-Southbound DB sync process started @ %s",
+                  str(datetime.now()))
 
         ctx = context.get_admin_context()
         self.sync_hostname_and_physical_networks(ctx)
         if utils.is_ovn_l3(self.l3_plugin):
             self.l3_plugin.schedule_unhosted_gateways()
-        # NOTE(ralonsoh): this could be called using a resource event.
-        self.ovn_driver._ovn_client.placement_extension.\
-            read_initial_chassis_config()
+
+        LOG.debug("OVN-Southbound DB sync process completed @ %s",
+                  str(datetime.now()))
+
+    def _get_hosts_mapped(self, ctx):
+        """Retrieve the hosts mapped with segment associated to controllers"""
+        # NOTE(ralonsoh): the method `get_hosts_mapped_with_segments` cannot
+        # be used with the filters `include_agent_types` nor
+        # `exclude_agent_types`. The OVN agents are not stored in the SQL
+        # database but present only in the `AgentCache` singleton.
+        mapped_hosts = segments_db.get_hosts_mapped_with_segments(ctx)
+        # Populate the ``AgentCache`` only if no OVSDB monitor events have
+        # populated it yet (e.g. in the neutron-ovn-db-sync-util tool).
+        if not self.agent_cache.agents:
+            self.agent_cache.populate()
+        # Even if a chassis has been deleted, the OVN agent cached resource
+        # is preserved.
+        controllers = self.agent_cache.get_agents(
+            filters={'agent_type': ovn_const.OVN_CONTROLLER_TYPES})
+        controllers_hosts = {c.chassis.hostname for c in controllers
+                             if c.chassis}
+        return mapped_hosts & controllers_hosts
 
     def sync_hostname_and_physical_networks(self, ctx):
-        LOG.debug('OVN-SB Sync hostname and physical networks started')
-        host_phynets_map = self.ovn_api.get_chassis_hostname_and_physnets()
+        LOG.debug('OVN-SB Sync hostname and physical networks started @ %s',
+                  str(datetime.now()))
+        host_phynets_map = self.ovn_sb_api.get_chassis_hostname_and_physnets()
         current_hosts = set(host_phynets_map)
-        previous_hosts = segments_db.get_hosts_mapped_with_segments(ctx)
+        previous_hosts = self._get_hosts_mapped(ctx)
 
         stale_hosts = previous_hosts - current_hosts
         for host in stale_hosts:
-            LOG.debug('Stale host %s found in Neutron, but not in OVN SB DB. '
-                      'Clear its SegmentHostMapping in Neutron', host)
+            LOG.warning('Stale host %s found in Neutron, but not in OVN SB DB.'
+                        ' Clear its SegmentHostMapping in Neutron', host)
             self.ovn_driver.update_segment_host_mapping(host, [])
 
         new_hosts = current_hosts - previous_hosts
         for host in new_hosts:
-            LOG.debug('New host %s found in OVN SB DB, but not in Neutron. '
-                      'Add its SegmentHostMapping in Neutron', host)
+            LOG.warning('New host %s found in OVN SB DB, but not in Neutron. '
+                        'Add its SegmentHostMapping in Neutron', host)
             self.ovn_driver.update_segment_host_mapping(
                 host, host_phynets_map[host])
 
         for host in current_hosts & previous_hosts:
-            LOG.debug('Host %s found both in OVN SB DB and Neutron. '
-                      'Trigger updating its SegmentHostMapping in Neutron, '
-                      'to keep OVN SB DB and Neutron have consistent data',
-                      host)
+            LOG.warning('Host %s found both in OVN SB DB and Neutron. '
+                        'Trigger updating its SegmentHostMapping in Neutron, '
+                        'to keep OVN SB DB and Neutron data consistent',
+                        host)
             self.ovn_driver.update_segment_host_mapping(
                 host, host_phynets_map[host])
 
-        LOG.debug('OVN-SB Sync hostname and physical networks finished')
+        LOG.debug('OVN-SB Sync hostname and physical networks completed @ %s',
+                  str(datetime.now()))

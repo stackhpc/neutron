@@ -22,7 +22,7 @@ from oslo_config import cfg
 
 from neutron.db import segments_db
 from neutron.services.network_segment_range import plugin as range_plugin
-from neutron.tests.unit.db import test_db_base_plugin_v2 as test_plugin
+from neutron.tests.common import test_db_base_plugin_v2 as test_plugin
 from neutron.tests.unit import testlib_api
 
 SERVICE_PLUGIN_KLASS = ('neutron.services.network_segment_range.plugin.'
@@ -34,7 +34,7 @@ class TestNetworkSegmentRange(testlib_api.SqlTestCase):
     _foo_range = {'name': 'foo-range',
                   'default': False,
                   'shared': False,
-                  'project_id': test_plugin.TEST_TENANT_ID,
+                  'project_id': test_plugin.TEST_PROJECT_ID,
                   'network_type': 'foo_network_type',
                   'physical_network': 'foo_phys_net',
                   'minimum': 200,
@@ -43,7 +43,7 @@ class TestNetworkSegmentRange(testlib_api.SqlTestCase):
     _flat_range = {'name': 'foo-flat-range',
                    'default': False,
                    'shared': False,
-                   'project_id': test_plugin.TEST_TENANT_ID,
+                   'project_id': test_plugin.TEST_PROJECT_ID,
                    'network_type': constants.TYPE_FLAT,
                    'physical_network': None,
                    'minimum': 0,
@@ -52,7 +52,7 @@ class TestNetworkSegmentRange(testlib_api.SqlTestCase):
     _vlan_range = {'name': 'foo-vlan-range',
                    'default': False,
                    'shared': False,
-                   'project_id': test_plugin.TEST_TENANT_ID,
+                   'project_id': test_plugin.TEST_PROJECT_ID,
                    'network_type': constants.TYPE_VLAN,
                    'physical_network': 'phys_net',
                    'minimum': 200,
@@ -61,7 +61,7 @@ class TestNetworkSegmentRange(testlib_api.SqlTestCase):
     _vxlan_range = {'name': 'foo-vxlan-range',
                     'default': False,
                     'shared': False,
-                    'project_id': test_plugin.TEST_TENANT_ID,
+                    'project_id': test_plugin.TEST_PROJECT_ID,
                     'network_type': constants.TYPE_VXLAN,
                     'physical_network': None,
                     'minimum': 400,
@@ -70,7 +70,7 @@ class TestNetworkSegmentRange(testlib_api.SqlTestCase):
     _gre_range = {'name': 'foo-vlan-range',
                   'default': False,
                   'shared': False,
-                  'project_id': test_plugin.TEST_TENANT_ID,
+                  'project_id': test_plugin.TEST_PROJECT_ID,
                   'network_type': constants.TYPE_GRE,
                   'physical_network': None,
                   'minimum': 600,
@@ -79,14 +79,14 @@ class TestNetworkSegmentRange(testlib_api.SqlTestCase):
     _geneve_range = {'name': 'foo-geneve-range',
                      'default': False,
                      'shared': False,
-                     'project_id': test_plugin.TEST_TENANT_ID,
+                     'project_id': test_plugin.TEST_PROJECT_ID,
                      'network_type': constants.TYPE_GENEVE,
                      'physical_network': None,
                      'minimum': 800,
                      'maximum': 900}
 
     def setUp(self):
-        super(TestNetworkSegmentRange, self).setUp()
+        super().setUp()
         with mock.patch("neutron_lib.plugins.directory.get_plugin"):
             self.plugin = range_plugin.NetworkSegmentRangePlugin()
         self.context = context.get_admin_context()

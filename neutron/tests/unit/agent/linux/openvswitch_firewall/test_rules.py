@@ -14,6 +14,7 @@
 
 from unittest import mock
 
+from neutron_lib.agent.common import constants as agent_consts
 from neutron_lib import constants
 from neutron_lib.plugins.ml2 import ovs_constants as ovs_consts
 
@@ -31,7 +32,7 @@ class TestIsValidPrefix(base.BaseTestCase):
         self.assertTrue(is_valid)
 
     def test_invalid_prefix_ipv4(self):
-        is_valid = rules.is_valid_prefix('0.0.0.0/0')
+        is_valid = rules.is_valid_prefix(constants.IPv4_ANY)
         self.assertFalse(is_valid)
 
     def test_valid_prefix_ipv6(self):
@@ -49,7 +50,7 @@ class TestIsValidPrefix(base.BaseTestCase):
 
 class TestCreateFlowsFromRuleAndPort(base.BaseTestCase):
     def setUp(self):
-        super(TestCreateFlowsFromRuleAndPort, self).setUp()
+        super().setUp()
         ovs_port = mock.Mock(vif_mac='00:00:00:00:00:00')
         ovs_port.ofport = 1
         port_dict = {'device': 'port_id'}
@@ -104,7 +105,7 @@ class TestCreateFlowsFromRuleAndPort(base.BaseTestCase):
             'ethertype': constants.IPv4,
             'direction': constants.INGRESS_DIRECTION,
             'source_ip_prefix': '192.168.0.0/24',
-            'dest_ip_prefix': '0.0.0.0/0',
+            'dest_ip_prefix': constants.IPv4_ANY,
         }
         expected_template = {
             'priority': 74,
@@ -164,7 +165,7 @@ class TestCreateFlowsFromRuleAndPort(base.BaseTestCase):
 
 class TestCreateProtocolFlows(base.BaseTestCase):
     def setUp(self):
-        super(TestCreateProtocolFlows, self).setUp()
+        super().setUp()
         ovs_port = mock.Mock(vif_mac='00:00:00:00:00:00')
         ovs_port.ofport = 1
         port_dict = {'device': 'port_id'}
@@ -348,8 +349,8 @@ class TestCreateFlowsForIpAddress(base.BaseTestCase):
         }
 
         conj_ids = [12, 20]
-        flows = rules.create_flows_for_ip_address(
-            ('192.168.0.1', 'fa:16:3e:aa:bb:cc'),
+        flows = rules.create_flows_for_ip_address_and_mac(
+            '192.168.0.1', 'fa:16:3e:aa:bb:cc',
             constants.EGRESS_DIRECTION, constants.IPv4,
             0x123, conj_ids)
 
@@ -391,11 +392,11 @@ class TestCreateConjFlows(base.BaseTestCase):
                          flows[0]['ct_state'])
         self.assertEqual(ovsfw_consts.OF_STATE_NEW_NOT_ESTABLISHED,
                          flows[1]['ct_state'])
-        self.assertEqual("output:{:d}".format(port.ofport),
+        self.assertEqual(f"output:{port.ofport:d}",
                          flows[0]['actions'])
         self.assertEqual("ct(commit,zone=NXM_NX_REG{:d}[0..15]),{:s},"
                          "resubmit(,{:d})".format(
-                             ovsfw_consts.REG_NET, flows[0]['actions'],
+                             agent_consts.REG_NET, flows[0]['actions'],
                              ovs_consts.ACCEPTED_INGRESS_TRAFFIC_TABLE),
                          flows[1]['actions'])
 
@@ -408,7 +409,7 @@ class TestCreateConjFlows(base.BaseTestCase):
 
 class TestMergeRules(base.BaseTestCase):
     def setUp(self):
-        super(TestMergeRules, self).setUp()
+        super().setUp()
         self.rule_tmpl = [('direction', 'ingress'), ('ethertype', 'IPv4'),
                           ('protocol', 6)]
 

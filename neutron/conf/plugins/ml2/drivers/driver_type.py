@@ -24,7 +24,7 @@ gre_opts = [
                 default=[],
                 help=_("Comma-separated list of <tun_min>:<tun_max> tuples "
                        "enumerating ranges of GRE tunnel IDs that are "
-                       "available for tenant network allocation"))
+                       "available for project network allocation"))
 ]
 
 flat_opts = [
@@ -41,7 +41,7 @@ geneve_opts = [
                 default=[],
                 help=_("Comma-separated list of <vni_min>:<vni_max> tuples "
                        "enumerating ranges of Geneve VNI IDs that are "
-                       "available for tenant network allocation. "
+                       "available for project network allocation. "
                        "Note OVN does not use the actual values.")),
     cfg.IntOpt('max_header_size',
                default=p_const.GENEVE_ENCAP_MIN_OVERHEAD,
@@ -60,7 +60,7 @@ vxlan_opts = [
                 default=[],
                 help=_("Comma-separated list of <vni_min>:<vni_max> tuples "
                        "enumerating ranges of VXLAN VNI IDs that are "
-                       "available for tenant network allocation")),
+                       "available for project network allocation")),
     cfg.StrOpt('vxlan_group',
                help=_("Multicast group for VXLAN. When configured, will "
                       "enable sending all broadcast traffic to this multicast "
@@ -73,9 +73,9 @@ vlan_opts = [
                 default=[],
                 help=_("List of <physical_network>:<vlan_min>:<vlan_max> or "
                        "<physical_network> specifying physical_network names "
-                       "usable for VLAN provider and tenant networks, as "
+                       "usable for VLAN provider and project networks, as "
                        "well as ranges of VLAN tags on each available for "
-                       "allocation to tenant networks. If no range is "
+                       "allocation to project networks. If no range is "
                        "defined, the whole valid VLAN ID set [1, 4094] will "
                        "be assigned."))
 ]

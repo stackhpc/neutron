@@ -1,7 +1,7 @@
 .. _config-bgp-dynamic-routing:
 
 ===================
-BGP dynamic routing
+BGP Dynamic Routing
 ===================
 
 BGP dynamic routing enables advertisement of self-service (private) network
@@ -409,7 +409,6 @@ Create the provider and self-service networks
       | revision_number   | 1                                                  |
       | subnetpool_id     | c7e9737a-cfd3-45b5-a861-d1cee1135a92               |
       | tags              | []                                                 |
-      | tenant_id         | b3ac05ef10bf441fbf4aa17f16ae1e6d                   |
       | updated_at        | 2016-03-17T23:20:20                                |
       +-------------------+----------------------------------------------------+
 
@@ -436,7 +435,6 @@ Create the provider and self-service networks
       | revision_number   | 1                                              |
       | subnetpool_id     | c7e9737a-cfd3-45b5-a861-d1cee1135a92           |
       | tags              | []                                             |
-      | tenant_id         | b3ac05ef10bf441fbf4aa17f16ae1e6d               |
       | updated_at        | 2016-03-17T23:20:20                            |
       +-------------------+------------------------------------------------+
 
@@ -467,7 +465,6 @@ Create the provider and self-service networks
       | revision_number   | 1                                                  |
       | subnetpool_id     |                                                    |
       | tags              | []                                                 |
-      | tenant_id         | b3ac05ef10bf441fbf4aa17f16ae1e6d                   |
       | updated_at        | 2016-03-17T23:20:20                                |
       +-------------------+----------------------------------------------------+
 
@@ -590,15 +587,15 @@ networks and floating IP addresses for instances using those networks.
       | advertise_tenant_networks         | True                                 |
       | id                                | 5f227f14-4f46-4eca-9524-fc5a1eabc358 |
       | ip_version                        | 4                                    |
-      | local_as                          | 1234                                 |
+      | local_as                          | 64496                                |
       | name                              | bgpspeaker                           |
       | networks                          |                                      |
       | peers                             |                                      |
-      | tenant_id                         | b3ac05ef10bf441fbf4aa17f16ae1e6d     |
+      | project_id                        | b3ac05ef10bf441fbf4aa17f16ae1e6d     |
       +-----------------------------------+--------------------------------------+
 
    Replace ``LOCAL_AS`` with an appropriate local autonomous system number.
-   The example configuration uses AS 1234.
+   The example configuration uses AS 64496.
 
 #. A BGP speaker requires association with a provider network to determine
    eligible prefixes. The association builds a list of all virtual routers
@@ -624,11 +621,11 @@ networks and floating IP addresses for instances using those networks.
       | advertise_tenant_networks         | True                                 |
       | id                                | 5f227f14-4f46-4eca-9524-fc5a1eabc358 |
       | ip_version                        | 4                                    |
-      | local_as                          | 1234                                 |
+      | local_as                          | 64496                                |
       | name                              | bgpspeaker                           |
       | networks                          | 68ec148c-181f-4656-8334-8f4eb148689d |
       | peers                             |                                      |
-      | tenant_id                         | b3ac05ef10bf441fbf4aa17f16ae1e6d     |
+      | project_id                        | b3ac05ef10bf441fbf4aa17f16ae1e6d     |
       +-----------------------------------+--------------------------------------+
 
 #. Verify the prefixes and next-hop IP addresses that the BGP speaker
@@ -651,19 +648,19 @@ networks and floating IP addresses for instances using those networks.
       $ openstack bgp peer create --peer-ip 10.0.0.2 \
         --remote-as REMOTE_AS bgppeer
       Created a new bgp_peer:
-      +-----------+--------------------------------------+
-      | Field     | Value                                |
-      +-----------+--------------------------------------+
-      | auth_type | none                                 |
-      | id        | 35c89ca0-ac5a-4298-a815-0b073c2362e9 |
-      | name      | bgppeer                              |
-      | peer_ip   | 10.0.0.2                             |
-      | remote_as | 4321                                 |
-      | tenant_id | b3ac05ef10bf441fbf4aa17f16ae1e6d     |
-      +-----------+--------------------------------------+
+      +------------+--------------------------------------+
+      | Field      | Value                                |
+      +------------+--------------------------------------+
+      | auth_type  | none                                 |
+      | id         | 35c89ca0-ac5a-4298-a815-0b073c2362e9 |
+      | name       | bgppeer                              |
+      | peer_ip    | 10.0.0.2                             |
+      | remote_as  | 64497                                |
+      | project_id | b3ac05ef10bf441fbf4aa17f16ae1e6d     |
+      +------------+--------------------------------------+
 
    Replace ``REMOTE_AS`` with an appropriate remote autonomous system number.
-   The example configuration uses AS 4321 which triggers EBGP peering.
+   The example configuration uses AS 64497 which triggers EBGP peering.
 
    .. note::
 
@@ -689,11 +686,11 @@ networks and floating IP addresses for instances using those networks.
       | advertise_tenant_networks         | True                                 |
       | id                                | 5f227f14-4f46-4eca-9524-fc5a1eabc358 |
       | ip_version                        | 4                                    |
-      | local_as                          | 1234                                 |
+      | local_as                          | 64496                                |
       | name                              | bgpspeaker                           |
       | networks                          | 68ec148c-181f-4656-8334-8f4eb148689d |
       | peers                             | 35c89ca0-ac5a-4298-a815-0b073c2362e9 |
-      | tenant_id                         | b3ac05ef10bf441fbf4aa17f16ae1e6d     |
+      | project_id                        | b3ac05ef10bf441fbf4aa17f16ae1e6d     |
       +-----------------------------------+--------------------------------------+
 
    .. note::

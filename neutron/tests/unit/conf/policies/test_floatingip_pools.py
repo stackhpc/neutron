@@ -22,14 +22,14 @@ from neutron.tests.unit.conf.policies import test_base as base
 class FloatingipPoolsAPITestCase(base.PolicyBaseTestCase):
 
     def setUp(self):
-        super(FloatingipPoolsAPITestCase, self).setUp()
+        super().setUp()
         self.target = {'project_id': self.project_id}
 
 
 class SystemAdminTests(FloatingipPoolsAPITestCase):
 
     def setUp(self):
-        super(SystemAdminTests, self).setUp()
+        super().setUp()
         self.context = self.system_admin_ctx
 
     def test_get_floatingip_pool(self):
@@ -42,21 +42,21 @@ class SystemAdminTests(FloatingipPoolsAPITestCase):
 class SystemMemberTests(SystemAdminTests):
 
     def setUp(self):
-        super(SystemMemberTests, self).setUp()
+        super().setUp()
         self.context = self.system_member_ctx
 
 
 class SystemReaderTests(SystemAdminTests):
 
     def setUp(self):
-        super(SystemReaderTests, self).setUp()
+        super().setUp()
         self.context = self.system_reader_ctx
 
 
 class AdminTests(FloatingipPoolsAPITestCase):
 
     def setUp(self):
-        super(AdminTests, self).setUp()
+        super().setUp()
         self.alt_target = {'project_id': self.alt_project_id}
         self.context = self.project_admin_ctx
 
@@ -64,23 +64,49 @@ class AdminTests(FloatingipPoolsAPITestCase):
         self.assertTrue(
             policy.enforce(self.context, 'get_floatingip_pool',
                            self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'get_floatingip_pool',
+                           self.alt_target))
 
-    def test_get_floatingip_pool_other_project(self):
+
+class ProjectManagerTests(AdminTests):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.project_manager_ctx
+
+    def test_get_floatingip_pool(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_floatingip_pool',
+                           self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'get_floatingip_pool', self.alt_target)
 
 
-class ProjectMemberTests(AdminTests):
+class ProjectMemberTests(ProjectManagerTests):
 
     def setUp(self):
-        super(ProjectMemberTests, self).setUp()
+        super().setUp()
         self.context = self.project_member_ctx
 
 
-class ProjectReaderTests(AdminTests):
+class ProjectReaderTests(ProjectMemberTests):
 
     def setUp(self):
-        super(ProjectReaderTests, self).setUp()
+        super().setUp()
         self.context = self.project_reader_ctx
+
+
+class ServiceRoleTests(FloatingipPoolsAPITestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.service_ctx
+
+    def test_get_floatingip_pool(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_floatingip_pool', self.target)

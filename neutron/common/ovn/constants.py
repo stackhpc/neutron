@@ -22,18 +22,21 @@ OVN_SG_EXT_ID_KEY = 'neutron:security_group_id'
 OVN_SG_RULE_EXT_ID_KEY = 'neutron:security_group_rule_id'
 OVN_ML2_MECH_DRIVER_NAME = 'ovn'
 OVN_NETWORK_NAME_EXT_ID_KEY = 'neutron:network_name'
+OVN_NETWORK_ID_EXT_ID_KEY = 'neutron:network_id'
 OVN_NETWORK_MTU_EXT_ID_KEY = 'neutron:mtu'
 OVN_PORT_NAME_EXT_ID_KEY = 'neutron:port_name'
 OVN_PORT_EXT_ID_KEY = 'neutron:port_id'
 OVN_PORT_FIP_EXT_ID_KEY = 'neutron:port_fip'
+OVN_PORT_BP_CAPABILITIES_KEY = 'neutron:port_capabilities'
+OVN_PORT_VNIC_TYPE_KEY = 'neutron:vnic_type'
 OVN_ROUTER_NAME_EXT_ID_KEY = 'neutron:router_name'
 OVN_ROUTER_ID_EXT_ID_KEY = 'neutron:router_id'
 OVN_AZ_HINTS_EXT_ID_KEY = 'neutron:availability_zone_hints'
 OVN_ROUTER_IS_EXT_GW = 'neutron:is_ext_gw'
-OVN_GW_PORT_EXT_ID_KEY = 'neutron:gw_port_id'
-OVN_GW_NETWORK_EXT_ID_KEY = 'neutron:gw_network_id'
 OVN_SUBNET_EXT_ID_KEY = 'neutron:subnet_id'
 OVN_SUBNET_EXT_IDS_KEY = 'neutron:subnet_ids'
+OVN_SUBNET_POOL_EXT_ADDR_SCOPE4_KEY = 'neutron:subnet_pool_addr_scope4'
+OVN_SUBNET_POOL_EXT_ADDR_SCOPE6_KEY = 'neutron:subnet_pool_addr_scope6'
 OVN_PHYSNET_EXT_ID_KEY = 'neutron:provnet-physical-network'
 OVN_NETTYPE_EXT_ID_KEY = 'neutron:provnet-network-type'
 OVN_SEGID_EXT_ID_KEY = 'neutron:provnet-segmentation-id'
@@ -51,6 +54,11 @@ OVN_DEVICE_OWNER_EXT_ID_KEY = 'neutron:device_owner'
 OVN_LIVENESS_CHECK_EXT_ID_KEY = 'neutron:liveness_check_at'
 METADATA_LIVENESS_CHECK_EXT_ID_KEY = 'neutron:metadata_liveness_check_at'
 OVN_PORT_BINDING_PROFILE = portbindings.PROFILE
+OVN_HOST_ID_EXT_ID_KEY = 'neutron:host_id'
+OVN_PARENT_HOSTNAME_EXT_ID_KEY = 'neutron:parent_hostname'
+OVN_LRSR_EXT_ID_KEY = 'neutron:is_static_route'
+OVN_FIP_DISTRIBUTED_KEY = 'neutron:fip-distributed'
+OVN_ADDRESS_GROUP_ID_KEY = 'neutron:address_group_id'
 
 MIGRATING_ATTR = 'migrating_to'
 OVN_ROUTER_PORT_OPTION_KEYS = ['router-port', 'nat-addresses',
@@ -61,21 +69,40 @@ OVN_GATEWAY_NAT_ADDRESSES_KEY = 'nat-addresses'
 OVN_ROUTER_PORT_EXCLUDE_LB_VIPS_GARP = 'exclude-lb-vips-from-garp'
 OVN_DROP_PORT_GROUP_NAME = 'neutron_pg_drop'
 OVN_ROUTER_PORT_GW_MTU_OPTION = 'gateway_mtu'
+OVN_OWNED = 'ovn-owned'
 
 OVN_PROVNET_PORT_NAME_PREFIX = 'provnet-'
 OVN_NAME_PREFIX = 'neutron-'
+OVN_HA_CH_GROUP_EXTPORT_PREFIX = 'neutron-extport-'
+OVN_METADATA_PREFIX = 'ovnmeta-'
+
+OVN_DATAPATH_TYPE = 'datapath-type'
+
+# TODO(froyo): Move this to neutron-lib as soon as possible, and when a new
+# release is created and pointed to in the requirements remove this code
+OVN_LB_HM_PORT_DISTRIBUTED = 'ovn-lb-hm:distributed'
 
 # Agent extension constants
 OVN_AGENT_DESC_KEY = 'neutron:description'
 OVN_AGENT_METADATA_SB_CFG_KEY = 'neutron:ovn-metadata-sb-cfg'
 OVN_AGENT_METADATA_DESC_KEY = 'neutron:description-metadata'
 OVN_AGENT_METADATA_ID_KEY = 'neutron:ovn-metadata-id'
+OVN_AGENT_NEUTRON_SB_CFG_KEY = 'neutron:ovn-neutron-agent-sb-cfg'
+OVN_AGENT_NEUTRON_DESC_KEY = 'neutron:description-neutron-agent'
+OVN_AGENT_NEUTRON_ID_KEY = 'neutron:ovn-neutron-agent-id'
+OVN_AGENT_OVN_BRIDGE = 'neutron:ovn-bridge'
 OVN_CONTROLLER_AGENT = 'OVN Controller agent'
 OVN_CONTROLLER_GW_AGENT = 'OVN Controller Gateway agent'
 OVN_METADATA_AGENT = 'OVN Metadata agent'
+OVN_NEUTRON_AGENT = 'OVN Neutron agent'
 OVN_CONTROLLER_TYPES = (OVN_CONTROLLER_AGENT,
                         OVN_CONTROLLER_GW_AGENT,
                         )
+OVN_AGENT_TYPES = (OVN_CONTROLLER_AGENT,
+                   OVN_CONTROLLER_GW_AGENT,
+                   OVN_METADATA_AGENT,
+                   OVN_NEUTRON_AGENT,
+                   )
 
 # OVN ACLs have priorities.  The highest priority ACL that matches is the one
 # that takes effect.  Our choice of priority numbers is arbitrary, but it
@@ -90,12 +117,6 @@ ACL_ACTION_REJECT = 'reject'
 ACL_ACTION_ALLOW_RELATED = 'allow-related'
 ACL_ACTION_ALLOW_STATELESS = 'allow-stateless'
 ACL_ACTION_ALLOW = 'allow'
-
-# When a OVN L3 gateway is created, it needs to be bound to a chassis. In
-# case a chassis is not found OVN_GATEWAY_INVALID_CHASSIS will be set in
-# the options column of the Logical Router. This value is used to detect
-# unhosted router gateways to schedule.
-OVN_GATEWAY_INVALID_CHASSIS = 'neutron-ovn-invalid-chassis'
 
 # NOTE(lucasagomes): These options were last synced from
 # https://github.com/ovn-org/ovn/blob/feb5d6e81d5a0290aa3618a229c860d01200422e/lib/ovn-l7.h
@@ -113,6 +134,7 @@ SUPPORTED_DHCP_OPTS_MAPPING = {
         'log-server': 'log_server',
         'lpr-server': 'lpr_server',
         'domain-name': 'domain_name',
+        'domain-search': 'domain_search_list',
         'swap-server': 'swap_server',
         'policy-filter': 'policy_filter',
         'router-solicitation': 'router_solicitation',
@@ -164,17 +186,21 @@ SUPPORTED_DHCP_OPTS_MAPPING = {
         '58': 'T1',
         '59': 'T2',
         '67': 'bootfile_name',
+        '119': 'domain_search_list',
         '252': 'wpad',
         '210': 'path_prefix',
-        '150': 'tftp_server_address'},
-    6: {'server-id': 'server_id',
+        '150': 'tftp_server_address',
+        '255': 'next_server'},
+    6: {'bootfile-name': 'bootfile_name',
+        'server-id': 'server_id',
         'dns-server': 'dns_server',
         'domain-search': 'domain_search',
         'ia-addr': 'ia_addr',
         '2': 'server_id',
         '5': 'ia_addr',
         '24': 'domain_search',
-        '23': 'dns_server'},
+        '23': 'dns_server',
+        '59': 'bootfile_name'},
 }
 
 # Baremetal specific DHCP options for VNIC_BAREMETAL ports
@@ -185,15 +211,26 @@ SUPPORTED_BM_DHCP_OPTS_MAPPING[4].update({
     'tag:ipxe,67': 'bootfile_name',
     'tag:!ipxe,bootfile-name': 'bootfile_name_alt',
     'tag:!ipxe,67': 'bootfile_name_alt'})
+SUPPORTED_BM_DHCP_OPTS_MAPPING[6].update({
+    'tag:ipxe6,bootfile-name': 'bootfile_name',
+    'tag:ipxe6,59': 'bootfile_name',
+    'tag:!ipxe6,bootfile-name': 'bootfile_name_alt',
+    'tag:!ipxe6,59': 'bootfile_name_alt'})
+
 
 # OVN string type DHCP options
 OVN_STR_TYPE_DHCP_OPTS = [
     'domain_name',
+    'domain_search_list',
     'bootfile_name',
     'bootfile_name_alt',
     'path_prefix',
     'wpad',
     'tftp_server']
+
+OVN_MAP_TYPE_DHCP_OPTS = [
+    'classless_static_route',
+]
 
 # Special option for disabling DHCP via extra DHCP options
 DHCP_DISABLED_OPT = 'dhcp_disabled'
@@ -226,7 +263,7 @@ INITIAL_REV_NUM = -1
 
 ACL_EXPECTED_COLUMNS_NBDB = (
     'external_ids', 'direction', 'log', 'priority',
-    'name', 'action', 'severity', 'match')
+    'name', 'action', 'severity', 'match', 'meter')
 
 # Resource types
 TYPE_NETWORKS = 'networks'
@@ -237,8 +274,9 @@ TYPE_ROUTER_PORTS = 'router_ports'
 TYPE_SECURITY_GROUPS = 'security_groups'
 TYPE_FLOATINGIPS = 'floatingips'
 TYPE_SUBNETS = 'subnets'
+TYPE_ADDRESS_GROUPS = 'address_groups'
 
-_TYPES_PRIORITY_ORDER = (
+TYPES_PRIORITY_ORDER = (
     TYPE_NETWORKS,
     TYPE_SECURITY_GROUPS,
     TYPE_SUBNETS,
@@ -246,19 +284,12 @@ _TYPES_PRIORITY_ORDER = (
     TYPE_PORTS,
     TYPE_ROUTER_PORTS,
     TYPE_FLOATINGIPS,
+    TYPE_ADDRESS_GROUPS,
     TYPE_SECURITY_GROUP_RULES)
 
 DB_CONSISTENCY_CHECK_INTERVAL = 300  # 5 minutes
-
-# The order in which the resources should be created or updated by the
-# maintenance task: Root ones first and leafs at the end.
-MAINTENANCE_CREATE_UPDATE_TYPE_ORDER = {
-    t: n for n, t in enumerate(_TYPES_PRIORITY_ORDER, 1)}
-
-# The order in which the resources should be deleted by the maintenance
-# task: Leaf ones first and roots at the end.
-MAINTENANCE_DELETE_TYPE_ORDER = {
-    t: n for n, t in enumerate(reversed(_TYPES_PRIORITY_ORDER), 1)}
+MAINTENANCE_TASK_RETRY_LIMIT = 100  # times
+MAINTENANCE_ONE_RUN_TASK_SPACING = 5  # seconds
 
 # The addresses field to set in the logical switch port which has a
 # peer router port (connecting to the logical router).
@@ -282,13 +313,22 @@ LB_EXT_IDS_VIP_FIP_KEY = 'neutron:vip_fip'
 LB_EXT_IDS_VIP_PORT_ID_KEY = 'neutron:vip_port_id'
 
 # Hash Ring constants
-HASH_RING_NODES_TIMEOUT = 60
-HASH_RING_TOUCH_INTERVAL = 30
-HASH_RING_CACHE_TIMEOUT = 30
+# NOTE(ralonsoh): the hash ring timeout and interval have been
+# modified during the eventlet deprecation. Once finished, this
+# change should be reverted.
+HASH_RING_NODES_TIMEOUT = 120
+HASH_RING_TOUCH_INTERVAL = 15
+HASH_RING_CACHE_TIMEOUT = 60
 HASH_RING_ML2_GROUP = 'mechanism_driver'
 
 # Maximum chassis count where a gateway port can be hosted
 MAX_GW_CHASSIS = 5
+
+# Maximum number of Chassis in a HA Chassis Group. Limiting the number
+# of members because OVN uses BFD to monitor the connectivity of each member
+# in the group. Having an unlimited number of members can potentially
+# put a lot of stress on OVN to monitor it all.
+MAX_CHASSIS_IN_HA_GROUP = 5
 
 UNKNOWN_ADDR = 'unknown'
 
@@ -378,12 +418,29 @@ LSP_OPTIONS_VIF_PLUG_REPRESENTOR_VF_NUM_KEY = 'vif-plug:representor:vf-num'
 LSP_OPTIONS_REQUESTED_CHASSIS_KEY = 'requested-chassis'
 LSP_OPTIONS_MCAST_FLOOD_REPORTS = 'mcast_flood_reports'
 LSP_OPTIONS_MCAST_FLOOD = 'mcast_flood'
+LSP_OPTIONS_QOS_MAX_RATE = 'qos_max_rate'
+LSP_OPTIONS_QOS_BURST = 'qos_burst'
 LSP_OPTIONS_QOS_MIN_RATE = 'qos_min_rate'
+LSP_OPTIONS_LOCALNET_LEARN_FDB = 'localnet_learn_fdb'
+
+LR_OPTIONS_MAC_AGE_LIMIT = 'mac_binding_age_threshold'
 
 LRP_OPTIONS_RESIDE_REDIR_CH = 'reside-on-redirect-chassis'
+LRP_OPTIONS_REDIRECT_TYPE = 'redirect-type'
+BRIDGE_REDIRECT_TYPE = "bridged"
+
+# FDB AGE Settings
+LS_OPTIONS_FDB_AGE_THRESHOLD = 'fdb_age_threshold'
+FDB_AGE_THRESHOLD_DEFAULT = 300
+
+# MAC ageing settings.
+MAC_BINDING_AGE_THRESHOLD = 300
+
+LS_OPTIONS_BROADCAST_ARPS_ROUTERS = 'broadcast-arps-to-all-routers'
 
 # Port Binding types
 PB_TYPE_VIRTUAL = 'virtual'
+PB_TYPE_L3GATEWAY = 'l3gateway'
 
 HA_CHASSIS_GROUP_DEFAULT_NAME = 'default_ha_chassis_group'
 HA_CHASSIS_GROUP_HIGHEST_PRIORITY = 32767
@@ -401,15 +458,25 @@ EXTERNAL_PORT_TYPES = (portbindings.VNIC_DIRECT,
 NEUTRON_AVAILABILITY_ZONES = 'neutron-availability-zones'
 OVN_CMS_OPTIONS = 'ovn-cms-options'
 CMS_OPT_CHASSIS_AS_GW = 'enable-chassis-as-gw'
+CMS_OPT_CHASSIS_AS_EXTPORT_HOST = 'enable-chassis-as-extport-host'
 CMS_OPT_AVAILABILITY_ZONES = 'availability-zones'
 CMS_OPT_CARD_SERIAL_NUMBER = 'card-serial-number'
 
-# OVN vlan transparency option
+# OVN vlan transparency and QinQ options
 VLAN_PASSTHRU = 'vlan-passthru'
-
-# OVN Placement API; used for minimum bandwidth scheduling allocation.
-# NOTE(ralonsoh): rehome to neutron-lib
-RP_HYPERVISORS = 'resource_provider_hypervisors'
+VLAN_ETHTYPE = 'ethtype'
+# TODO(slaweq): handle somehow differences between version < 24.03 where
+# 802.11ad was wrongly used and >= 24.03 where it was fixed and works with
+# correct name 802.1ad
+# according to
+# https://github.com/ovn-org/ovn/commit/58dcbef8aace526d1ca57769ff1c38eff8db83be
+# it seems that those old, wrong values are still accepted for now. Maybe they
+# will not be in the future so we will need to update it then,
+# I need to:
+# - test locally if 802.11ad and 802.11q will be working fine in newer ovn, if
+# yes, just add todo explaining that this may have to be changed in the future
+ETHTYPE_8021q = '802.11q'
+ETHTYPE_8021ad = '802.11ad'
 
 # OVN mechanism driver constants.
 OVN_RP_UUID = uuid.UUID('5533233b-800c-11eb-b1f4-000056b2f5b8')
@@ -420,4 +487,28 @@ OVN_SUPPORTED_VNIC_TYPES = [portbindings.VNIC_NORMAL,
                             portbindings.VNIC_VHOST_VDPA,
                             portbindings.VNIC_REMOTE_MANAGED,
                             portbindings.VNIC_BAREMETAL,
+                            portbindings.VNIC_VIRTIO_FORWARDER,
                             ]
+
+# OVN L3 scheduler options
+OVN_L3_SCHEDULER_LEASTLOADED = 'leastloaded'
+OVN_L3_SCHEDULER_CHANCE = 'chance'
+
+# HA failover options.
+# These are the default values defined in OVN.
+OVN_BFD_MIN_RX = 1000
+OVN_BFD_MIN_TX = 100
+OVN_BFD_MULT = 3
+OVN_HA_FAILOVER_NORMAL = 'normal'
+OVN_HA_FAILOVER_AGGRESSIVE = 'aggressive'
+OVN_HA_FAILOVER_CONSERVATIVE = 'conservative'
+OVN_HA_FAILOVER_MANUAL = 'manual'
+OVN_HA_FAILOVER_CHOICES = (OVN_HA_FAILOVER_NORMAL,
+                           OVN_HA_FAILOVER_AGGRESSIVE,
+                           OVN_HA_FAILOVER_CONSERVATIVE,
+                           OVN_HA_FAILOVER_MANUAL,
+                           )
+
+# RFC 5798 VRRP virtual MAC address prefixes.
+VRRP_VIRTUAL_MAC_PREFIX_IPV4 = '00:00:5e:00:01'
+VRRP_VIRTUAL_MAC_PREFIX_IPV6 = '00:00:5e:00:02'

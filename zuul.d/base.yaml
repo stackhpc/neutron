@@ -2,7 +2,7 @@
     name: neutron-functional
     parent: devstack-minimal
     description: Run neutron functional tests
-    timeout: 7800
+    timeout: 9000
     required-projects:
       - opendev.org/openstack/devstack
       - openstack/neutron
@@ -13,6 +13,9 @@
     run: playbooks/run_functional_job.yaml
     post-run: playbooks/post_functional_job.yaml
     irrelevant-files: &irrelevant-files
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^.*\.conf\.sample$
       - ^.*\.rst$
@@ -22,6 +25,9 @@
       - ^neutron/tests/fullstack/.*$
       - ^releasenotes/.*$
       - ^setup.cfg$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
       - ^vagrant/.*$
       - ^devstack/.*\.sample$
       - ^playbooks/add_mariadb_repo.yaml
@@ -33,14 +39,18 @@
       - ^roles/add_mariadb_repo/.*$
       - ^roles/nftables/.*$
       - ^rally-jobs/.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
     vars:
       configure_swap_size: 8192
       Q_BUILD_OVS_FROM_GIT: True
       MEMORY_TRACKER: True
       INSTALL_OVN: True
-      OVN_BRANCH: v21.06.0
-      OVS_BRANCH: "a4b04276ab5934d087669ff2d191a23931335c87"
       devstack_services:
         # Ignore any default set by devstack. Emit a "disable_all_services".
         base: false
@@ -48,7 +58,10 @@
       devstack_localrc:
         INSTALL_TESTONLY_PACKAGES: true
         DATABASE_PASSWORD: stackdb
+        NEUTRON_DEPLOY_MOD_WSGI: true
       tox_envlist: dsvm-functional-gate
+      tox_environment:
+        PYTHONPATH: /opt/stack/data/venv/lib/python3.12/site-packages
       tox_constraints_file: '{{ ansible_user_dir }}/src/opendev.org/openstack/requirements/upper-constraints.txt'
       zuul_copy_output:
         # We need to copy archive with logs to have it in job artifacts also,
@@ -57,118 +70,40 @@
         '/opt/stack/logs/dsvm-functional-logs.tar.gz': logs
 
 - job:
-    name: neutron-fullstack
+    name: neutron-functional-with-neutron-lib-master
+    branches: ^master$
     parent: neutron-functional
-    vars:
-      tox_envlist: dsvm-fullstack-gate
-      Q_BUILD_OVS_FROM_GIT: False
-      INSTALL_OVN: False
-      logs_path: '/opt/stack/logs/dsvm-fullstack-logs'
-      log_archive_file_name: '/opt/stack/logs/dsvm-fullstack-logs.tar.gz'
-      zuul_copy_output:
-        # We need to copy archive with logs to have it in job artifacts also,
-        # /opt/stack/logs is default logs directory defined in neutron's
-        # tox.ini file
-        '/opt/stack/logs/dsvm-fullstack-logs.tar.gz': logs
-    irrelevant-files:
-      - ^\.pylintrc$
-      - ^releasenotes/.*$
-      - ^doc/.*$
-      - ^setup.cfg$
-      - ^.*\.conf\.sample$
-      - ^.*\.rst$
-      - ^neutron/locale/.*$
-      - ^neutron/tests/unit/.*$
-      - ^neutron/tests/functional/.*$
-      - ^neutron/agent/ovn/.*$
-      - ^neutron/agent/windows/.*$
-      - ^neutron/plugins/ml2/drivers/macvtap/.*$
-      - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
-      - ^neutron/plugins/ml2/drivers/ovn/.*$
-      - ^neutron_lib/tests/unit/.*$
-      - ^vagrant/.*$
-      - ^devstack/.*\.sample$
-      - ^playbooks/add_mariadb_repo.yaml
-      - ^playbooks/configure_ebtables.yaml
-      - ^playbooks/dvr-multinode-scenario-pre-run.yaml
-      - ^playbooks/install_nftables.yaml
-      - ^playbooks/multinode-setup.yaml
-      - ^playbooks/prepare-ovn-multinode.yaml
-      - ^roles/add_mariadb_repo/.*$
-      - ^roles/nftables/.*$
-      - ^rally-jobs/.*$
-      - ^zuul.d/(?!(project)).*\.yaml
-
-- job:
-    name: neutron-fullstack-with-uwsgi
-    parent: neutron-fullstack
-    vars:
-      devstack_localrc:
-        NEUTRON_DEPLOY_MOD_WSGI: true
-      # Because this job uses neutron defined tox env (defined in base job),
-      # we need to set zuul_work_dir to neutron so that it can be used by
-      # other projects. Currently devstack run this job. Not setting this
-      # in base neutron-functional job as that is being used by neutron
-      # stadium projects where they need to use stadium project as working dir.
-      zuul_work_dir: src/opendev.org/openstack/neutron
-
-- job:
-    name: neutron-fullstack-with-uwsgi-with-neutron-lib-master
-    parent: neutron-fullstack-with-uwsgi
     required-projects:
       - openstack/neutron-lib
 
 - job:
-    name: neutron-fullstack-with-pyroute2-master
-    parent: neutron-fullstack
-    required-projects:
-      - name: github.com/svinota/pyroute2
-
-- job:
-    name: neutron-functional-with-uwsgi
+    name: neutron-functional-fips
     parent: neutron-functional
-    vars:
-      devstack_localrc:
-        NEUTRON_DEPLOY_MOD_WSGI: true
-      # Because this job uses neutron defined tox env (defined in base job),
-      # we need to set zuul_work_dir to neutron so that it can be used by
-      # other projects. Currently devstack run this job. Not setting this
-      # in base neutron-functional job as that is being used by neutron
-      # stadium projects where they need to use stadium project as working dir.
-      zuul_work_dir: src/opendev.org/openstack/neutron
-
-- job:
-    name: neutron-functional-with-uwsgi-with-neutron-lib-master
-    parent: neutron-functional-with-uwsgi
-    required-projects:
-      - openstack/neutron-lib
-
-- job:
-    name: neutron-functional-with-uwsgi-fips
-    parent: neutron-functional-with-uwsgi
-    nodeset: devstack-single-node-centos-8-stream
+    nodeset: devstack-single-node-centos-9-stream
     description: |
-      Functional testing for a FIPS enabled Centos 8 system
+      Functional testing for a FIPS enabled Centos 9 system
     vars:
       nslookup_target: 'opendev.org'
       enable_fips: True
-      # NOTE(ykarel) Remove MYSQL_GATHER_PERFORMANCE and
-      # tox_environment when this job switches to centos-9-stream
-      MYSQL_GATHER_PERFORMANCE: false
+      # NOTE(ykarel) remove python3 override with 10-stream switch
+      PYTHON3_VERSION: 3.12
+      ensure_pip_virtualenv_command: "/usr/bin/python3.12 -m venv"
       tox_environment:
-        TOX_PYTHON: python3.8
+        TOX_PYTHON: python3.12
       devstack_localrc:
         ISCSI_CHAP_ALGORITHMS: SHA3-256,SHA256
         Q_BUILD_OVS_FROM_GIT: true
 
 - job:
     name: neutron-functional-with-pyroute2-master
+    branches: ^master$
     parent: neutron-functional
     required-projects:
       - name: github.com/svinota/pyroute2
 
 - job:
     name: neutron-functional-with-oslo-master
+    branches: ^master$
     parent: neutron-functional
     description: |
       This job installs all oslo libraries from source and executes the
@@ -208,41 +143,55 @@
       - openstack/pbr
 
 - job:
-    name: neutron-fullstack-with-uwsgi-fips
-    parent: neutron-fullstack-with-uwsgi
-    nodeset: devstack-single-node-centos-8-stream
-    description: |
-      Functional testing for a FIPS enabled Centos 8 system
-    vars:
-      nslookup_target: 'opendev.org'
-      enable_fips: True
-      # NOTE(ykarel) Remove MYSQL_GATHER_PERFORMANCE and
-      # tox_environment when this job switches to centos-9-stream
-      MYSQL_GATHER_PERFORMANCE: false
-      tox_environment:
-        TOX_PYTHON: python3.8
-      devstack_localrc:
-        ISCSI_CHAP_ALGORITHMS: SHA3-256,SHA256
-        Q_BUILD_OVS_FROM_GIT: true
+    name: neutron-functional-with-sqlalchemy-master
+    branches: ^master$
+    parent: neutron-functional
+    required-projects:
+      - name: github.com/sqlalchemy/sqlalchemy
+        override-checkout: main
+      - openstack/oslo.db
+      - openstack/neutron-lib
+      - name: github.com/sqlalchemy/alembic
+        override-checkout: main
 
 - job:
-    name: neutron-linuxbridge-tempest-plugin-nftables
-    parent: neutron-tempest-plugin-linuxbridge
-    pre-run: playbooks/install_nftables.yaml
-    vars:
-      devstack_local_conf:
-        post-config:
-          $NEUTRON_CONF:
-            SECURITYGROUP:
-              enable_ipset: false  # Not compatible with nftables
+    name: neutron-functional-with-ovsdbapp-master
+    branches: ^master$
+    parent: neutron-functional
+    required-projects:
+      - openstack/ovsdbapp
 
 - job:
-    name: neutron-ovs-tempest-plugin-iptables_hybrid-nftables
-    parent: neutron-tempest-plugin-openvswitch-iptables_hybrid
-    pre-run: playbooks/install_nftables.yaml
+    # TODO(haleyb): remove once https://review.opendev.org/c/openstack/neutron-lib/+/972735 merges as only consumer
+    name: openstack-tox-py312-with-sqlalchemy-master
+    branches: ^master$
+    parent: openstack-tox-py312
+    required-projects:
+      - name: github.com/sqlalchemy/sqlalchemy
+        override-checkout: main
+      - openstack/oslo.db
+      - openstack/neutron-lib
+      - name: github.com/sqlalchemy/alembic
+        override-checkout: main
+
+- job:
+    name: openstack-tox-py313-with-sqlalchemy-master
+    branches: ^master$
+    parent: openstack-tox-py313
+    required-projects:
+      - name: github.com/sqlalchemy/sqlalchemy
+        override-checkout: main
+      - openstack/oslo.db
+      - openstack/neutron-lib
+      - name: github.com/sqlalchemy/alembic
+        override-checkout: main
+
+# NOTE(ralonsoh): to be removed in 2026.2, once the OVN Metadata agent
+# replacement finishes. See LP#2112313.
+- job:
+    name: neutron-tempest-plugin-ovn-with-ovn-metadata-agent
+    parent: neutron-tempest-plugin-ovn
     vars:
-      devstack_local_conf:
-        post-config:
-          $NEUTRON_CONF:
-            SECURITYGROUP:
-              enable_ipset: false  # Not compatible with nftables
+      devstack_services:
+        q-ovn-metadata-agent: true
+        q-ovn-agent: false

@@ -44,39 +44,45 @@ DEFAULT_QUOTA_RBAC = 10
 core_quota_opts = [
     cfg.IntOpt('default_quota',
                default=DEFAULT_QUOTA,
-               help=_('Default number of resource allowed per tenant. '
+               help=_('Default number of resources allowed per project. '
                       'A negative value means unlimited.')),
     cfg.IntOpt('quota_network',
                default=DEFAULT_QUOTA_NETWORK,
-               help=_('Number of networks allowed per tenant. '
+               help=_('Number of networks allowed per project. '
                       'A negative value means unlimited.')),
     cfg.IntOpt('quota_subnet',
                default=DEFAULT_QUOTA_SUBNET,
-               help=_('Number of subnets allowed per tenant, '
+               help=_('Number of subnets allowed per project, '
                       'A negative value means unlimited.')),
     cfg.IntOpt('quota_port',
                default=DEFAULT_QUOTA_PORT,
-               help=_('Number of ports allowed per tenant. '
+               help=_('Number of ports allowed per project. '
                       'A negative value means unlimited.')),
     cfg.StrOpt('quota_driver',
                default=QUOTA_DB_DRIVER,
                help=_('Default driver to use for quota checks.')),
     cfg.BoolOpt('track_quota_usage',
                 default=True,
-                help=_('Keep in track in the database of current resource '
-                       'quota usage. Plugins which do not leverage the '
-                       'neutron database should set this flag to False.')),
+                help=_('When set to True, quota usage will be tracked in the '
+                       'Neutron database for each resource, by directly '
+                       'mapping to a data model class, for example, '
+                       'networks, subnets, ports, etc. '
+                       'When set to False, quota usage will be tracked by '
+                       'the quota engine as a count of the object type '
+                       'directly. '
+                       'For more information, see the Quota Management '
+                       'and Enforcement guide.')),
 ]
 
 # security_group_quota_opts from neutron/extensions/securitygroup.py
 security_group_quota_opts = [
     cfg.IntOpt('quota_security_group',
                default=DEFAULT_QUOTA_SG,
-               help=_('Number of security groups allowed per tenant. '
+               help=_('Number of security groups allowed per project. '
                       'A negative value means unlimited.')),
     cfg.IntOpt('quota_security_group_rule',
                default=DEFAULT_QUOTA_SG_RULE,
-               help=_('Number of security rules allowed per tenant. '
+               help=_('Number of security group rules allowed per project. '
                       'A negative value means unlimited.')),
 ]
 
@@ -84,19 +90,18 @@ security_group_quota_opts = [
 l3_quota_opts = [
     cfg.IntOpt('quota_router',
                default=DEFAULT_QUOTA_ROUTER,
-               help=_('Number of routers allowed per tenant. '
+               help=_('Number of routers allowed per project. '
                       'A negative value means unlimited.')),
     cfg.IntOpt('quota_floatingip',
                default=DEFAULT_QUOTA_FIP,
-               help=_('Number of floating IPs allowed per tenant. '
+               help=_('Number of floating IPs allowed per project. '
                       'A negative value means unlimited.')),
 ]
 
 # rbac_quota_opts from neutron/extensions/rbac.py
 rbac_quota_opts = [
     cfg.IntOpt('quota_rbac_policy', default=DEFAULT_QUOTA_RBAC,
-               deprecated_name='quota_rbac_entry',
-               help=_('Default number of RBAC entries allowed per tenant. '
+               help=_('Default number of RBAC entries allowed per project. '
                       'A negative value means unlimited.'))
 ]
 

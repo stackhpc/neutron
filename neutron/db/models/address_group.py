@@ -42,10 +42,10 @@ class AddressGroup(standard_attr.HasStandardAttributes,
     addresses = orm.relationship(AddressAssociation,
                                  backref=orm.backref('address_groups',
                                                      load_on_pending=True),
-                                 lazy='subquery',
+                                 lazy='selectin',
                                  cascade='all, delete-orphan')
     rbac_entries = sa.orm.relationship(rbac_db_models.AddressGroupRBAC,
                                        backref='address_groups',
-                                       lazy='subquery',
+                                       lazy='joined',
                                        cascade='all, delete, delete-orphan')
-    api_collections = [ag.ALIAS]
+    api_collections = [ag.COLLECTION_NAME]

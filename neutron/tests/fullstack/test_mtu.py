@@ -29,22 +29,25 @@ class MTUNetworkTestSetup(base.BaseFullStackTestCase):
         env = environment.Environment(
             environment.EnvironmentDescription(),
             self.host_desc)
-        super(MTUNetworkTestSetup, self).setUp(env)
+        super().setUp(env)
 
         self.tenant_id = uuidutils.generate_uuid()
 
     def _restart_neutron_server(self, global_mtu):
-        env = environment.Environment(
-            environment.EnvironmentDescription(global_mtu=global_mtu),
-            self.host_desc)
-        env.test_name = self.get_name()
-        self.useFixture(env)
-        env.neutron_server.restart()
+        neutron_server = self.environment.neutron_server
+        neutron_server.neutron_cfg_fixture.config['DEFAULT'].update(
+            {'global_physnet_mtu': str(global_mtu)}
+        )
+        neutron_server.neutron_cfg_fixture.write_config_to_configfile()
+        neutron_server.restart()
+        self.environment.wait_until_env_is_up()
 
 
 class TestMTUScenarios(MTUNetworkTestSetup):
 
-    def test_mtu_update_network_neg(self):
+    def test_mtu_update(self):
+        # 1) Unable to update the network MTU above the maximum configured
+        # value.
         network = self.safe_client.create_network(self.tenant_id,
                                                   name='mtu-test-network',
                                                   mtu=1450)
@@ -52,17 +55,17 @@ class TestMTUScenarios(MTUNetworkTestSetup):
                           self.safe_client.update_network,
                           network['id'], mtu=9000)
 
-    def test_mtu_update_delete_network(self):
+        # 2) Update and delete a network.
         network = self.safe_client.create_network(self.tenant_id,
-                                                  name='mtu-test-network',
+                                                  name='mtu-test-network-2',
                                                   mtu=1200)
         self.safe_client.update_network(network['id'], mtu=1450)
         res = self.safe_client.delete_network(network['id'])
         self.assertEqual((), res)
 
-    def test_global_physnet_mtu_update_delete_network(self):
+        # 3) Update the global physnet MTU and delete a network.
         network = self.safe_client.create_network(self.tenant_id,
-                                                  name='mtu-test-network',
+                                                  name='mtu-test-network-3',
                                                   mtu=1450)
         self._restart_neutron_server(1400)
         res = self.safe_client.delete_network(network['id'])

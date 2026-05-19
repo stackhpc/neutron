@@ -13,18 +13,24 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib import constants
+from neutron_lib.placement import constants as place_constants
 from oslo_config import cfg
 
 from neutron._i18n import _
 
+
 ml2_opts = [
     cfg.ListOpt('type_drivers',
-                default=['local', 'flat', 'vlan', 'gre', 'vxlan', 'geneve'],
+                default=[constants.TYPE_LOCAL, constants.TYPE_FLAT,
+                         constants.TYPE_VLAN, constants.TYPE_GRE,
+                         constants.TYPE_VXLAN, constants.TYPE_GENEVE],
                 help=_("List of network type driver entrypoints to be loaded "
                        "from the neutron.ml2.type_drivers namespace.")),
-    cfg.ListOpt('tenant_network_types',
-                default=['local'],
-                help=_("Ordered list of network_types to allocate as tenant "
+    cfg.ListOpt('project_network_types',
+                deprecated_name='tenant_network_types',
+                default=[constants.TYPE_LOCAL],
+                help=_("Ordered list of network_types to allocate as project "
                        "networks. The default value 'local' is useful for "
                        "single-box testing but provides no connectivity "
                        "between hosts.")),
@@ -46,26 +52,39 @@ ml2_opts = [
                       'This option allows specifying a physical network MTU '
                       'value that differs from the default global_physnet_mtu '
                       'value.')),
-    cfg.ListOpt('physical_network_mtus',
-                default=[],
-                help=_("A list of mappings of physical networks to MTU "
-                       "values. The format of the mapping is "
-                       "<physnet>:<mtu val>. This mapping allows "
-                       "specifying a physical network MTU value that "
-                       "differs from the default global_physnet_mtu value.")),
+    cfg.DictOpt('physical_network_mtus',
+                default={},
+                help=_("Mappings of physical networks to MTU values. "
+                       "The format of the mapping is <physnet>:<mtu val>. "
+                       "This mapping allows specifying a physical network MTU "
+                       "value that differs from "
+                       "the default global_physnet_mtu value.")),
     cfg.StrOpt('external_network_type',
                help=_("Default network type for external networks when no "
                       "provider attributes are specified. By default it is "
                       "None, which means that if provider attributes are not "
                       "specified while creating external networks then they "
-                      "will have the same type as tenant networks. Allowed "
+                      "will have the same type as project networks. Allowed "
                       "values for external_network_type config option depend "
                       "on the network type values configured in type_drivers "
                       "config option.")),
     cfg.IntOpt('overlay_ip_version',
-               default=4,
-               help=_("IP version of all overlay (tunnel) network endpoints. "
-                      "Use a value of 4 for IPv4 or 6 for IPv6."))
+               default=constants.IP_VERSION_4,
+               choices=[
+                   (constants.IP_VERSION_4, 'IPv4'),
+                   (constants.IP_VERSION_6, 'IPv6')
+               ],
+               help=_("IP version of all overlay (tunnel) network "
+                      "endpoints.")),
+    cfg.StrOpt('tunnelled_network_rp_name',
+               default=place_constants.RP_TUNNELLED,
+               help=_("Resource provider name for the host with tunnelled "
+                      "networks. This resource provider represents the "
+                      "available bandwidth for all tunnelled networks in a "
+                      "compute node. NOTE: this parameter is used both by the "
+                      "Neutron server and the mechanism driver agents; it is "
+                      "recommended not to change it once any resource "
+                      "provider register has been created.")),
 ]
 
 

@@ -19,6 +19,7 @@ import pyroute2
 from pyroute2.netlink import rtnl
 
 from neutron.agent.linux import tc_lib
+from neutron.agent.linux import utils as linux_utils
 from neutron.privileged.agent.linux import ip_lib as priv_ip_lib
 from neutron.privileged.agent.linux import tc_lib as priv_tc_lib
 from neutron.tests.functional import base as functional_base
@@ -27,12 +28,13 @@ from neutron.tests.functional import base as functional_base
 class TcQdiscTestCase(functional_base.BaseSudoTestCase):
 
     def setUp(self):
-        super(TcQdiscTestCase, self).setUp()
+        super().setUp()
         self.namespace = 'ns_test-' + uuidutils.generate_uuid()
         priv_ip_lib.create_netns(self.namespace)
         self.addCleanup(self._remove_ns, self.namespace)
         self.device = 'int_dummy'
         priv_ip_lib.create_interface(self.device, self.namespace, 'dummy')
+        priv_ip_lib.set_link_attribute(self.device, self.namespace, state='up')
 
     def _remove_ns(self, namespace):
         priv_ip_lib.remove_netns(namespace)
@@ -46,13 +48,15 @@ class TcQdiscTestCase(functional_base.BaseSudoTestCase):
         self.assertEqual(1, len(qdiscs))
         self.assertEqual(rtnl.TC_H_ROOT, qdiscs[0]['parent'])
         self.assertEqual(0x50000, qdiscs[0]['handle'])
-        self.assertEqual('htb', tc_lib._get_attr(qdiscs[0], 'TCA_KIND'))
+        self.assertEqual('htb', linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
 
         priv_tc_lib.delete_tc_qdisc(self.device, rtnl.TC_H_ROOT,
                                     namespace=self.namespace)
         qdiscs = priv_tc_lib.list_tc_qdiscs(self.device,
                                             namespace=self.namespace)
-        self.assertEqual(0, len(qdiscs))
+        self.assertEqual(1, len(qdiscs))
+        self.assertEqual('noqueue',
+                         linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
 
     def test_add_tc_qdisc_htb_no_handle(self):
         priv_tc_lib.add_tc_qdisc(
@@ -63,13 +67,15 @@ class TcQdiscTestCase(functional_base.BaseSudoTestCase):
         self.assertEqual(1, len(qdiscs))
         self.assertEqual(rtnl.TC_H_ROOT, qdiscs[0]['parent'])
         self.assertEqual(0, qdiscs[0]['handle'] & 0xFFFF)
-        self.assertEqual('htb', tc_lib._get_attr(qdiscs[0], 'TCA_KIND'))
+        self.assertEqual('htb', linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
 
         priv_tc_lib.delete_tc_qdisc(self.device, parent=rtnl.TC_H_ROOT,
                                     namespace=self.namespace)
         qdiscs = priv_tc_lib.list_tc_qdiscs(self.device,
                                             namespace=self.namespace)
-        self.assertEqual(0, len(qdiscs))
+        self.assertEqual(1, len(qdiscs))
+        self.assertEqual('noqueue',
+                         linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
 
     def test_add_tc_qdisc_tbf(self):
         burst = 192000
@@ -82,9 +88,9 @@ class TcQdiscTestCase(functional_base.BaseSudoTestCase):
                                             namespace=self.namespace)
         self.assertEqual(1, len(qdiscs))
         self.assertEqual(rtnl.TC_H_ROOT, qdiscs[0]['parent'])
-        self.assertEqual('tbf', tc_lib._get_attr(qdiscs[0], 'TCA_KIND'))
-        tca_options = tc_lib._get_attr(qdiscs[0], 'TCA_OPTIONS')
-        tca_tbf_parms = tc_lib._get_attr(tca_options, 'TCA_TBF_PARMS')
+        self.assertEqual('tbf', linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
+        tca_options = linux_utils.get_attr(qdiscs[0], 'TCA_OPTIONS')
+        tca_tbf_parms = linux_utils.get_attr(tca_options, 'TCA_TBF_PARMS')
         self.assertEqual(rate, tca_tbf_parms['rate'])
         self.assertEqual(burst, tc_lib._calc_burst(tca_tbf_parms['rate'],
                                                    tca_tbf_parms['buffer']))
@@ -95,23 +101,30 @@ class TcQdiscTestCase(functional_base.BaseSudoTestCase):
                                     namespace=self.namespace)
         qdiscs = priv_tc_lib.list_tc_qdiscs(self.device,
                                             namespace=self.namespace)
-        self.assertEqual(0, len(qdiscs))
+        self.assertEqual(1, len(qdiscs))
+        self.assertEqual('noqueue',
+                         linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
 
     def test_add_tc_qdisc_ingress(self):
         priv_tc_lib.add_tc_qdisc(self.device, kind='ingress',
                                  namespace=self.namespace)
         qdiscs = priv_tc_lib.list_tc_qdiscs(self.device,
                                             namespace=self.namespace)
-        self.assertEqual(1, len(qdiscs))
-        self.assertEqual('ingress', tc_lib._get_attr(qdiscs[0], 'TCA_KIND'))
-        self.assertEqual(rtnl.TC_H_INGRESS, qdiscs[0]['parent'])
-        self.assertEqual(0xffff0000, qdiscs[0]['handle'])
+        self.assertEqual(2, len(qdiscs))
+        self.assertEqual('noqueue',
+                         linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
+        self.assertEqual('ingress', linux_utils.get_attr(qdiscs[1],
+                                                         'TCA_KIND'))
+        self.assertEqual(rtnl.TC_H_INGRESS, qdiscs[1]['parent'])
+        self.assertEqual(0xffff0000, qdiscs[1]['handle'])
 
         priv_tc_lib.delete_tc_qdisc(self.device, kind='ingress',
                                     namespace=self.namespace)
         qdiscs = priv_tc_lib.list_tc_qdiscs(self.device,
                                             namespace=self.namespace)
-        self.assertEqual(0, len(qdiscs))
+        self.assertEqual(1, len(qdiscs))
+        self.assertEqual('noqueue',
+                         linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
 
     def test_delete_tc_qdisc_no_device(self):
         self.assertRaises(
@@ -138,14 +151,19 @@ class TcQdiscTestCase(functional_base.BaseSudoTestCase):
                                  namespace=self.namespace)
         qdiscs = priv_tc_lib.list_tc_qdiscs(self.device,
                                             namespace=self.namespace)
-        self.assertEqual(1, len(qdiscs))
-        self.assertEqual('ingress', tc_lib._get_attr(qdiscs[0], 'TCA_KIND'))
+        self.assertEqual(2, len(qdiscs))
+        self.assertEqual('noqueue',
+                         linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
+        self.assertEqual('ingress', linux_utils.get_attr(qdiscs[1],
+                                                         'TCA_KIND'))
         self.assertIsNone(
             priv_tc_lib.delete_tc_qdisc(self.device, kind='ingress',
                                         namespace=self.namespace))
         qdiscs = priv_tc_lib.list_tc_qdiscs(self.device,
                                             namespace=self.namespace)
-        self.assertEqual(0, len(qdiscs))
+        self.assertEqual(1, len(qdiscs))
+        self.assertEqual('noqueue',
+                         linux_utils.get_attr(qdiscs[0], 'TCA_KIND'))
         self.assertEqual(
             errno.EINVAL,
             priv_tc_lib.delete_tc_qdisc(self.device, kind='ingress',
@@ -161,12 +179,13 @@ class TcPolicyClassTestCase(functional_base.BaseSudoTestCase):
                '1:7': {'rate': 35001, 'ceil': 90000, 'burst': 1701}}
 
     def setUp(self):
-        super(TcPolicyClassTestCase, self).setUp()
+        super().setUp()
         self.namespace = 'ns_test-' + uuidutils.generate_uuid()
         priv_ip_lib.create_netns(self.namespace)
         self.addCleanup(self._remove_ns, self.namespace)
         self.device = 'int_dummy'
         priv_ip_lib.create_interface('int_dummy', self.namespace, 'dummy')
+        priv_ip_lib.set_link_attribute(self.device, self.namespace, state='up')
 
     def _remove_ns(self, namespace):
         priv_ip_lib.remove_netns(namespace)
@@ -185,8 +204,8 @@ class TcPolicyClassTestCase(functional_base.BaseSudoTestCase):
         self.assertEqual(len(self.CLASSES), len(tc_classes))
         for tc_class in tc_classes:
             handle = tc_lib._handle_from_hex_to_string(tc_class['handle'])
-            tca_options = tc_lib._get_attr(tc_class, 'TCA_OPTIONS')
-            tca_htb_params = tc_lib._get_attr(tca_options, 'TCA_HTB_PARMS')
+            tca_options = linux_utils.get_attr(tc_class, 'TCA_OPTIONS')
+            tca_htb_params = linux_utils.get_attr(tca_options, 'TCA_HTB_PARMS')
             self.assertEqual(self.CLASSES[handle]['rate'],
                              tca_htb_params['rate'])
             self.assertEqual(self.CLASSES[handle]['ceil'],
@@ -242,12 +261,13 @@ class TcFilterClassTestCase(functional_base.BaseSudoTestCase):
                '1:7': {'rate': 35001, 'ceil': 90000, 'burst': 1701}}
 
     def setUp(self):
-        super(TcFilterClassTestCase, self).setUp()
+        super().setUp()
         self.namespace = 'ns_test-' + uuidutils.generate_uuid()
         priv_ip_lib.create_netns(self.namespace)
         self.addCleanup(self._remove_ns, self.namespace)
         self.device = 'int_dummy'
         priv_ip_lib.create_interface('int_dummy', self.namespace, 'dummy')
+        priv_ip_lib.set_link_attribute(self.device, self.namespace, state='up')
 
     def _remove_ns(self, namespace):
         priv_ip_lib.remove_netns(namespace)
@@ -274,9 +294,8 @@ class TcFilterClassTestCase(functional_base.BaseSudoTestCase):
             self.assertEqual(value, filter_keys[index])
 
     def test_add_tc_filter_policy(self):
-        priv_tc_lib.add_tc_qdisc(
-            self.device, parent=rtnl.TC_H_ROOT, kind='ingress',
-            namespace=self.namespace)
+        priv_tc_lib.add_tc_qdisc(self.device, kind='ingress',
+                                 namespace=self.namespace)
 
         # NOTE(ralonsoh):
         # - rate: 320000 bytes/sec (pyroute2 units) = 2560 kbits/sec (OS units)

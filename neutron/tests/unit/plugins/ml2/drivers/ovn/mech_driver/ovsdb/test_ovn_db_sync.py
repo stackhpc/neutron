@@ -16,6 +16,9 @@ import collections
 from unittest import mock
 
 from neutron_lib import constants as const
+from neutron_lib.ovn import constants as n_lib_ovn_const
+from neutron_lib.services.logapi import constants as log_const
+from oslo_utils import uuidutils
 
 from neutron.common.ovn import acl
 from neutron.common.ovn import constants as ovn_const
@@ -23,11 +26,19 @@ from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import impl_idl_ovn
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_client
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
 from neutron.services.ovn_l3 import plugin as ovn_plugin
+from neutron.tests.unit import fake_resources as fakes
 from neutron.tests.unit.plugins.ml2.drivers.ovn.mech_driver import \
     test_mech_driver
-
+from neutron.tests.unit.services.logapi.drivers.ovn import test_driver
 
 OvnPortInfo = collections.namedtuple('OvnPortInfo', ['name'])
+
+
+class FakeACL:
+
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
 
 @mock.patch.object(ovn_plugin.OVNL3RouterPlugin, '_sb_ovn', mock.Mock())
@@ -36,15 +47,17 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
     l3_plugin = 'ovn-router'
 
     def setUp(self):
-        super(TestOvnNbSyncML2, self).setUp()
+        # We want metadata enabled to increase coverage
+        super().setUp(enable_metadata=True)
 
+        self.test_log_driver = test_driver.TestOVNDriver()
         self.subnet = {'cidr': '10.0.0.0/24',
                        'id': 'subnet1',
                        'subnetpool_id': None,
                        'name': 'private-subnet',
                        'enable_dhcp': True,
                        'network_id': 'n1',
-                       'tenant_id': 'tenant1',
+                       'project_id': 'project1',
                        'gateway_ip': '10.0.0.1',
                        'ip_version': 4,
                        'shared': False}
@@ -81,7 +94,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                          'network_id': 'n1',
                          'enable_dhcp': True,
                          'cidr': '10.0.0.0/24',
-                         'tenant_id': 'tenant1',
+                         'project_id': 'project1',
                          'gateway_ip': '10.0.0.1',
                          'dns_nameservers': [],
                          'host_routes': [],
@@ -90,7 +103,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                          'network_id': 'n1',
                          'enable_dhcp': True,
                          'cidr': 'fd79:e1c:a55::/64',
-                         'tenant_id': 'tenant1',
+                         'project_id': 'project1',
                          'gateway_ip': 'fd79:e1c:a55::1',
                          'dns_nameservers': [],
                          'host_routes': [],
@@ -99,54 +112,58 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                          'network_id': 'n2',
                          'enable_dhcp': True,
                          'cidr': '20.0.0.0/24',
-                         'tenant_id': 'tenant1',
+                         'project_id': 'project1',
                          'gateway_ip': '20.0.0.1',
+                         'dns_nameservers': [],
+                         'host_routes': [],
+                         'ip_version': 4},
+                        # A subnet without a known network should be skipped,
+                        # see bug #2045811
+                        {'id': 'notfound',
+                         'network_id': 'notfound',
+                         'enable_dhcp': True,
+                         'cidr': '30.0.0.0/24',
+                         'project_id': 'project1',
+                         'gateway_ip': '30.0.0.1',
                          'dns_nameservers': [],
                          'host_routes': [],
                          'ip_version': 4}]
 
-        self.security_groups = [
-            {'id': 'sg1', 'tenant_id': 'tenant1',
-             'security_group_rules': [{'remote_group_id': None,
-                                       'direction': 'ingress',
-                                       'remote_ip_prefix': '0.0.0.0/0',
-                                       'protocol': 'tcp',
-                                       'ethertype': 'IPv4',
-                                       'tenant_id': 'tenant1',
-                                       'port_range_max': 65535,
-                                       'port_range_min': 1,
-                                       'id': 'ruleid1',
-                                       'security_group_id': 'sg1'}],
-             'name': 'all-tcp'},
-            {'id': 'sg2', 'tenant_id': 'tenant1',
-             'security_group_rules': [{'remote_group_id': 'sg2',
-                                       'direction': 'egress',
-                                       'remote_ip_prefix': '0.0.0.0/0',
-                                       'protocol': 'tcp',
-                                       'ethertype': 'IPv4',
-                                       'tenant_id': 'tenant1',
-                                       'port_range_max': 65535,
-                                       'port_range_min': 1,
-                                       'id': 'ruleid1',
-                                       'security_group_id': 'sg2'}],
-             'name': 'all-tcpe'}]
+        self.security_group_rules = [
+            {
+                'remote_group_id': None,
+                'direction': 'ingress',
+                'remote_ip_prefix': const.IPv4_ANY,
+                'protocol': 'tcp',
+                'ethertype': 'IPv4',
+                'project_id': 'project1',
+                'port_range_max': 65535,
+                'port_range_min': 1,
+                'id': 'ruleid1',
+                'security_group_id': 'sg1',
+                'normalized_cidr': ''
+            }, {
+                'remote_group_id': 'sg2',
+                'direction': 'egress',
+                'remote_ip_prefix': const.IPv4_ANY,
+                'protocol': 'tcp',
+                'ethertype': 'IPv4',
+                'project_id': 'project1',
+                'port_range_max': 65535,
+                'port_range_min': 1,
+                'id': 'ruleid2',
+                'security_group_id': 'sg2',
+                'normalized_cidr': ''
+            },
+        ]
 
-        self.sg_port_groups_ovn = [mock.Mock(), mock.Mock(), mock.Mock()]
-        self.sg_port_groups_ovn[0].configure_mock(
-            name='pg_sg1',
-            external_ids={ovn_const.OVN_SG_EXT_ID_KEY: 'sg1'},
-            ports=[],
-            acls=[])
-        self.sg_port_groups_ovn[1].configure_mock(
-            name='pg_unknown_del',
-            external_ids={ovn_const.OVN_SG_EXT_ID_KEY: 'sg2'},
-            ports=[],
-            acls=[])
-        self.sg_port_groups_ovn[2].configure_mock(
-            name='neutron_pg_drop',
-            external_ids=[],
-            ports=[],
-            acls=[])
+        self.security_groups = [
+            {'id': 'sg1', 'project_id': 'project1',
+             'security_group_rules': [self.security_group_rules[0]],
+             'name': 'all-tcp'},
+            {'id': 'sg2', 'project_id': 'project1',
+             'security_group_rules': [self.security_group_rules[1]],
+             'name': 'all-tcpe'}]
 
         self.ports = [
             {'id': 'p1n1',
@@ -204,54 +221,117 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                    'ip_address': '90.0.0.10'}],
              'network_id': 'ext-net'}]
 
+        self.sg_port_groups_ovn = [mock.Mock(), mock.Mock(), mock.Mock(),
+                                   mock.Mock(), mock.Mock()]
+        self.sg_port_groups_ovn[0].configure_mock(
+            name='pg_sg1',
+            external_ids={ovn_const.OVN_SG_EXT_ID_KEY: 'sg1'},
+            ports=[],
+            acls=[FakeACL(
+                name=[],
+                meter=[],
+                severity=[],
+                direction='to-lport',
+                action='allow-related',
+                log=False,
+                priority=1002,
+                match=('outport == @pg_sg1 && ip4 && tcp && '
+                       'tcp.dst >= 1 && tcp.dst <= 65535'),
+                external_ids={ovn_const.OVN_SG_RULE_EXT_ID_KEY: 'ruleid1'}
+            )])
+        self.sg_port_groups_ovn[1].configure_mock(
+            name='pg_unknown_del',
+            external_ids={ovn_const.OVN_SG_EXT_ID_KEY: 'sg2'},
+            ports=[],
+            acls=[])
+        self.sg_port_groups_ovn[2].configure_mock(
+            name=ovn_const.OVN_DROP_PORT_GROUP_NAME,
+            external_ids={},
+            ports=[],
+            acls=[
+                FakeACL(
+                    name=[],
+                    meter=[],
+                    severity=[],
+                    direction='to-lport',
+                    action='drop',
+                    log=False,
+                    priority=1001,
+                    match=('outport == @%s && ip' %
+                           ovn_const.OVN_DROP_PORT_GROUP_NAME),
+                    external_ids={}
+                ),
+                FakeACL(
+                    name=[],
+                    meter=[],
+                    severity=[],
+                    direction='from-lport',
+                    action='drop',
+                    log=False,
+                    priority=1001,
+                    match=('inport == @%s && ip' %
+                           ovn_const.OVN_DROP_PORT_GROUP_NAME),
+                    external_ids={}
+                )
+            ])
+        self.sg_port_groups_ovn[3].configure_mock(
+            name='pg_sg_stale',
+            external_ids={ovn_const.OVN_SG_EXT_ID_KEY: 'sg_stale'},
+            ports=[],
+            acls=[FakeACL(
+                name=[],
+                meter=[],
+                severity=[],
+                direction='to-lport',
+                action='allow-related',
+                log=False,
+                priority=1000,
+                match='outport == @pg_sg_stale',
+                external_ids={ovn_const.OVN_SG_RULE_EXT_ID_KEY: 'stale_rule'}
+            )])
+        self.sg_port_groups_ovn[4].configure_mock(
+            name='external_pg',
+            external_ids={'owner': 'not-owned-by-neutron'},
+            ports=[],
+            acls=[FakeACL(
+                name=[],
+                meter=[],
+                severity=[],
+                direction=[],
+                action='allow-related',
+                log=False,
+                priority=1000,
+                match='outport == @external_pg',
+                external_ids={'owner': 'not-owned-by-neutron'}
+            )])
+
         self.ports_ovn = [OvnPortInfo('p1n1'), OvnPortInfo('p1n2'),
                           OvnPortInfo('p2n1'), OvnPortInfo('p2n2'),
                           OvnPortInfo('p3n1'), OvnPortInfo('p3n3')]
 
-        self.acls_ovn = {
-            'lport1':
-            # ACLs need to be removed by the sync tool
-            [{'id': 'acl1', 'priority': 00, 'policy': 'allow',
-              'lswitch': 'lswitch1', 'lport': 'lport1'}],
-            'lport2':
-            [{'id': 'acl2', 'priority': 00, 'policy': 'drop',
-             'lswitch': 'lswitch2', 'lport': 'lport2'}],
-            # ACLs need to be kept as-is by the sync tool
-            'p2n2':
-            [{'lport': 'p2n2', 'direction': 'to-lport',
-              'log': False, 'lswitch': 'neutron-n2',
-              'priority': 1001, 'action': 'drop',
-             'external_ids': {'neutron:lport': 'p2n2'},
-              'match': 'outport == "p2n2" && ip'},
-             {'lport': 'p2n2', 'direction': 'to-lport',
-              'log': False, 'lswitch': 'neutron-n2',
-              'priority': 1002, 'action': 'allow',
-              'external_ids': {'neutron:lport': 'p2n2'},
-              'match': 'outport == "p2n2" && ip4 && '
-              'ip4.src == 10.0.0.0/24 && udp && '
-              'udp.src == 67 && udp.dst == 68'}]}
-
-        self.routers = [{'id': 'r1', 'routes': [{'nexthop': '20.0.0.100',
-                         'destination': '11.0.0.0/24'}, {
-                         'nexthop': '20.0.0.101',
-                         'destination': '12.0.0.0/24',
-                         'external_ids': {}}],
-                         'gw_port_id': 'gpr1',
-                         'external_gateway_info': {
-                             'network_id': "ext-net", 'enable_snat': True,
-                             'external_fixed_ips': [
-                                 {'subnet_id': 'ext-subnet',
-                                  'ip_address': '90.0.0.2'}]}},
-                        {'id': 'r2', 'routes': [{'nexthop': '40.0.0.100',
-                         'destination': '30.0.0.0/24',
-                         'external_ids': {}}],
-                         'gw_port_id': 'gpr2',
-                         'external_gateway_info': {
-                             'network_id': "ext-net", 'enable_snat': True,
-                             'external_fixed_ips': [
-                                 {'subnet_id': 'ext-subnet',
-                                  'ip_address': '100.0.0.2'}]}},
-                        {'id': 'r4', 'routes': []}]
+        self.routers = [
+            {'id': 'r1', 'routes': [
+                {'nexthop': '20.0.0.100', 'destination': '11.0.0.0/24',
+                 'external_ids': {ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                {'nexthop': '20.0.0.101', 'destination': '12.0.0.0/24',
+                 'external_ids': {ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}],
+             'gw_port_id': 'gpr1',
+             'enable_snat': True,
+             'external_gateway_info': {
+                'network_id': "ext-net", 'enable_snat': True,
+                'external_fixed_ips': [
+                    {'subnet_id': 'ext-subnet', 'ip_address': '90.0.0.2'}]}},
+            {'id': 'r2', 'routes': [
+                {'nexthop': '40.0.0.100', 'destination': '30.0.0.0/24',
+                 'external_ids': {ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}],
+             'gw_port_id': 'gpr2',
+             'enable_snat': True,
+             'external_gateway_info': {
+                'network_id': "ext-net", 'enable_snat': True,
+                'external_fixed_ips': [
+                    {'subnet_id': 'ext-subnet', 'ip_address': '100.0.0.2'}]}},
+            {'id': 'r4', 'routes': []},
+            {'id': 'r5', 'routes': [], 'flavor_id': 'user-defined'}]
 
         self.get_sync_router_ports = [
             {'fixed_ips': [{'subnet_id': 'subnet1',
@@ -299,9 +379,15 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                                       'ports': {'p3r1': ['fake']},
                                       'static_routes':
                                       [{'nexthop': '20.0.0.100',
-                                        'destination': '11.0.0.0/24'},
+                                        'destination': '11.0.0.0/24',
+                                        'external_ids':
+                                            {ovn_const.OVN_LRSR_EXT_ID_KEY:
+                                             'true'}},
                                        {'nexthop': '20.0.0.100',
-                                        'destination': '10.0.0.0/24'}],
+                                        'destination': '10.0.0.0/24',
+                                        'external_ids':
+                                            {ovn_const.OVN_LRSR_EXT_ID_KEY:
+                                             'true'}}],
                                       'snats':
                                       [{'logical_ip': '172.16.0.0/24',
                                         'external_ip': '90.0.0.2',
@@ -337,11 +423,12 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         self.lrport_networks = ['fdad:123:456::1/64', 'fdad:cafe:a1b2::1/64']
 
     def get_additional_service_plugins(self):
-        p = super(TestOvnNbSyncML2, self).get_additional_service_plugins()
+        p = super().get_additional_service_plugins()
         p.update({'segments': 'neutron.services.segments.plugin.Plugin'})
         return p
 
-    def _fake_get_ovn_dhcp_options(self, subnet, network, server_mac=None):
+    def _fake_get_ovn_dhcp_options(self, context, subnet, network,
+                                   server_mac=None):
         if subnet['id'] == 'n1-s1':
             return {'cidr': '10.0.0.0/24',
                     'options': {'server_id': '10.0.0.1',
@@ -352,27 +439,27 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                     'external_ids': {'subnet_id': 'n1-s1'}}
         return {'cidr': '', 'options': '', 'external_ids': {}}
 
-    def _fake_get_gw_info(self, ctx, router):
+    def _fake_get_gw_info(self, ctx, port):
         return {
-            'r1': [ovn_client.GW_INFO(router_ip='90.0.0.2',
-                                      gateway_ip='90.0.0.1',
-                                      network_id='', subnet_id='ext-subnet',
-                                      ip_version=4,
-                                      ip_prefix=const.IPv4_ANY)],
-            'r2': [ovn_client.GW_INFO(router_ip='100.0.0.2',
-                                      gateway_ip='100.0.0.1',
-                                      network_id='', subnet_id='ext-subnet',
-                                      ip_version=4,
-                                      ip_prefix=const.IPv4_ANY)]
-        }.get(router['id'], [])
+            'p1r1': [ovn_client.GW_INFO(router_ip='90.0.0.2',
+                                        gateway_ip='90.0.0.1',
+                                        network_id='', subnet_id='ext-subnet',
+                                        ip_version=4,
+                                        ip_prefix=const.IPv4_ANY)],
+            'p1r2': [ovn_client.GW_INFO(router_ip='100.0.0.2',
+                                        gateway_ip='100.0.0.1',
+                                        network_id='', subnet_id='ext-subnet',
+                                        ip_version=4,
+                                        ip_prefix=const.IPv4_ANY)]
+        }.get(port['id'], [])
 
-    def _fake_get_v4_network_of_all_router_ports(self, ctx, router_id):
+    def _fake_get_snat_cidrs_for_external_router(self, ctx, router_id):
         return {'r1': ['172.16.0.0/24', '172.16.2.0/24'],
                 'r2': ['192.168.2.0/24']}.get(router_id, [])
 
-    def _test_mocks_helper(self, ovn_nb_synchronizer):
+    def _test_mocks_helper(self, ovn_nb_synchronizer, test_logging=False):
         core_plugin = ovn_nb_synchronizer.core_plugin
-        ovn_api = ovn_nb_synchronizer.ovn_api
+        ovn_api = ovn_nb_synchronizer.ovn_nb_api
         ovn_driver = ovn_nb_synchronizer.ovn_driver
         l3_plugin = ovn_nb_synchronizer.l3_plugin
         pf_plugin = ovn_nb_synchronizer.pf_plugin
@@ -390,6 +477,20 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                     segs.append(segment)
             return segs
 
+        def get_ports():
+            def wrapper(*args, **kwargs):
+                # We need to do this since blindly returning self.ports
+                # if caller specified a filter could lead to failed tests,
+                # for example, it will not filter out non-metadata ports.
+                filters = kwargs.get('filters')
+                if not filters:
+                    return self.ports
+                ports = [port for port in self.ports if
+                         all(port[k] in v for k, v in filters.items())]
+                return ports
+
+            return wrapper
+
         segments_plugin.get_segments = mock.Mock()
         segments_plugin.get_segments.side_effect = (
             lambda x, filters: get_segments(self, filters))
@@ -397,26 +498,74 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         # following block is used for acl syncing unit-test
 
         # With the given set of values in the unit testing,
-        # 19 neutron acls should have been there,
-        # 4 acls are returned as current ovn acls,
-        # two of which will match with neutron.
-        # So, in this example 17 will be added, 2 removed
+        # 5 Port Groups are created in the OVN db,
+        # 2 of them should be deleted as they are managed by Neutron SGs and
+        # don't match any SG in the Neutron DB.
+        # One of those Port Groups has also ACL which should be deleted.
+        # One Port Group is missing (sg2) and should be created in OVN DB.
+        # There is one ACL in that missing ACL which should be created in the
+        # OVN DB too.
+
         core_plugin.get_ports = mock.Mock()
-        core_plugin.get_ports.return_value = self.ports
+        core_plugin.get_ports.side_effect = get_ports()
         mock.patch.object(acl, '_get_subnet_from_cache',
                           return_value=self.subnet).start()
         mock.patch.object(acl, 'acl_remote_group_id',
                           side_effect=self.matches).start()
+        if test_logging:
+            log_objs = [self.test_log_driver._fake_log_obj(
+                event=log_const.DROP_EVENT, resource_id=None, id='1111')]
+            mock.patch.object(ovn_nb_synchronizer.ovn_log_driver, '_get_logs',
+                              return_value=log_objs).start()
+            mock.patch.object(ovn_nb_synchronizer.ovn_log_driver,
+                              '_pgs_from_log_obj', return_value=[
+                                  {'name': 'neutron_pg_drop',
+                                   'external_ids': {},
+                                   'acls': [uuidutils.generate_uuid()]}]
+                              ).start()
+
         core_plugin.get_security_group = mock.MagicMock(
             side_effect=self.security_groups)
-        ovn_nb_synchronizer.get_acls = mock.Mock()
-        ovn_nb_synchronizer.get_acls.return_value = self.acls_ovn
         core_plugin.get_security_groups = mock.MagicMock(
             return_value=self.security_groups)
+
+        def get_security_group_rules(context, filters=None):
+            rules = []
+            for rule in self.security_group_rules:
+                if filters['security_group_id'] == rule['security_group_id']:
+                    rules.append(rule)
+            return rules
+
+        core_plugin.get_security_group_rules = mock.MagicMock(
+            side_effect=get_security_group_rules)
         get_sg_port_groups = mock.MagicMock()
+        if test_logging:
+            for pg in self.sg_port_groups_ovn:
+                for pg_acl in pg.acls:
+                    if pg.name == ovn_const.OVN_DROP_PORT_GROUP_NAME:
+                        pg_acl.log = True
+                    pg_acl.name = ['neutron-1111']
+                    pg_acl.severity = ['info']
+                    pg_acl.meter = ['acl_log_meter']
         get_sg_port_groups.execute.return_value = self.sg_port_groups_ovn
         ovn_api.db_list_rows.return_value = get_sg_port_groups
         ovn_api.lsp_list.execute.return_value = self.ports_ovn
+
+        # we need to mock ACL table schema to actually be able to search for
+        # specific fields in the mocked ACL objects:
+        mock.patch.dict(
+            ovn_nb_synchronizer.ovn_nb_api._tables['ACL'].columns,
+            {'name': mock.Mock(),
+             'meter': mock.Mock(),
+             'severity': mock.Mock(),
+             'direction': mock.Mock(),
+             'action': mock.Mock(),
+             'priority': mock.Mock(),
+             'match': mock.Mock(),
+             'log': mock.Mock(),
+             'external_ids': mock.Mock()}
+        ).start()
+
         # end of acl-sync block
 
         # The following block is used for router and router port syncing tests
@@ -436,15 +585,14 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         l3_plugin._get_sync_interfaces = mock.Mock()
         l3_plugin._get_sync_interfaces.return_value = (
             self.get_sync_router_ports)
-        ovn_nb_synchronizer._ovn_client = mock.Mock()
-        ovn_nb_synchronizer._ovn_client.\
-            _get_nets_and_ipv6_ra_confs_for_router_port.return_value = (
+        ovn_client = mock.Mock()
+        ovn_nb_synchronizer._ovn_client = ovn_client
+        ovn_client._get_nets_and_ipv6_ra_confs_for_router_port.return_value = (
                 self.lrport_networks, {'fixed_ips': {}})
-        ovn_nb_synchronizer._ovn_client._get_v4_network_of_all_router_ports. \
-            side_effect = self._fake_get_v4_network_of_all_router_ports
-        ovn_nb_synchronizer._ovn_client._get_gw_info = mock.Mock()
-        ovn_nb_synchronizer._ovn_client._get_gw_info.side_effect = (
-            self._fake_get_gw_info)
+        ovn_client._get_snat_cidrs_for_external_router.side_effect = (
+            self._fake_get_snat_cidrs_for_external_router)
+        ovn_client._get_gw_info = mock.Mock()
+        ovn_client._get_gw_info.side_effect = self._fake_get_gw_info
         # end of router-sync block
         l3_plugin.get_floatingips = mock.Mock()
         l3_plugin.get_floatingips.return_value = self.floating_ips
@@ -453,8 +601,6 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         ovn_api.get_all_logical_switches_with_ports.return_value = (
             self.lswitches_with_ports)
 
-        ovn_api.get_all_stateless_fip_nats = mock.Mock()
-        ovn_api.get_all_stateless_fip_nats.return_value = []
         ovn_api.get_all_logical_routers_with_rports = mock.Mock()
         ovn_api.get_all_logical_routers_with_rports.return_value = (
             self.lrouters_with_rports)
@@ -462,10 +608,10 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         ovn_api.transaction = mock.MagicMock()
 
         ovn_nb_synchronizer._ovn_client.create_network = mock.Mock()
-        ovn_nb_synchronizer._ovn_client.create_port = mock.Mock()
         ovn_driver.validate_and_get_data_from_binding_profile = mock.Mock()
         ovn_nb_synchronizer._ovn_client.create_port = mock.Mock()
         ovn_nb_synchronizer._ovn_client.create_port.return_value = mock.ANY
+        ovn_nb_synchronizer._ovn_client.create_metadata_port = mock.Mock()
         ovn_nb_synchronizer._ovn_client.create_provnet_port = mock.Mock()
         ovn_api.ls_del = mock.Mock()
         ovn_api.delete_lswitch_port = mock.Mock()
@@ -473,7 +619,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         ovn_api.delete_lrouter = mock.Mock()
         ovn_api.delete_lrouter_port = mock.Mock()
         ovn_api.add_static_route = mock.Mock()
-        ovn_api.delete_static_route = mock.Mock()
+        ovn_api.delete_static_routes = mock.Mock()
         ovn_api.get_all_dhcp_options.return_value = {
             'subnets': {'n1-s1': {'cidr': '10.0.0.0/24',
                                   'options':
@@ -533,6 +679,11 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         ovn_api.delete_dhcp_options = mock.Mock()
         ovn_nb_synchronizer._ovn_client.get_port_dns_records = mock.Mock()
         ovn_nb_synchronizer._ovn_client.get_port_dns_records.return_value = {}
+        ovn_nb_synchronizer._ovn_client._get_router_gw_ports.side_effect = (
+            [self.get_sync_router_ports[0]],
+            [self.get_sync_router_ports[1]],
+            [self.get_sync_router_ports[2]],
+        )
 
     def _test_ovn_nb_sync_helper(self, ovn_nb_synchronizer,
                                  networks, ports,
@@ -549,10 +700,14 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                                  add_subnet_dhcp_options_list,
                                  delete_dhcp_options_list,
                                  add_port_groups_list,
-                                 del_port_groups_list):
-        self._test_mocks_helper(ovn_nb_synchronizer)
+                                 del_port_groups_list,
+                                 add_acls_list,
+                                 del_acls_list,
+                                 create_metadata_list,
+                                 test_logging=False):
+        self._test_mocks_helper(ovn_nb_synchronizer, test_logging)
 
-        ovn_api = ovn_nb_synchronizer.ovn_api
+        ovn_api = ovn_nb_synchronizer.ovn_nb_api
         mock.patch.object(impl_idl_ovn.OvsdbNbOvnIdl, 'from_worker').start()
 
         ovn_nb_synchronizer.do_sync()
@@ -573,6 +728,21 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         ovn_api.pg_del.assert_has_calls(
             del_port_groups_calls, any_order=True)
 
+        add_acls_calls = [mock.call(may_exist=True, **a)
+                          for a in add_acls_list]
+        self.assertEqual(
+            len(add_acls_list),
+            ovn_api.pg_acl_add.call_count)
+        ovn_api.pg_acl_add.assert_has_calls(
+            add_acls_calls, any_order=True)
+        del_acls_calls = [mock.call(*d)
+                          for d in del_acls_list]
+        ovn_api.pg_acl_del.assert_has_calls(
+            del_acls_calls, any_order=True)
+        self.assertEqual(
+            len(del_acls_list),
+            ovn_api.pg_acl_del.call_count)
+
         self.assertEqual(
             len(create_network_list),
             ovn_nb_synchronizer._ovn_client.create_network.call_count)
@@ -580,6 +750,14 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                                 for net in create_network_list]
         ovn_nb_synchronizer._ovn_client.create_network.assert_has_calls(
             create_network_calls, any_order=True)
+
+        create_metadata_calls = [mock.call(mock.ANY, net)
+                                 for net in create_metadata_list]
+        self.assertEqual(
+            len(create_metadata_list),
+            ovn_nb_synchronizer._ovn_client.create_metadata_port.call_count)
+        ovn_nb_synchronizer._ovn_client.create_metadata_port.assert_has_calls(
+            create_metadata_calls, any_order=True)
 
         self.assertEqual(
             len(create_port_list),
@@ -591,9 +769,11 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
 
         create_provnet_port_calls = [
             mock.call(
+                mock.ANY,
                 network['id'],
                 self.segments_map[network['id']],
-                txn=mock.ANY)
+                txn=mock.ANY,
+                network=network)
             for network in create_provnet_port_list
             if network.get('provider:physical_network')]
         self.assertEqual(
@@ -619,20 +799,20 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
 
         add_route_calls = [mock.call(mock.ANY, ip_prefix=route['destination'],
                                      nexthop=route['nexthop'],
-                                     external_ids=route.get('external_ids',
-                                     {}))
+                                     external_ids=route['external_ids'])
                            for route in add_static_route_list]
         ovn_api.add_static_route.assert_has_calls(add_route_calls,
                                                   any_order=True)
         self.assertEqual(len(add_static_route_list),
                          ovn_api.add_static_route.call_count)
-        del_route_calls = [mock.call(mock.ANY, ip_prefix=route['destination'],
-                                     nexthop=route['nexthop'])
-                           for route in del_static_route_list]
-        ovn_api.delete_static_route.assert_has_calls(del_route_calls,
-                                                     any_order=True)
-        self.assertEqual(len(del_static_route_list),
-                         ovn_api.delete_static_route.call_count)
+        routes_to_delete = [(route['destination'], route['nexthop'])
+                            for route in del_static_route_list]
+        del_route_call = [mock.call(mock.ANY, routes_to_delete)] \
+            if routes_to_delete else []
+
+        ovn_api.delete_static_routes.assert_has_calls(del_route_call)
+        self.assertEqual(1 if len(del_static_route_list) else 0,
+                         ovn_api.delete_static_routes.call_count)
 
         add_nat_calls = [mock.call(mock.ANY, **nat) for nat in add_snat_list]
         ovn_api.add_nat_rule_in_lrouter.assert_has_calls(add_nat_calls,
@@ -640,7 +820,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         self.assertEqual(len(add_snat_list),
                          ovn_api.add_nat_rule_in_lrouter.call_count)
 
-        add_fip_calls = [mock.call(nat, txn=mock.ANY)
+        add_fip_calls = [mock.call(mock.ANY, nat, txn=mock.ANY)
                          for nat in add_floating_ip_list]
         (ovn_nb_synchronizer._ovn_client._create_or_update_floatingip.
             assert_has_calls(add_fip_calls))
@@ -655,8 +835,8 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         self.assertEqual(len(del_snat_list),
                          ovn_api.delete_nat_rule_in_lrouter.call_count)
 
-        del_fip_calls = [mock.call(nat, mock.ANY, txn=mock.ANY) for nat in
-                         del_floating_ip_list]
+        del_fip_calls = [mock.call(mock.ANY, nat, mock.ANY, txn=mock.ANY)
+                         for nat in del_floating_ip_list]
         ovn_nb_synchronizer._ovn_client._delete_floatingip.assert_has_calls(
             del_fip_calls, any_order=True)
         self.assertEqual(
@@ -682,8 +862,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
             create_router_port_calls,
             any_order=True)
 
-        self.assertEqual(len(del_router_list),
-                         ovn_api.delete_lrouter.call_count)
+        self.assertEqual(len(del_router_list), ovn_api.lr_del.call_count)
         update_router_port_calls = [mock.call(mock.ANY, p)
                                     for p in update_router_port_list]
         self.assertEqual(
@@ -693,10 +872,9 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
             update_router_port_calls,
             any_order=True)
 
-        delete_lrouter_calls = [mock.call(r['router'])
+        delete_lrouter_calls = [mock.call(r['router'], if_exists=True)
                                 for r in del_router_list]
-        ovn_api.delete_lrouter.assert_has_calls(
-            delete_lrouter_calls, any_order=True)
+        ovn_api.lr_del.assert_has_calls(delete_lrouter_calls, any_order=True)
 
         self.assertEqual(
             len(del_router_port_list),
@@ -712,7 +890,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
             ovn_nb_synchronizer._ovn_client._add_subnet_dhcp_options.
             call_count)
         add_subnet_dhcp_options_calls = [
-            mock.call(subnet, net, mock.ANY)
+            mock.call(mock.ANY, subnet, net, mock.ANY)
             for (subnet, net) in add_subnet_dhcp_options_list]
         ovn_nb_synchronizer._ovn_client._add_subnet_dhcp_options. \
             assert_has_calls(add_subnet_dhcp_options_calls, any_order=True)
@@ -725,7 +903,12 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         ovn_api.delete_dhcp_options.assert_has_calls(
             delete_dhcp_options_calls, any_order=True)
 
-    def test_ovn_nb_sync_mode_repair(self):
+        if test_logging:
+            # 2 times when doing add_logging_options_to_acls
+            self.assertEqual(2, ovn_nb_synchronizer.ovn_log_driver.
+                             _pgs_from_log_obj.call_count)
+
+    def _test_ovn_nb_sync_mode_repair(self, test_logging=False):
 
         create_network_list = [{'net': {'id': 'n2', 'mtu': 1450},
                                 'ext_ids': {}}]
@@ -735,7 +918,7 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                          {'id': 'provnet-orphaned-segment',
                           'lswitch': 'neutron-n4'}]
         create_port_list = self.ports
-        for port in create_port_list:
+        for port in create_port_list.copy():
             if port['id'] in ['p1n1', 'fp1']:
                 # this will be skipped by the logic,
                 # because p1n1 is already in lswitch-port list
@@ -747,8 +930,9 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         create_router_list = [{
             'id': 'r2', 'routes': [
                 {'nexthop': '40.0.0.100', 'destination': '30.0.0.0/24',
-                 'external_ids': {}}],
+                 'external_ids': {ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}],
             'gw_port_id': 'gpr2',
+            'enable_snat': True,
             'external_gateway_info': {
                 'network_id': "ext-net", 'enable_snat': True,
                 'external_fixed_ips': [{
@@ -761,25 +945,29 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         # Static routes with destination 0.0.0.0/0 are default gateway routes
         add_static_route_list = [{'nexthop': '20.0.0.101',
                                   'destination': '12.0.0.0/24',
-                                  'external_ids': {}},
+                                  'external_ids': {
+                                      ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
                                  {'nexthop': '90.0.0.1',
-                                  'destination': '0.0.0.0/0',
+                                  'destination': const.IPv4_ANY,
                                   'external_ids': {
                                       ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
                                       ovn_const.OVN_SUBNET_EXT_ID_KEY:
                                       'ext-subnet'}},
                                  {'nexthop': '40.0.0.100',
                                   'destination': '30.0.0.0/24',
-                                  'external_ids': {}},
+                                  'external_ids': {
+                                      ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
                                  {'nexthop': '100.0.0.1',
-                                  'destination': '0.0.0.0/0',
+                                  'destination': const.IPv4_ANY,
                                   'external_ids': {
                                       ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
                                       ovn_const.OVN_SUBNET_EXT_ID_KEY:
                                       'ext-subnet'}}]
         del_static_route_list = [{'nexthop': '20.0.0.100',
                                   'destination': '10.0.0.0/24',
-                                  'external_ids': {}}]
+                                  'external_ids': {
+                                      ovn_const.OVN_LRSR_EXT_ID_KEY:
+                                      'true'}}]
         add_snat_list = [{'logical_ip': '172.16.2.0/24',
                           'external_ip': '90.0.0.2',
                           'type': 'snat'},
@@ -821,15 +1009,31 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
             {'external_ids': {ovn_const.OVN_SG_EXT_ID_KEY: 'sg2'},
              'name': 'pg_sg2',
              'acls': []}]
-        del_port_groups_list = ['pg_unknown_del']
-
+        del_port_groups_list = ['pg_unknown_del', 'pg_sg_stale']
+        add_acls_list = [
+            {'port_group': 'pg_sg2',
+             'priority': 1002,
+             'action': 'allow-related',
+             'log': False,
+             'name': 'neutron-1111' if test_logging else [],
+             'severity': 'info' if test_logging else [],
+             'direction': 'from-lport',
+             'match': ('inport == @pg_sg2 && ip4 && tcp && '
+                       'tcp.dst >= 1 && tcp.dst <= 65535'),
+             'meter': 'acl_log_meter' if test_logging else [],
+             ovn_const.OVN_SG_RULE_EXT_ID_KEY: 'ruleid2'
+             },
+        ]
+        del_acls_list = [
+            ('pg_sg_stale', 'to-lport', 1000, 'outport == @pg_sg_stale')]
         add_subnet_dhcp_options_list = [(self.subnets[2], self.networks[1]),
                                         (self.subnets[1], self.networks[0])]
         delete_dhcp_options_list = ['UUID2', 'UUID4', 'UUID5']
+        create_metadata_list = self.networks
 
         ovn_nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
-            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
-            'repair', self.mech_driver)
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
         self._test_ovn_nb_sync_helper(ovn_nb_synchronizer,
                                       self.networks,
                                       self.ports,
@@ -851,7 +1055,17 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                                       add_subnet_dhcp_options_list,
                                       delete_dhcp_options_list,
                                       add_port_groups_list,
-                                      del_port_groups_list)
+                                      del_port_groups_list,
+                                      add_acls_list,
+                                      del_acls_list,
+                                      create_metadata_list,
+                                      test_logging)
+
+    def test_ovn_nb_sync_mode_repair(self):
+        self._test_ovn_nb_sync_mode_repair(test_logging=False)
+
+    def test_ovn_nb_sync_mode_repair_logs_created(self):
+        self._test_ovn_nb_sync_mode_repair(test_logging=True)
 
     def test_ovn_nb_sync_mode_log(self):
         create_network_list = []
@@ -874,10 +1088,13 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         delete_dhcp_options_list = []
         add_port_groups_list = []
         del_port_groups_list = []
+        add_acls_list = []
+        del_acls_list = []
+        create_metadata_list = []
 
         ovn_nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
-            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
-            'log', self.mech_driver)
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_LOG)
         self._test_ovn_nb_sync_helper(ovn_nb_synchronizer,
                                       self.networks,
                                       self.ports,
@@ -899,7 +1116,10 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                                       add_subnet_dhcp_options_list,
                                       delete_dhcp_options_list,
                                       add_port_groups_list,
-                                      del_port_groups_list)
+                                      del_port_groups_list,
+                                      add_acls_list,
+                                      del_acls_list,
+                                      create_metadata_list)
 
     def _test_ovn_nb_sync_calculate_routes_helper(self,
                                                   ovn_routes,
@@ -907,8 +1127,8 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                                                   expected_added,
                                                   expected_deleted):
         ovn_nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
-            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
-            'repair', self.mech_driver)
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
         add_routes, del_routes = ovn_nb_synchronizer. \
             _calculate_routes_differences(ovn_routes, db_routes)
         self.assertEqual(add_routes, expected_added)
@@ -919,14 +1139,14 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
         # add 2 routes to ovn
         ovn_routes = []
         db_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}}]
+                      'destination': '11.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                     {'nexthop': '90.0.0.1',
+                      'destination': const.IPv4_ANY,
+                      'external_ids': {
+                          ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                          ovn_const.OVN_SUBNET_EXT_ID_KEY: 'ext-subnet'}}]
         expected_added = db_routes
         expected_deleted = []
         self._test_ovn_nb_sync_calculate_routes_helper(ovn_routes,
@@ -938,14 +1158,14 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
 
         # remove 2 routes from ovn
         ovn_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}}]
+                       'destination': '11.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                      {'nexthop': '90.0.0.1',
+                       'destination': const.IPv4_ANY,
+                       'external_ids': {
+                            ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                            ovn_const.OVN_SUBNET_EXT_ID_KEY: 'ext-subnet'}}]
         db_routes = []
         expected_added = []
         expected_deleted = ovn_routes
@@ -958,20 +1178,22 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
 
         # remove 2 routes from ovn, add 2 routes to ovn
         ovn_routes = [{'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '13.0.0.0/24',
-                    'external_ids': {}}]
+                       'destination': const.IPv4_ANY,
+                       'external_ids': {
+                            ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                            ovn_const.OVN_SUBNET_EXT_ID_KEY: 'ext-subnet'}},
+                      {'nexthop': '20.0.0.100',
+                       'destination': '13.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         db_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '12.0.0.0/24',
-                    'external_ids': {}}]
+                      'destination': '11.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                     {'nexthop': '20.0.0.100',
+                     'destination': '12.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         expected_added = db_routes
         expected_deleted = ovn_routes
         self._test_ovn_nb_sync_calculate_routes_helper(ovn_routes,
@@ -983,36 +1205,41 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
 
         # remove 2 routes from ovn, keep 2 routes
         ovn_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '12.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '13.0.0.0/24',
-                    'external_ids': {}}]
+                       'destination': '11.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                      {'nexthop': '20.0.0.100',
+                       'destination': '12.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                      {'nexthop': '90.0.0.1',
+                       'destination': const.IPv4_ANY,
+                       'external_ids': {
+                            ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                            ovn_const.OVN_SUBNET_EXT_ID_KEY: 'ext-subnet'}},
+                      {'nexthop': '20.0.0.100',
+                       'destination': '13.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         db_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '12.0.0.0/24',
-                    'external_ids': {}}]
+                      'destination': '11.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                     {'nexthop': '20.0.0.100',
+                     'destination': '12.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         expected_added = []
         expected_deleted = [{'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '13.0.0.0/24',
-                    'external_ids': {}}]
+                             'destination': const.IPv4_ANY,
+                             'external_ids': {
+                                 ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                                 ovn_const.OVN_SUBNET_EXT_ID_KEY:
+                                     'ext-subnet'}},
+                            {'nexthop': '20.0.0.100',
+                             'destination': '13.0.0.0/24',
+                             'external_ids': {
+                                 ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         self._test_ovn_nb_sync_calculate_routes_helper(ovn_routes,
                                                        db_routes,
                                                        expected_added,
@@ -1022,35 +1249,39 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
 
         # add 2 routes to ovn, keep 2 routes
         ovn_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '12.0.0.0/24',
-                    'external_ids': {}}]
+                       'destination': '11.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                      {'nexthop': '20.0.0.100',
+                       'destination': '12.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         db_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '12.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '13.0.0.0/24',
-                    'external_ids': {}}]
+                      'destination': '11.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                     {'nexthop': '20.0.0.100',
+                      'destination': '12.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                     {'nexthop': '90.0.0.1',
+                      'destination': const.IPv4_ANY,
+                      'external_ids': {
+                          ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                          ovn_const.OVN_SUBNET_EXT_ID_KEY: 'ext-subnet'}},
+                     {'nexthop': '20.0.0.100',
+                      'destination': '13.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         expected_added = [{'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '13.0.0.0/24',
-                    'external_ids': {}}]
+                           'destination': const.IPv4_ANY,
+                           'external_ids': {
+                               ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                               ovn_const.OVN_SUBNET_EXT_ID_KEY: 'ext-subnet'}},
+                          {'nexthop': '20.0.0.100',
+                           'destination': '13.0.0.0/24',
+                           'external_ids': {
+                               ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         expected_deleted = []
         self._test_ovn_nb_sync_calculate_routes_helper(ovn_routes,
                                                        db_routes,
@@ -1061,62 +1292,131 @@ class TestOvnNbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
 
         # add 2 routes to ovn, remove 2 routes from ovn, keep 2 routes
         ovn_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '13.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '14.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '15.0.0.0/24',
-                    'external_ids': {}}]
+                       'destination': '13.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                      {'nexthop': '90.0.0.1',
+                       'destination': const.IPv4_ANY,
+                       'external_ids': {
+                            ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                            ovn_const.OVN_SUBNET_EXT_ID_KEY: 'ext-subnet'}},
+                      {'nexthop': '20.0.0.100',
+                       'destination': '14.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                      {'nexthop': '20.0.0.100',
+                       'destination': '15.0.0.0/24',
+                       'external_ids': {
+                           ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         db_routes = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '12.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '13.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '90.0.0.1',
-                    'destination': '0.0.0.0/0',
-                    'external_ids': {
-                        ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
-                        ovn_const.OVN_SUBNET_EXT_ID_KEY:
-                        'ext-subnet'}}]
+                      'destination': '11.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                     {'nexthop': '20.0.0.100',
+                      'destination': '12.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                     {'nexthop': '20.0.0.100',
+                      'destination': '13.0.0.0/24',
+                      'external_ids': {
+                          ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                     {'nexthop': '90.0.0.1',
+                      'destination': const.IPv4_ANY,
+                      'external_ids': {
+                          ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
+                          ovn_const.OVN_SUBNET_EXT_ID_KEY: 'ext-subnet'}}]
 
         expected_added = [{'nexthop': '20.0.0.100',
-                    'destination': '11.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '12.0.0.0/24',
-                    'external_ids': {}}]
+                           'destination': '11.0.0.0/24',
+                           'external_ids': {
+                               ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                          {'nexthop': '20.0.0.100',
+                           'destination': '12.0.0.0/24',
+                           'external_ids': {
+                               ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
         expected_deleted = [{'nexthop': '20.0.0.100',
-                    'destination': '14.0.0.0/24',
-                    'external_ids': {}},
-                    {'nexthop': '20.0.0.100',
-                    'destination': '15.0.0.0/24',
-                    'external_ids': {}}]
+                             'destination': '14.0.0.0/24',
+                             'external_ids': {
+                                 ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}},
+                            {'nexthop': '20.0.0.100',
+                             'destination': '15.0.0.0/24',
+                             'external_ids': {
+                                 ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}]
+        self._test_ovn_nb_sync_calculate_routes_helper(ovn_routes,
+                                                       db_routes,
+                                                       expected_added,
+                                                       expected_deleted)
+
+    def test_ovn_nb_sync_calculate_routes_ignore_non_neutron_routes(self):
+
+        # ignore two routes from ovn without neutron external_ids
+        ovn_routes = [{'nexthop': '20.0.0.100',
+                       'destination': '11.0.0.0/24',
+                       'external_ids': {}},
+                      {'nexthop': '90.0.0.1',
+                       'destination': const.IPv4_ANY,
+                       'external_ids': {}}]
+        db_routes = []
+        expected_added = []
+        expected_deleted = []
         self._test_ovn_nb_sync_calculate_routes_helper(ovn_routes,
                                                        db_routes,
                                                        expected_added,
                                                        expected_deleted)
 
 
+class TestIsRouterPortChanged(test_mech_driver.OVNMechanismDriverTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.ovn_nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_LOG)
+
+        self.db_router_port = {
+            'id': 'aa076509-915d-4b1c-8d9d-3db53d9c5faf',
+            'networks': ['fdf9:ad62:3a04::1/64'],
+            'ipv6_ra_configs': {'address_mode': 'slaac',
+                                'send_periodic': 'true',
+                                'mtu': '1442'}
+        }
+        self.lrport_nets = ['fdf9:ad62:3a04::1/64']
+        self.ovn_lrport = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'ipv6_ra_configs': {'address_mode': 'slaac',
+                                       'send_periodic': 'true',
+                                       'mtu': '1442'}})
+
+        self.ovn_nb_synchronizer.ovn_nb_api.is_col_present.return_value = True
+        self.ovn_nb_synchronizer.ovn_nb_api.lrp_get().execute.return_value = (
+            self.ovn_lrport)
+
+    def test__is_router_port_changed_not_changed(self):
+        self.assertFalse(self.ovn_nb_synchronizer._is_router_port_changed(
+            self.db_router_port, self.lrport_nets))
+
+    def test__is_router_port_changed_network_changed(self):
+        self.db_router_port['networks'] = ['172.24.4.26/24',
+                                           '2001:db8::206/64']
+        self.assertTrue(self.ovn_nb_synchronizer._is_router_port_changed(
+            self.db_router_port, self.lrport_nets))
+
+    def test__is_router_port_changed_ipv6_ra_configs_changed(self):
+        self.db_router_port['ipv6_ra_configs']['mtu'] = '1500'
+        self.assertTrue(self.ovn_nb_synchronizer._is_router_port_changed(
+            self.db_router_port, self.lrport_nets))
+
+
 class TestOvnSbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
+
+    def _clean_agent_cache(self, ovn_sb_synchronizer):
+        del ovn_sb_synchronizer.agent_cache
 
     def test_ovn_sb_sync(self):
         ovn_sb_synchronizer = ovn_db_sync.OvnSbSynchronizer(
-            self.plugin,
-            self.mech_driver.sb_ovn,
-            self.mech_driver)
-        ovn_api = ovn_sb_synchronizer.ovn_api
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_LOG)
+        self.addCleanup(self._clean_agent_cache, ovn_sb_synchronizer)
+        ovn_api = ovn_sb_synchronizer.ovn_sb_api
         hostname_with_physnets = {'hostname1': ['physnet1', 'physnet2'],
                                   'hostname2': ['physnet1']}
         ovn_api.get_chassis_hostname_and_physnets.return_value = (
@@ -1127,17 +1427,61 @@ class TestOvnSbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
 
         with mock.patch.object(ovn_db_sync.segments_db,
                                'get_hosts_mapped_with_segments',
-                               return_value=hosts_in_neutron):
+                               return_value=hosts_in_neutron) as mock_ghmws, \
+                mock.patch.object(ovn_sb_synchronizer.agent_cache, 'populate'):
             ovn_sb_synchronizer.sync_hostname_and_physical_networks(mock.ANY)
-            all_hosts = set(hostname_with_physnets.keys()) | hosts_in_neutron
+            mock_ghmws.assert_called_once_with(mock.ANY)
             self.assertEqual(
-                len(all_hosts),
+                len(hostname_with_physnets),
                 ovn_driver.update_segment_host_mapping.call_count)
             update_segment_host_mapping_calls = [mock.call(
                 host, hostname_with_physnets[host])
                 for host in hostname_with_physnets]
-            update_segment_host_mapping_calls += [
-                mock.call(host, []) for host in
-                hosts_in_neutron - set(hostname_with_physnets.keys())]
             ovn_driver.update_segment_host_mapping.assert_has_calls(
                 update_segment_host_mapping_calls, any_order=True)
+
+
+class TestSyncFipDnatRules(test_mech_driver.OVNMechanismDriverTestCase):
+    def setUp(self):
+        super().setUp()
+        self.synchronizer = ovn_db_sync.OvnNbSynchronizer(
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+        self.nb_api = self.synchronizer.ovn_nb_api
+
+    def _make_nat_rule(self, fip_id=None, stateless=None):
+        external_ids = {}
+        if fip_id is not None:
+            external_ids[ovn_const.OVN_FIP_EXT_ID_KEY] = fip_id
+        options = {}
+        if stateless is not None:
+            options['stateless'] = stateless
+        return {'_uuid': uuidutils.generate_uuid(),
+                'external_ids': external_ids,
+                'options': options}
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_stateless_nat_enabled',
+                return_value=True)
+    def test_non_neutron_nat_rules_skipped(self, mock_stateless):
+        neutron_nat = self._make_nat_rule(fip_id='fip-uuid', stateless='false')
+        non_neutron_nat = self._make_nat_rule(stateless='false')
+        self.nb_api.get_floatingips.return_value = [
+            neutron_nat, non_neutron_nat]
+
+        self.synchronizer.sync_fip_dnat_rules()
+
+        self.nb_api.db_set.assert_called_once_with(
+            'NAT', neutron_nat['_uuid'],
+            ('options', {'stateless': 'true'}))
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_stateless_nat_enabled',
+                return_value=True)
+    def test_already_correct_neutron_nat_not_updated(self, mock_stateless):
+        neutron_nat = self._make_nat_rule(fip_id='fip-uuid', stateless='true')
+        self.nb_api.get_floatingips.return_value = [neutron_nat]
+
+        self.synchronizer.sync_fip_dnat_rules()
+
+        self.nb_api.db_set.assert_not_called()

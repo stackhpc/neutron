@@ -15,6 +15,7 @@
 
 import sys
 
+from neutron_lib import constants
 from oslo_config import cfg
 from oslo_log import log as logging
 
@@ -27,7 +28,6 @@ from neutron.conf.agent import securitygroups_rpc
 from neutron.conf import common as common_config
 from neutron.conf.db import l3_hamode_db
 from neutron.conf.plugins.ml2 import config as ml2_conf
-from neutron.conf.plugins.ml2.drivers import linuxbridge as lb_conf
 from neutron.conf.plugins.ml2.drivers.mech_sriov import agent_common as \
     sriov_conf
 from neutron.conf.plugins.ml2.drivers import ovs_conf
@@ -39,7 +39,6 @@ LOG = logging.getLogger(__name__)
 def setup_conf():
     config.register_common_config_options()
     ovs_conf.register_ovs_agent_opts(cfg.CONF)
-    lb_conf.register_linuxbridge_opts(cfg.CONF)
     sriov_conf.register_agent_sriov_nic_opts(cfg.CONF)
     ml2_conf.register_ml2_plugin_opts(cfg.CONF)
     securitygroups_rpc.register_securitygroups_opts(cfg.CONF)
@@ -53,7 +52,7 @@ class BoolOptCallback(cfg.BoolOpt):
         if 'default' not in kwargs:
             kwargs['default'] = False
         self.callback = callback
-        super(BoolOptCallback, self).__init__(name, **kwargs)
+        super().__init__(name, **kwargs)
 
 
 def check_ovs_vxlan():
@@ -153,21 +152,14 @@ def check_keepalived_ipv6_support():
     return result
 
 
-def check_dibbler_version():
-    result = checks.dibbler_version_supported()
+def check_keepalived_garp_on_sighup_support():
+    result = checks.keepalived_garp_on_sighup_supported()
     if not result:
-        LOG.error('The installed version of dibbler-client is too old. '
-                  'Please update to at least version %s.',
-                  checks.get_minimal_dibbler_version_supported())
-    return result
-
-
-def check_nova_notify():
-    result = checks.nova_notify_supported()
-    if not result:
-        LOG.error('Nova notifications are enabled, but novaclient is not '
-                  'installed. Either disable nova notifications or '
-                  'install python-novaclient.')
+        LOG.error('The installed version of keepalived may not support '
+                  'sending gratious ARP on SIGHUP, which may delay '
+                  'dataplane downtime during HA router failover. '
+                  'Please use at least version 1.2.20 which support '
+                  'sending garp on SIGHUP.')
     return result
 
 
@@ -328,6 +320,21 @@ def check_ovn_sb_db_schema_virtual_port():
     return result
 
 
+def check_ovn_localnet_learn_fdb_support():
+    result = checks.ovn_localnet_learn_fdb_support()
+    if not result:
+        LOG.warning('OVN does not support localnet_learn_fdb option. '
+                    'This support was added in OVN 22.09.')
+
+
+def check_ovn_sb_db_schema_chassis_private():
+    result = checks.ovn_sb_db_schema_chassis_private_supported()
+    if not result:
+        LOG.warning('OVN SB DB schema does not support chassis private. This '
+                    'support was added in DB schema version 2.9.0.')
+    return result
+
+
 # Define CLI opts to test specific features, with a callback for the test
 OPTS = [
     BoolOptCallback('ovs_vxlan', check_ovs_vxlan, default=False,
@@ -338,8 +345,6 @@ OPTS = [
                     help=_('Check for iproute2 vxlan support')),
     BoolOptCallback('ovs_patch', check_ovs_patch, default=True,
                     help=_('Check for patch port support')),
-    BoolOptCallback('nova_notify', check_nova_notify,
-                    help=_('Check for nova notification support')),
     BoolOptCallback('arp_responder', check_arp_responder,
                     help=_('Check for ARP responder support')),
     BoolOptCallback('arp_header_match', check_arp_header_match,
@@ -369,10 +374,10 @@ OPTS = [
                     help=_('Check ebtables installation')),
     BoolOptCallback('keepalived_ipv6_support', check_keepalived_ipv6_support,
                     help=_('Check keepalived IPv6 support')),
-    BoolOptCallback('dibbler_version', check_dibbler_version,
-                    help=_('Check minimal dibbler version'),
-                    deprecated_for_removal=True,
-                    deprecated_since='Pike'),
+    BoolOptCallback('keepalived_garp_on_sighup_support',
+                    check_keepalived_garp_on_sighup_support,
+                    help=_('Check keepalived support sending garp on '
+                           'SIGHUP.')),
     BoolOptCallback('ipset_installed', check_ipset,
                     help=_('Check ipset installation')),
     BoolOptCallback('ip6tables_installed', check_ip6tables,
@@ -404,6 +409,14 @@ OPTS = [
                     check_ovn_sb_db_schema_virtual_port,
                     help=_('Check OVN SB DB schema support virtual ports'),
                     default=False),
+    BoolOptCallback('ovn_localnet_learn_fdb_support',
+                    check_ovn_localnet_learn_fdb_support,
+                    help=_('Check OVN supports localnet_learn_fdb option'),
+                    default=False),
+    BoolOptCallback('ovn_sb_db_schema_chassis_private_support',
+                    check_ovn_sb_db_schema_chassis_private,
+                    help=_('Check OVN SB DB schema supports Chassis_Private'),
+                    default=False),
 ]
 
 
@@ -415,16 +428,13 @@ def enable_tests_from_config():
 
     cfg.CONF.set_default('arp_header_match', True)
     cfg.CONF.set_default('icmpv6_header_match', True)
-    if 'vxlan' in cfg.CONF.AGENT.tunnel_types:
+    if constants.TYPE_VXLAN in cfg.CONF.AGENT.tunnel_types:
         cfg.CONF.set_default('ovs_vxlan', True)
-    if 'geneve' in cfg.CONF.AGENT.tunnel_types:
+    if constants.TYPE_GENEVE in cfg.CONF.AGENT.tunnel_types:
         cfg.CONF.set_default('ovs_geneve', True)
-    if ('vxlan' in cfg.CONF.ml2.type_drivers or
+    if (constants.TYPE_VXLAN in cfg.CONF.ml2.type_drivers or
             cfg.CONF.VXLAN.enable_vxlan):
         cfg.CONF.set_default('iproute2_vxlan', True)
-    if (cfg.CONF.notify_nova_on_port_status_changes or
-            cfg.CONF.notify_nova_on_port_data_changes):
-        cfg.CONF.set_default('nova_notify', True)
     if cfg.CONF.AGENT.arp_responder:
         cfg.CONF.set_default('arp_responder', True)
     if not cfg.CONF.AGENT.use_helper_for_ns_read:

@@ -20,10 +20,10 @@ import collections
 import functools
 import os
 
-from pyroute2.netlink import exceptions \
-    as netlink_exceptions  # pylint: disable=no-name-in-module
+from pyroute2.netlink import exceptions as netlink_exceptions
 
 from neutron.agent.linux import ip_lib
+from neutron.agent.linux import utils as linux_utils
 from neutron.privileged.agent.linux import ip_lib as priv_ip_lib
 
 # NOTE(toabctl): Don't use /sys/devices/virtual/net here because not all tap
@@ -54,15 +54,14 @@ def catch_exceptions(function):
 def is_bridged_interface(interface):
     if not interface:
         return False
-    else:
-        return os.path.exists(BRIDGE_PORT_FS_FOR_DEVICE % interface)
+    return os.path.exists(BRIDGE_PORT_FS_FOR_DEVICE % interface)
 
 
 def get_interface_ifindex(interface):
     try:
-        with open(os.path.join(BRIDGE_FS, interface, 'ifindex'), 'r') as fh:
+        with open(os.path.join(BRIDGE_FS, interface, 'ifindex')) as fh:
             return int(fh.read().strip())
-    except (IOError, ValueError):
+    except (OSError, ValueError):
         pass
 
 
@@ -87,9 +86,8 @@ class BridgeDevice(ip_lib.IPDevice):
             path = os.readlink(BRIDGE_PATH_FOR_DEVICE % interface)
         except OSError:
             return None
-        else:
-            name = path.rpartition('/')[-1]
-            return cls(name)
+        name = path.rpartition('/')[-1]
+        return cls(name)
 
     def delbr(self):
         return self.link.delete()
@@ -129,7 +127,7 @@ class BridgeDevice(ip_lib.IPDevice):
             return []
 
 
-class FdbInterface(object):
+class FdbInterface:
     """Provide basic functionality to edit the FDB table"""
 
     @staticmethod
@@ -184,12 +182,12 @@ class FdbInterface(object):
             if dev and dev != name:
                 continue
 
-            master = find_device_name(ip_lib.get_attr(fdb, 'NDA_MASTER'),
+            master = find_device_name(linux_utils.get_attr(fdb, 'NDA_MASTER'),
                                       devices)
-            fdb_info = {'mac': ip_lib.get_attr(fdb, 'NDA_LLADDR'),
+            fdb_info = {'mac': linux_utils.get_attr(fdb, 'NDA_LLADDR'),
                         'master': master,
-                        'vlan': ip_lib.get_attr(fdb, 'NDA_VLAN'),
-                        'dst_ip': ip_lib.get_attr(fdb, 'NDA_DST')}
+                        'vlan': linux_utils.get_attr(fdb, 'NDA_VLAN'),
+                        'dst_ip': linux_utils.get_attr(fdb, 'NDA_DST')}
             ret[name].append(fdb_info)
 
         return ret

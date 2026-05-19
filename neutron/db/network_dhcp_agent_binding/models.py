@@ -14,10 +14,8 @@ from neutron_lib.db import model_base
 import sqlalchemy as sa
 from sqlalchemy import orm
 
+from neutron.common import _constants as n_const
 from neutron.db.models import agent as agent_model
-
-
-LOWEST_BINDING_INDEX = 1
 
 
 class NetworkDhcpAgentBinding(model_base.BASEV2):
@@ -33,10 +31,11 @@ class NetworkDhcpAgentBinding(model_base.BASEV2):
     network_id = sa.Column(sa.String(36),
                            sa.ForeignKey("networks.id", ondelete='CASCADE'),
                            primary_key=True)
-    dhcp_agent = orm.relation(agent_model.Agent, lazy='subquery')
+    dhcp_agent = orm.relationship(agent_model.Agent, lazy='selectin')
     dhcp_agent_id = sa.Column(sa.String(36),
                               sa.ForeignKey("agents.id",
                                             ondelete='CASCADE'),
                               primary_key=True)
-    binding_index = sa.Column(sa.Integer, nullable=False,
-                              server_default=str(LOWEST_BINDING_INDEX))
+    binding_index = sa.Column(
+        sa.Integer, nullable=False,
+        server_default=str(n_const.LOWEST_AGENT_BINDING_INDEX))

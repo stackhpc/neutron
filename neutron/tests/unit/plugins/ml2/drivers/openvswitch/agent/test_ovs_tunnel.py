@@ -54,20 +54,20 @@ BCAST_MAC = "01:00:00:00:00:00/01:00:00:00:00:00"
 UCAST_MAC = "00:00:00:00:00:00/01:00:00:00:00:00"
 
 
-class DummyPort(object):
+class DummyPort:
     def __init__(self, interface_id):
         self.interface_id = interface_id
 
 
-class DummyVlanBinding(object):
+class DummyVlanBinding:
     def __init__(self, network_id, vlan_id):
         self.network_id = network_id
         self.vlan_id = vlan_id
 
 
-class TunnelTest(object):
+class TunnelTest:
     def setUp(self):
-        super(TunnelTest, self).setUp()
+        super().setUp()
         self.useFixture(test_vlanmanager.LocalVlanManagerFixture())
         conn_patcher = mock.patch(
             'neutron.agent.ovsdb.impl_idl._connection')
@@ -166,8 +166,6 @@ class TunnelTest(object):
         self.ipdevice = mock.patch.object(ip_lib, 'IPDevice').start()
 
         self.ipwrapper = mock.patch.object(ip_lib, 'IPWrapper').start()
-        add_veth = self.ipwrapper.return_value.add_veth
-        add_veth.return_value = [self.inta, self.intb]
 
         self.get_bridges = mock.patch.object(ovs_lib.BaseOVS,
                                              'get_bridges').start()
@@ -188,7 +186,8 @@ class TunnelTest(object):
             '_check_bridge_datapath_id').start()
         self._define_expected_calls()
 
-    def _define_expected_calls(self, arp_responder=False, igmp_snooping=False):
+    def _define_expected_calls(
+            self, arp_responder=False, igmp_snooping=False):
         self.mock_int_bridge_cls_expected = [
             mock.call(self.INT_BRIDGE,
                       datapath_type=mock.ANY),
@@ -222,13 +221,10 @@ class TunnelTest(object):
                                      ovs_constants.NONEXISTENT_PEER),
         ]
         self.mock_int_bridge_expected += [
-            mock.call.db_get_val('Interface', 'int-%s' % self.MAP_TUN_BRIDGE,
-                                 'type', log_errors=False),
             mock.call.port_exists('int-%s' % self.MAP_TUN_BRIDGE),
             mock.call.add_patch_port('int-%s' % self.MAP_TUN_BRIDGE,
                                      ovs_constants.NONEXISTENT_PEER),
-            mock.call.set_igmp_snooping_flood('int-%s' % self.MAP_TUN_BRIDGE,
-                                              igmp_snooping),
+            mock.call.set_igmp_snooping_flood('int-%s' % self.MAP_TUN_BRIDGE),
         ]
 
         self.mock_int_bridge_expected += [
@@ -258,7 +254,7 @@ class TunnelTest(object):
         self.mock_int_bridge_expected += [
             mock.call.port_exists('patch-tun'),
             mock.call.add_patch_port('patch-tun', 'patch-int'),
-            mock.call.set_igmp_snooping_flood('patch-tun', igmp_snooping),
+            mock.call.set_igmp_snooping_flood('patch-tun'),
         ]
         self.mock_int_bridge_expected += [
             mock.call.get_vif_ports((ovs_lib.INVALID_OFPORT,
@@ -268,7 +264,11 @@ class TunnelTest(object):
         ]
 
         self.mock_tun_bridge_expected += [
-            mock.call.setup_default_table(self.INT_OFPORT, arp_responder),
+            # NOTE: Parameters passed to setup_default_table() method are named
+            # in the production code. That's why we can't use keyword parameter
+            # here. The last parameter passed below is dvr_enabled set to False
+            mock.call.setup_default_table(
+                self.INT_OFPORT, arp_responder, False),
         ]
 
         self.ipdevice_expected = []
@@ -387,7 +387,7 @@ class TunnelTest(object):
         ]
 
         a = self._build_agent()
-        a.available_local_vlans = set([LV_ID])
+        a.available_local_vlans = {LV_ID}
         a.tun_br_ofports = TUN_OFPORTS
         a.provision_local_vlan(NET_UUID, n_const.TYPE_GRE, None, LS_ID)
         self._verify_mock_calls()
@@ -406,7 +406,7 @@ class TunnelTest(object):
                 segmentation_id=None))
 
         a = self._build_agent()
-        a.available_local_vlans = set([LV_ID])
+        a.available_local_vlans = {LV_ID}
         a.phys_brs['net1'] = self.mock_map_tun_bridge
         a.phys_ofports['net1'] = self.MAP_TUN_PHY_OFPORT
         a.int_ofports['net1'] = self.INT_OFPORT
@@ -431,7 +431,7 @@ class TunnelTest(object):
                 lvid=LV_ID,
                 segmentation_id=LS_ID))
         a = self._build_agent()
-        a.available_local_vlans = set([LV_ID])
+        a.available_local_vlans = {LV_ID}
         a.phys_brs['net1'] = self.mock_map_tun_bridge
         a.phys_ofports['net1'] = self.MAP_TUN_PHY_OFPORT
         a.int_ofports['net1'] = self.INT_OFPORT
@@ -543,7 +543,7 @@ class TunnelTest(object):
         ]
 
         a = self._build_agent()
-        a.available_local_vlans = set([LV_ID])
+        a.available_local_vlans = {LV_ID}
         a.vlan_manager.add(NET_UUID, *self.LVM_DATA)
         self.ovs_bridges[self.INT_BRIDGE].db_get_val.return_value = mock.Mock()
         a.port_dead(VIF_PORT)
@@ -581,17 +581,17 @@ class TunnelTest(object):
                                    'external_ids': {
                                        'attached-mac': 'test_mac'}}]}
 
-        reply_pe_1 = {'current': set(['tap0']),
-                      'added': set(['tap0']),
-                      'removed': set([])}
+        reply_pe_1 = {'current': {'tap0'},
+                      'added': {'tap0'},
+                      'removed': set()}
 
-        reply_pe_2 = {'current': set([]),
-                      'added': set([]),
-                      'removed': set(['tap0'])}
+        reply_pe_2 = {'current': set(),
+                      'added': set(),
+                      'removed': {'tap0'}}
 
-        reply_ancillary = {'current': set([]),
-                           'added': set([]),
-                           'removed': set([])}
+        reply_ancillary = {'current': set(),
+                           'added': set(),
+                           'removed': set()}
 
         self.mock_int_bridge_expected += [
             mock.call.check_canary_table(),
@@ -636,8 +636,8 @@ class TunnelTest(object):
                 (reply_pe_2, reply_ancillary, devices_not_ready)]
             interface_polling = mock.Mock()
             interface_polling.get_events.side_effect = [reply_ge_1, reply_ge_2]
-            failed_devices = {'removed': set([]), 'added': set([])}
-            failed_ancillary_devices = {'removed': set([]), 'added': set([])}
+            failed_devices = {'removed': set(), 'added': set()}
+            failed_ancillary_devices = {'removed': set(), 'added': set()}
             process_network_ports.side_effect = [
                 failed_devices,
                 Exception('Fake exception to get out of the loop')]
@@ -659,14 +659,14 @@ class TunnelTest(object):
             process_p_events.assert_has_calls([
                 mock.call(reply_ge_1, set(), set(), devices_not_ready,
                           failed_devices, failed_ancillary_devices, set()),
-                mock.call(reply_ge_2, set(['tap0']), set(), devices_not_ready,
+                mock.call(reply_ge_2, {'tap0'}, set(), devices_not_ready,
                           failed_devices, failed_ancillary_devices,
                           set())
             ])
             process_network_ports.assert_has_calls([
-                mock.call({'current': set(['tap0']),
-                           'removed': set([]),
-                           'added': set(['tap0'])}, False),
+                mock.call({'current': {'tap0'},
+                           'removed': set(),
+                           'added': {'tap0'}}, False),
             ])
 
             self.assertTrue(update_stale.called)

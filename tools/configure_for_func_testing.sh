@@ -24,6 +24,7 @@ MYSQL_USER=${MYSQL_USER:-root}
 DATABASE_USER=${DATABASE_USER:-openstack_citest}
 DATABASE_NAME=${DATABASE_NAME:-openstack_citest}
 MEMORY_TRACKER=${MEMORY_TRACKER:-False}
+MYSQL_REDUCE_MEMORY=${MYSQL_REDUCE_MEMORY:-True}
 
 
 if [[ "$IS_GATE" != "True" ]] && [[ "$#" -lt 1 ]]; then
@@ -67,9 +68,9 @@ INSTALL_MYSQL_ONLY=${INSTALL_MYSQL_ONLY:-False}
 # The gate should automatically install dependencies.
 INSTALL_BASE_DEPENDENCIES=${INSTALL_BASE_DEPENDENCIES:-$IS_GATE}
 INSTALL_OVN=${INSTALL_OVN:-True}
-OVN_BRANCH=${OVN_BRANCH:-main}
 Q_BUILD_OVS_FROM_GIT=${Q_BUILD_OVS_FROM_GIT:-True}
-OVS_BRANCH=${OVS_BRANCH:-master}
+OVN_BRANCH=${OVN_BRANCH:-branch-26.03}
+OVS_BRANCH=${OVS_BRANCH:-branch-3.7}
 
 
 if [ ! -f "$DEVSTACK_PATH/stack.sh" ]; then
@@ -96,6 +97,11 @@ function _init {
     # Allow the gate to override values set by stackrc.
     DEST=${GATE_DEST:-$DEST}
     STACK_USER=${GATE_STACK_USER:-$STACK_USER}
+    sudo mkdir -p /opt/stack/data
+    sudo chown -R $STACK_USER /opt/stack/data
+    source $DEVSTACK_PATH/inc/python
+    install_python
+    setup_devstack_virtualenv
 
     GetDistro
     source $DEVSTACK_PATH/tools/fixup_stuff.sh
@@ -122,7 +128,7 @@ function _install_base_deps {
             compile_ovn /usr/local /var
         fi
     else
-        PACKAGES=$(get_packages general,neutron,q-agt,q-l3,openvswitch)
+        PACKAGES=$(get_packages general,neutron,q-agt,q-l3,openvswitch,ovn)
         PACKAGES=$(echo $PACKAGES | perl -pe 's|python-(?!dev)[^ ]*||g')
         install_package $PACKAGES
     fi
@@ -148,10 +154,8 @@ function _install_rpc_backend {
 }
 
 
-# _install_databases [install_pg]
-function _install_databases {
-    local install_pg=${1:-True}
-
+# _install_database
+function _install_database {
     echo_summary "Installing databases"
 
     # Avoid attempting to configure the db if it appears to already
@@ -163,6 +167,7 @@ function _install_databases {
 
     MYSQL_PASSWORD=${MYSQL_PASSWORD:-openstack_citest}
     DATABASE_PASSWORD=${DATABASE_PASSWORD:-openstack_citest}
+    export OS_TEST_DBAPI_ADMIN_CONNECTION="mysql+pymysql://${DATABASE_USER}:${MYSQL_PASSWORD}@localhost/mysql;sqlite://"
 
     source $DEVSTACK_PATH/lib/database
 
@@ -170,13 +175,6 @@ function _install_databases {
     initialize_database_backends
     install_database
     configure_database_mysql
-
-    if [[ "$install_pg" == "True" ]]; then
-        enable_service postgresql
-        initialize_database_backends
-        install_database
-        configure_database_postgresql
-    fi
 
     # Set up the '${DATABASE_USER}' user and '${DATABASE_NAME}' database in each backend
     tmp_dir=$(mktemp -d)
@@ -189,17 +187,6 @@ GRANT ALL PRIVILEGES ON *.* TO '${DATABASE_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
     /usr/bin/mysql -u $MYSQL_USER -p"$MYSQL_PASSWORD" < $tmp_dir/mysql.sql
-
-    if [[ "$install_pg" == "True" ]]; then
-        cat << EOF > $tmp_dir/postgresql.sql
-CREATE USER ${DATABASE_USER} WITH CREATEDB LOGIN PASSWORD '${DATABASE_PASSWORD}';
-CREATE DATABASE ${DATABASE_NAME} WITH OWNER ${DATABASE_USER};
-EOF
-
-        # User/group postgres needs to be given access to tmp_dir
-        setfacl -m g:postgres:rwx $tmp_dir
-        sudo -u root sudo -u postgres /usr/bin/psql --file=$tmp_dir/postgresql.sql
-    fi
 }
 
 
@@ -259,7 +246,7 @@ EOF
 function _install_post_devstack {
     echo_summary "Performing post-devstack installation"
 
-    _install_databases
+    _install_database
     _install_rootwrap_sudoers
 
     if is_ubuntu; then
@@ -268,13 +255,6 @@ function _install_post_devstack {
     elif is_fedora; then
         install_package dhclient
         install_package nmap-ncat
-    elif is_suse; then
-        install_package dhcp-client
-        # NOTE(armax): no harm in allowing 'other' to read and
-        # execute the script. This is required in fullstack
-        # testing and avoids quite a bit of rootwrap pain
-        sudo chmod o+rx /sbin/dhclient-script
-        install_package ncat
     else
         exit_distro_not_supported "installing dhclient and ncat packages"
     fi
@@ -294,15 +274,13 @@ function _install_post_devstack {
         install_dstat
         start_dstat
     fi
-}
 
-
-function _configure_iptables_rules {
-    # For linuxbridge agent fullstack tests we need to add special rules to
-    # iptables for connection of agents to rabbitmq:
-    CHAIN_NAME="openstack-INPUT"
-    sudo iptables -n --list $CHAIN_NAME 1> /dev/null 2>&1 || CHAIN_NAME="INPUT"
-    sudo iptables -I $CHAIN_NAME -s 240.0.0.0/8 -p tcp -m tcp -d 240.0.0.0/8 --dport 5672 -j ACCEPT
+    if [[ "$IS_GATE" != "True" ]]; then
+        # Ensure home directory for the ``stack`` user has executable
+        # permissions for all. Only for local (non-gate) installations.
+        # Check https://review.opendev.org/c/openstack/devstack/+/838645
+        chmod +x $HOME
+    fi
 }
 
 
@@ -331,7 +309,7 @@ _init
 
 if [[ "$IS_GATE" != "True" ]]; then
     if [[ "$INSTALL_MYSQL_ONLY" == "True" ]]; then
-        _install_databases nopg
+        _install_database
     else
         configure_host_for_func_testing
     fi
@@ -339,7 +317,6 @@ fi
 
 if [[ "$VENV" =~ "dsvm-fullstack" ]]; then
     _enable_ipv6
-    _configure_iptables_rules
     # This module only exists on older kernels, built-in otherwise
     modinfo ip_conntrack_proto_sctp 1> /dev/null 2>&1 && sudo modprobe ip_conntrack_proto_sctp
     if is_fedora; then

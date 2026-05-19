@@ -20,7 +20,7 @@ from neutron.objects.port.extensions import port_numa_affinity_policy as \
     pnap_obj
 
 
-class PortNumaAffinityPolicyDbMixin(object):
+class PortNumaAffinityPolicyDbMixin:
     """Mixin class to add NUMA affinity policy to a port"""
 
     def _process_create_port(self, context, data, result):
@@ -53,9 +53,8 @@ class PortNumaAffinityPolicyDbMixin(object):
             obj.update_fields(
                 {pnap.NUMA_AFFINITY_POLICY: data[pnap.NUMA_AFFINITY_POLICY]})
             obj.update()
-        else:
-            if obj:
-                obj.delete()
+        elif obj:
+            obj.delete()
 
         result[pnap.NUMA_AFFINITY_POLICY] = data[pnap.NUMA_AFFINITY_POLICY]
 

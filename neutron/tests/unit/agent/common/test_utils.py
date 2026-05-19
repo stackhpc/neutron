@@ -16,9 +16,12 @@
 import socket
 from unittest import mock
 
+from oslo_config import cfg
+
 from neutron.agent.common import utils
 from neutron.agent.linux import interface
 from neutron.conf.agent import common as config
+from neutron.conf.plugins.ml2 import config as ml2_config
 from neutron.tests import base
 from neutron.tests.unit import testlib_api
 
@@ -26,14 +29,10 @@ from neutron.tests.unit import testlib_api
 class TestLoadInterfaceDriver(base.BaseTestCase):
 
     def setUp(self):
-        super(TestLoadInterfaceDriver, self).setUp()
+        super().setUp()
         self.conf = config.setup_conf()
         config.register_interface_opts(self.conf)
         config.register_interface_driver_opts_helper(self.conf)
-
-    def test_load_interface_driver_not_set(self):
-        with testlib_api.ExpectedException(SystemExit):
-            utils.load_interface_driver(self.conf)
 
     def test_load_interface_driver_wrong_driver(self):
         self.conf.set_override('interface_driver', 'neutron.NonExistentDriver')
@@ -48,6 +47,10 @@ class TestLoadInterfaceDriver(base.BaseTestCase):
             with testlib_api.ExpectedException(RuntimeError):
                 utils.load_interface_driver(self.conf)
 
+    def test_load_interface_driver_default(self):
+        self.assertIsInstance(utils.load_interface_driver(self.conf),
+                              interface.OVSInterfaceDriver)
+
     def test_load_interface_driver_success(self):
         self.conf.set_override('interface_driver',
                                'neutron.agent.linux.interface.NullDriver')
@@ -59,12 +62,6 @@ class TestLoadInterfaceDriver(base.BaseTestCase):
                                'null')
         self.assertIsInstance(utils.load_interface_driver(self.conf),
                               interface.NullDriver)
-
-    def test_load_linuxbridge_interface_driver_success(self):
-        self.conf.set_override('interface_driver',
-                               'linuxbridge')
-        self.assertIsInstance(utils.load_interface_driver(self.conf),
-                              interface.BridgeInterfaceDriver)
 
     def test_load_ovs_interface_driver_success(self):
         self.conf.set_override('interface_driver',
@@ -80,7 +77,7 @@ class TestLoadInterfaceDriver(base.BaseTestCase):
 
 class TestGetHypervisorHostname(base.BaseTestCase):
 
-    @mock.patch.object(utils._SocketWrapper, 'getaddrinfo')
+    @mock.patch.object(socket, 'getaddrinfo')
     @mock.patch('socket.gethostname')
     def test_get_hypervisor_hostname_gethostname_fqdn(self, hostname_mock,
                                                       addrinfo_mock):
@@ -90,7 +87,7 @@ class TestGetHypervisorHostname(base.BaseTestCase):
             utils.get_hypervisor_hostname())
         addrinfo_mock.assert_not_called()
 
-    @mock.patch.object(utils._SocketWrapper, 'getaddrinfo')
+    @mock.patch.object(socket, 'getaddrinfo')
     @mock.patch('socket.gethostname')
     def test_get_hypervisor_hostname_gethostname_localhost(self, hostname_mock,
                                                            addrinfo_mock):
@@ -100,7 +97,7 @@ class TestGetHypervisorHostname(base.BaseTestCase):
             utils.get_hypervisor_hostname())
         addrinfo_mock.assert_not_called()
 
-    @mock.patch.object(utils._SocketWrapper, 'getaddrinfo')
+    @mock.patch.object(socket, 'getaddrinfo')
     @mock.patch('socket.gethostname')
     def test_get_hypervisor_hostname_getaddrinfo(self, hostname_mock,
                                                  addrinfo_mock):
@@ -113,7 +110,7 @@ class TestGetHypervisorHostname(base.BaseTestCase):
             host='host', port=None, family=socket.AF_UNSPEC,
             flags=socket.AI_CANONNAME)
 
-    @mock.patch.object(utils._SocketWrapper, 'getaddrinfo')
+    @mock.patch.object(socket, 'getaddrinfo')
     @mock.patch('socket.gethostname')
     def test_get_hypervisor_hostname_getaddrinfo_no_canonname(self,
                                                               hostname_mock,
@@ -127,7 +124,7 @@ class TestGetHypervisorHostname(base.BaseTestCase):
             host='host', port=None, family=socket.AF_UNSPEC,
             flags=socket.AI_CANONNAME)
 
-    @mock.patch.object(utils._SocketWrapper, 'getaddrinfo')
+    @mock.patch.object(socket, 'getaddrinfo')
     @mock.patch('socket.gethostname')
     def test_get_hypervisor_hostname_getaddrinfo_localhost(self, hostname_mock,
                                                            addrinfo_mock):
@@ -141,7 +138,7 @@ class TestGetHypervisorHostname(base.BaseTestCase):
             host='host', port=None, family=socket.AF_UNSPEC,
             flags=socket.AI_CANONNAME)
 
-    @mock.patch.object(utils._SocketWrapper, 'getaddrinfo')
+    @mock.patch.object(socket, 'getaddrinfo')
     @mock.patch('socket.gethostname')
     def test_get_hypervisor_hostname_getaddrinfo_fail(self, hostname_mock,
                                                       addrinfo_mock):
@@ -157,6 +154,10 @@ class TestGetHypervisorHostname(base.BaseTestCase):
 
 # TODO(bence romsics): rehome this to neutron_lib
 class TestDefaultRpHypervisors(base.BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        ml2_config.register_ml2_plugin_opts()
 
     @mock.patch.object(utils, 'get_hypervisor_hostname',
                        return_value='thishost')
@@ -195,5 +196,28 @@ class TestDefaultRpHypervisors(base.BaseTestCase):
                 hypervisors={'eth0': 'thathost'},
                 device_mappings={'physnet0': ['eth0', 'eth1']},
                 default_hypervisor='defaulthost',
+            )
+        )
+
+        rp_tunnelled = cfg.CONF.ml2.tunnelled_network_rp_name
+        self.assertEqual(
+            {'eth0': 'thathost', 'eth1': 'defaulthost',
+             rp_tunnelled: 'defaulthost'},
+            utils.default_rp_hypervisors(
+                hypervisors={'eth0': 'thathost'},
+                device_mappings={'physnet0': ['eth0', 'eth1']},
+                default_hypervisor='defaulthost',
+                tunnelled_network_rp_name=rp_tunnelled
+            )
+        )
+
+        self.assertEqual(
+            {'eth0': 'thathost', 'eth1': 'defaulthost',
+             rp_tunnelled: 'thathost'},
+            utils.default_rp_hypervisors(
+                hypervisors={'eth0': 'thathost', rp_tunnelled: 'thathost'},
+                device_mappings={'physnet0': ['eth0', 'eth1']},
+                default_hypervisor='defaulthost',
+                tunnelled_network_rp_name=rp_tunnelled
             )
         )

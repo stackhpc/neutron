@@ -13,15 +13,29 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import builtins
-import gettext
+import warnings
 
-from debtcollector import removals
+# NOTE(ralonsoh): remove once the default backend is ``BackendType.THREADING``
+from oslo_service import backend as oslo_service_backend
+try:
+    oslo_service_backend.init_backend(
+        oslo_service_backend.BackendType.THREADING)
+except oslo_service_backend.exceptions.BackendAlreadySelected:
+    # NOTE(ralonsoh): this code could be called by other services, like
+    # ``oslo-config-generator``, still not migrated.
+    warnings.warn('The selected oslo_service backend is "eventlet"')
+
+
+# pylint: disable=wrong-import-position
+import builtins  # noqa: E402,I100
+import gettext  # noqa: E402
+
+from neutron._i18n import _ as n_under  # noqa: E402
 
 
 gettext.install('neutron')
 
 
-builtins.__dict__['_'] = removals.remove(
-    message='Builtin _ translation function is deprecated in OpenStack; '
-            'use the function from _i18n module for your project.')(_)  # noqa
+# gettext will install its own translation function, override it to be
+# the one from neutron
+builtins.__dict__['_'] = n_under

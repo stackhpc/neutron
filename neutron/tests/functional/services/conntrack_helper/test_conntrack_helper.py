@@ -17,6 +17,7 @@ from unittest import mock
 from neutron_lib.api.definitions import l3_conntrack_helper as apidef
 from neutron_lib import exceptions as lib_exc
 from neutron_lib.exceptions import l3 as lib_l3_exc
+from neutron_lib.plugins import constants as plugin_consts
 from neutron_lib.plugins import directory
 from oslo_utils import uuidutils
 
@@ -32,9 +33,9 @@ INVALID_ID = uuidutils.generate_uuid()
 class ConntrackHelperTestCase(ml2_test_base.ML2TestFramework,
                               functional_base.BaseLoggingTestCase):
     def setUp(self):
-        super(ConntrackHelperTestCase, self).setUp()
+        super().setUp()
         self.cth_plugin = cth_plugin.Plugin()
-        directory.add_plugin("CONNTRACKHELPER", self.cth_plugin)
+        directory.add_plugin(plugin_consts.CONNTRACKHELPER, self.cth_plugin)
         self.router = self._create_router(distributed=True)
         self.conntack_helper = {
             apidef.RESOURCE_NAME:
@@ -116,9 +117,11 @@ class ConntrackHelperTestCase(ml2_test_base.ML2TestFramework,
     def test_delete_conntrack_helper(self):
         res = self.cth_plugin.create_router_conntrack_helper(
             self.context, self.router['id'], self.conntack_helper)
-        delete = self.cth_plugin.delete_router_conntrack_helper(
+        self.cth_plugin.delete_router_conntrack_helper(
             self.context, res['id'], self.router['id'])
-        self.assertIsNone(delete)
+        self.assertRaises(cth_exc.ConntrackHelperNotFound,
+                          self.cth_plugin.delete_router_conntrack_helper,
+                          self.context, res['id'], self.router['id'])
 
     def test_negative_delete_conntrack_helper(self):
         self.assertRaises(cth_exc.ConntrackHelperNotFound,

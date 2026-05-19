@@ -11,8 +11,9 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-
+import copy
 from unittest import mock
+import uuid
 
 from neutron_lib.api.definitions import portbindings as pb
 from neutron_lib.api.definitions import provider_net as pnet
@@ -21,9 +22,11 @@ from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
 from oslo_utils import uuidutils
 
+from neutron.common import _constants as n_const
 from neutron.db.models.plugins.ml2 import geneveallocation
 from neutron.db.models.plugins.ml2 import vxlanallocation
 from neutron.objects import ports as port_obj
+from neutron.objects import servicetype as servicetype_obj
 from neutron.objects import trunk as trunk_obj
 from neutron.plugins.ml2.drivers.ovn import db_migration
 from neutron.tests.unit.plugins.ml2.drivers.ovn.mech_driver import (
@@ -39,18 +42,21 @@ class TestMigrateNeutronDatabaseToOvn(
         for sid in range(1, 6):
             net_arg = {pnet.NETWORK_TYPE: 'vxlan',
                        pnet.SEGMENTATION_ID: sid}
-            network_id = self._make_network(self.fmt, 'net%d' % sid, True,
+            network_id = self._make_network(
+                self.fmt, 'net%d' % sid, True, as_admin=True,
                 arg_list=(pnet.NETWORK_TYPE,
                           pnet.SEGMENTATION_ID,),
-                **net_arg)['network']['id']
+                **net_arg
+            )['network']['id']
 
         for vif_details in vif_details_list:
             port = self._make_port(self.fmt, network_id)['port']
-            port_o = port_obj.PortBinding.get_object(
-                ctx, port_id=port['id'], host='')
-            port_o.vif_type = 'ovs'
-            port_o.vif_details = vif_details
-            port_o.update()
+            with db_api.CONTEXT_WRITER.using(ctx):
+                port_o = port_obj.PortBinding.get_object(
+                    ctx, port_id=port['id'], host='')
+                port_o.vif_type = 'ovs'
+                port_o.vif_details = vif_details
+                port_o.update()
 
         for i in range(1, 4):
             port = self._make_port(self.fmt, network_id)['port']
@@ -93,6 +99,15 @@ class TestMigrateNeutronDatabaseToOvn(
 
         self.subport_profiles[subport2['id']]["foo"] = "bar"
 
+        providers = ("fake", "ovn", "single_node", "ha", "dvr", "dvrha")
+        with db_api.CONTEXT_WRITER.using(ctx):
+            for name in providers:
+                servicetype_obj.ProviderResourceAssociation(
+                    context=ctx,
+                    provider_name=name,
+                    resource_id=uuid.uuid4(),
+                ).create()
+
     def _validate_resources_after_migration(self, expected_vif_details):
         ctx = n_context.get_admin_context()
 
@@ -105,14 +120,14 @@ class TestMigrateNeutronDatabaseToOvn(
             # Check there are no vxlan allocations
             vxlan_allocations = session.query(
                 vxlanallocation.VxlanAllocation).filter(
-                    vxlanallocation.VxlanAllocation.allocated == True # noqa
+                    vxlanallocation.VxlanAllocation.allocated == True  # noqa
                         ).all()
             self.assertFalse(vxlan_allocations)
 
             # Check all the networks have Geneve allocations
             geneve_allocations = session.query(
                 geneveallocation.GeneveAllocation).filter(
-                    geneveallocation.GeneveAllocation.allocated == True # noqa
+                    geneveallocation.GeneveAllocation.allocated == True  # noqa
                         ).all()
             self.assertEqual(len(networks), len(geneve_allocations))
 
@@ -128,6 +143,11 @@ class TestMigrateNeutronDatabaseToOvn(
                 self.assertEqual(
                     self.subport_profiles[subport.port_id],
                     port["binding:profile"])
+
+        pra = servicetype_obj.ProviderResourceAssociation.get_objects(ctx)
+        self.assertEqual(6, len(pra))
+        self.assertEqual(5, len([p for p in pra if p.provider_name == "ovn"]))
+        self.assertEqual(1, len([p for p in pra if p.provider_name == "fake"]))
 
     def test_db_migration(self):
         """Test the DB migration
@@ -150,14 +170,10 @@ class TestMigrateNeutronDatabaseToOvn(
             {"foo": "bar"},
             {},
         ]
-        expected_vif_details = [
-            {pb.CAP_PORT_FILTER: "true",
-             pb.OVS_HYBRID_PLUG: "true",
-             pb.VIF_DETAILS_CONNECTIVITY: pb.CONNECTIVITY_L2},
-            {pb.CAP_PORT_FILTER: "true"},
-            {"foo": "bar"},
-            {},
-        ]
+        expected_vif_details = copy.deepcopy(vif_details_list)
+        for vif_detail in expected_vif_details:
+            vif_detail[pb.VIF_DETAILS_BRIDGE_NAME] = n_const.DEFAULT_BR_INT
+        expected_vif_details.append({})
 
         self._create_ml2_ovs_test_resources(vif_details_list)
         db_migration.migrate_neutron_database_to_ovn()

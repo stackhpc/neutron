@@ -13,7 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
 from unittest import mock
 
 from neutron_lib import constants
@@ -25,8 +24,6 @@ from pyroute2.netlink import exceptions as netlink_exceptions
 from neutron.agent.l2.extensions.fdb_population import (
         FdbPopulationAgentExtension)
 from neutron.agent.linux import bridge_lib
-from neutron.plugins.ml2.drivers.linuxbridge.agent.common import (
-     constants as linux_bridge_constants)
 from neutron.tests import base
 
 
@@ -39,7 +36,7 @@ class FdbPopulationExtensionTestCase(base.BaseTestCase):
     DELETE_MSG = {'port_id': '17ceda02-43e1-48d8-beb6-35885b20cae6'}
 
     def setUp(self):
-        super(FdbPopulationExtensionTestCase, self).setUp()
+        super().setUp()
         cfg.CONF.set_override('shared_physical_device_mappings',
                               ['physnet1:p1p1'], 'FDB')
         self.DEVICE = self._get_existing_device()
@@ -68,8 +65,6 @@ class FdbPopulationExtensionTestCase(base.BaseTestCase):
     def test_initialize(self):
         fdb_extension = FdbPopulationAgentExtension()
         fdb_extension.initialize(None, ovs_constants.EXTENSION_DRIVER_TYPE)
-        fdb_extension.initialize(None,
-                                 linux_bridge_constants.EXTENSION_DRIVER_TYPE)
 
     @mock.patch('neutron.agent.common.utils.execute')
     def test_initialize_invalid_agent(self, mock_execute):
@@ -121,16 +116,6 @@ class FdbPopulationExtensionTestCase(base.BaseTestCase):
         self.assertIn(updated_mac, updated_macs_for_device)
         self.assertNotIn(mac, updated_macs_for_device)
 
-    def test_unpermitted_device_owner(self):
-        fdb_extension = self._get_fdb_extension()
-        details = copy.deepcopy(self.UPDATE_MSG)
-        details['device_owner'] = constants.DEVICE_OWNER_LOADBALANCER
-        fdb_extension.handle_port(context=None, details=details)
-        updated_macs_for_device = (
-            fdb_extension.fdb_tracker.device_to_macs.get(self.DEVICE))
-        mac = self.UPDATE_MSG['mac_address']
-        self.assertNotIn(mac, updated_macs_for_device)
-
     def test_catch_init_exception(self):
         self.mock_add.side_effect = netlink_exceptions.NetlinkError
         fdb_extension = self._get_fdb_extension()
@@ -168,7 +153,7 @@ class FdbPopulationExtensionTestCase(base.BaseTestCase):
 
     def test_multiple_devices(self):
         cfg.CONF.set_override('shared_physical_device_mappings',
-                ['physnet1:p1p1', 'physnet1:p2p2'], 'FDB')
+                              ['physnet1:p1p1', 'physnet1:p2p2'], 'FDB')
         fdb_extension = self._get_fdb_extension()
         fdb_extension.handle_port(context=None, details=self.UPDATE_MSG)
         calls = [mock.call(self.UPDATE_MSG['mac_address'], 'p1p1'),

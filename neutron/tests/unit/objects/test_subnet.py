@@ -37,7 +37,7 @@ class IPAllocationPoolDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = subnet.IPAllocationPool
 
     def setUp(self):
-        super(IPAllocationPoolDbObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'subnet_id': lambda: self._create_test_subnet_id()})
 
@@ -47,7 +47,7 @@ class DNSNameServerObjectIfaceTestCase(obj_test_base.BaseObjectIfaceTestCase):
     _test_class = subnet.DNSNameServer
 
     def setUp(self):
-        super(DNSNameServerObjectIfaceTestCase, self).setUp()
+        super().setUp()
         self.pager_map[self._test_class.obj_name()] = (
             obj_base.Pager(sorts=[('order', True)]))
 
@@ -58,7 +58,7 @@ class DNSNameServerDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = subnet.DNSNameServer
 
     def setUp(self):
-        super(DNSNameServerDbObjectTestCase, self).setUp()
+        super().setUp()
         self._subnet_id = self._create_test_subnet_id()
         self.update_obj_fields({'subnet_id': self._subnet_id})
 
@@ -101,7 +101,7 @@ class RouteDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = subnet.Route
 
     def setUp(self):
-        super(RouteDbObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'subnet_id': lambda: self._create_test_subnet_id()})
 
@@ -113,12 +113,12 @@ class SubnetServiceTypeObjectIfaceTestCase(
 
 
 class SubnetServiceTypeDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
-                            testlib_api.SqlTestCase):
+                                        testlib_api.SqlTestCase):
 
     _test_class = subnet.SubnetServiceType
 
     def setUp(self):
-        super(SubnetServiceTypeDbObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'subnet_id': lambda: self._create_test_subnet_id()})
 
@@ -128,7 +128,7 @@ class SubnetObjectIfaceTestCase(obj_test_base.BaseObjectIfaceTestCase):
     _test_class = subnet.Subnet
 
     def setUp(self):
-        super(SubnetObjectIfaceTestCase, self).setUp()
+        super().setUp()
         self.pager_map[subnet.DNSNameServer.obj_name()] = (
             obj_base.Pager(sorts=[('order', True)]))
         # Base class will mock those out only when rbac_db_model is set for the
@@ -152,7 +152,7 @@ class SubnetDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     CORE_PLUGIN = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 
     def setUp(self):
-        super(SubnetDbObjectTestCase, self).setUp()
+        super().setUp()
         # set up plugin because some models used here require a plugin
         # (specifically, rbac models and their get_valid_actions validators)
         self.setup_coreplugin(self.CORE_PLUGIN)
@@ -179,7 +179,7 @@ class SubnetDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     def _create_shared_network_rbac_entry(self, network):
         attrs = {
             'object_id': network['id'],
-            'target_tenant': '*',
+            'target_project': '*',
             'action': rbac_db_models.ACCESS_SHARED
         }
         obj_db_api.create_object(net_obj.NetworkRBAC, self.context, attrs)
@@ -216,7 +216,7 @@ class SubnetDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
 
         self.assertEqual(obj, result[0])
 
-    def test_get_shared_subnet_with_another_tenant(self):
+    def test_get_shared_subnet_with_another_project(self):
         network_shared = self._create_test_network()
         self._create_shared_network_rbac_entry(network_shared)
 
@@ -236,7 +236,7 @@ class SubnetDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
         all_subnets = self._test_class.get_objects(self.context)
         self.assertEqual(2, len(all_subnets))
 
-        # access with new tenant_id, should be able to access to one subnet
+        # access with new project_id, should be able to access to one subnet
         new_ctx = context.Context('', uuidutils.generate_uuid())
         public_subnets = self._test_class.get_objects(new_ctx)
         self.assertEqual([shared_subnet], public_subnets)
@@ -288,6 +288,23 @@ class SubnetDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
         self.assertNotEqual(
             candidate_subnet[0]['id'], candidate_subnet[1]['id'])
 
+    def test_get_external_network(self):
+        for idx, external in ((0, False), (1, True)):
+            net = self._create_test_network(external=external)
+            self.obj_fields[idx]['network_id'] = net.id
+            snet = self._make_object(self.obj_fields[idx])
+            snet.create()
+            snet_obj = subnet.Subnet.get_object(self.context, id=snet.id)
+            self.assertEqual(external, snet_obj.external)
+
+    def test_object_version_degradation_1_2_to_1_1_no_external(self):
+        self.objs[0].create()
+        subnet_obj = self.objs[0]
+        subnet_dict = subnet_obj.obj_to_primitive('1.2')
+        self.assertIn('external', subnet_dict['versioned_object.data'])
+        subnet_dict = subnet_obj.obj_to_primitive('1.1')
+        self.assertNotIn('external', subnet_dict['versioned_object.data'])
+
 
 class NetworkSubnetLockTestCase(obj_test_base.BaseObjectIfaceTestCase):
 
@@ -300,7 +317,7 @@ class NetworkSubnetLockDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = subnet.NetworkSubnetLock
 
     def setUp(self):
-        super(NetworkSubnetLockDbObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'network_id': lambda: self._create_test_network_id()})
 

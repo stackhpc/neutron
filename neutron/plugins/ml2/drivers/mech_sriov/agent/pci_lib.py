@@ -33,7 +33,7 @@ class PciDeviceIPWrapper(ip_lib.IPWrapper):
     """Wrapper class for ip link commands related to virtual functions."""
 
     def __init__(self, dev_name):
-        super(PciDeviceIPWrapper, self).__init__()
+        super().__init__()
         self.dev_name = dev_name
 
     def get_assigned_macs(self, vf_list):
@@ -73,10 +73,14 @@ class PciDeviceIPWrapper(ip_lib.IPWrapper):
         @param auto: set link_state to auto (0)
         """
         ip = self.device(self.dev_name)
-        if auto:
+        # NOTE(ralonsoh): the state=False --> "disable" (2) has precedence over
+        # "auto" (0) and "enable" (1).
+        if state is False:
+            link_state = 2
+        elif auto:
             link_state = 0
         else:
-            link_state = 1 if state else 2
+            link_state = 1
         vf_config = {'vf': vf_index, 'link_state': link_state}
         ip.link.set_vf_feature(vf_config)
 

@@ -23,6 +23,7 @@ from neutron.agent.l3 import agent as l3_agent
 from neutron.agent.l3 import dvr_edge_router
 from neutron.agent.l3 import dvr_local_router as dvr_router
 from neutron.agent.l3.extensions import ndp_proxy as np
+from neutron.agent.l3 import ha
 from neutron.agent.l3 import l3_agent_extension_api as l3_ext_api
 from neutron.agent.l3 import router_info
 from neutron.agent.linux import iptables_manager
@@ -45,7 +46,7 @@ HOSTNAME = 'testhost'
 class NDPProxyExtensionTestCaseBase(base.BaseTestCase):
 
     def setUp(self):
-        super(NDPProxyExtensionTestCaseBase, self).setUp()
+        super().setUp()
         self.context = context.get_admin_context()
         self.connection = mock.Mock()
         self.ext_port_id = _uuid()
@@ -108,10 +109,16 @@ class NDPProxyExtensionDVRTestCase(
         test_dvr_local_router.TestDvrRouterOperations):
 
     def setUp(self):
-        super(NDPProxyExtensionDVRTestCase, self).setUp()
+        super().setUp()
         self.conf.host = HOSTNAME
         self.conf.agent_mode = lib_const.L3_AGENT_MODE_DVR
         self.agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
+        # NOTE(ralonsoh): this mock can be removed once the backend used for
+        # testing is "threading" and eventlet is removed.
+        self.mock_scserver_wait = mock.patch.object(
+            ha.L3AgentKeepalivedStateChangeServer, 'wait')
+        self.mock_scserver_wait.start()
+        self.agent.init_host()
         self.add_route = mock.MagicMock()
         self.delete_route = mock.MagicMock()
         mock_route_cmd = mock.MagicMock()
@@ -322,7 +329,7 @@ class NDPProxyExtensionLegacyDVRNoExternalTestCaseBase(
         subnet_rule = ('-i %s --destination %s -j %s-%s') % (
             self.ext_device_name, '2001::1:0/112', self.wrap_name,
             np.DEFAULT_NDP_PROXY_CHAIN)
-        accept_rule = '-i %s --destination %s -j ACCEPT' % (
+        accept_rule = '-i {} --destination {} -j ACCEPT'.format(
             self.ext_device_name, '2002::1:3')
         expected_calls = [
             mock.call(np.DEFAULT_NDP_PROXY_CHAIN, default_rule),
@@ -374,7 +381,7 @@ class NDPProxyExtensionLegacyDVRNoExternalTestCaseBase(
                             ip_address='2002::1:4'))
         self.np_ext.update_router(self.context, self.router)
         self.add_chain.assert_not_called()
-        accept_rule = '-i %s --destination %s -j ACCEPT' % (
+        accept_rule = '-i {} --destination {} -j ACCEPT'.format(
             self.ext_device_name, '2002::1:4')
         expected_calls = [
             mock.call(np.DEFAULT_NDP_PROXY_CHAIN, accept_rule, top=True)]
@@ -405,7 +412,7 @@ class NDPProxyExtensionLegacyDVRNoExternalTestCaseBase(
         self.add_chain.assert_not_called()
         self.remove_chain.assert_not_called()
         self.add_rule.assert_not_called()
-        accept_rule = '-i %s --destination %s -j ACCEPT' % (
+        accept_rule = '-i {} --destination {} -j ACCEPT'.format(
             self.ext_device_name, '2002::1:3')
         expected_calls = [mock.call(np.DEFAULT_NDP_PROXY_CHAIN,
                                     accept_rule, top=True)]
@@ -506,7 +513,7 @@ class NDPProxyExtensionLegacyDVRNoExternalTestCaseBase(
                                          [ndpproxy], events.CREATED)
         self.add_chain.assert_not_called()
         self.remove_chain.assert_not_called()
-        accept_rule = '-i %s --destination %s -j ACCEPT' % (
+        accept_rule = '-i {} --destination {} -j ACCEPT'.format(
             self.ext_device_name, '2002::1:5')
         expected_calls = [
             mock.call(np.DEFAULT_NDP_PROXY_CHAIN, accept_rule, top=True)]
@@ -548,7 +555,7 @@ class NDPProxyExtensionLegacyDVRNoExternalTestCaseBase(
 class NDPProxyExtensionLegacyTestCase(
         NDPProxyExtensionLegacyDVRNoExternalTestCaseBase):
     def setUp(self):
-        super(NDPProxyExtensionLegacyTestCase, self).setUp()
+        super().setUp()
         self.conf.host = HOSTNAME
         self.conf.agent_mode = lib_const.L3_AGENT_MODE_LEGACY
         self.agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
@@ -687,7 +694,7 @@ class NDPProxyExtensionInitializeTestCase(NDPProxyExtensionTestCaseBase):
 
 class RouterNDPProxyMappingTestCase(base.BaseTestCase):
     def setUp(self):
-        super(RouterNDPProxyMappingTestCase, self).setUp()
+        super().setUp()
         self.mapping = np.RouterNDPProxyMapping()
         self.router1 = _uuid()
         self.router2 = _uuid()

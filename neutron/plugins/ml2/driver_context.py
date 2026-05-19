@@ -25,8 +25,9 @@ from neutron.db import segments_db
 LOG = log.getLogger(__name__)
 
 
-class InstanceSnapshot(object):
+class InstanceSnapshot:
     """Used to avoid holding references to DB objects in PortContext."""
+
     def __init__(self, obj):
         self._model_class = obj.__class__
         self._identity_key = sqlalchemy.orm.util.identity_key(instance=obj)[1]
@@ -42,7 +43,7 @@ class InstanceSnapshot(object):
         object and updates the object with the column values stored in this
         snapshot.
         """
-        db_obj = session.query(self._model_class).get(self._identity_key)
+        db_obj = session.get(self._model_class, self._identity_key)
         if db_obj:
             for col in self._cols:
                 setattr(db_obj, col, getattr(self, col))
@@ -56,8 +57,9 @@ class InstanceSnapshot(object):
         return getattr(self, item)
 
 
-class MechanismDriverContext(object):
+class MechanismDriverContext:
     """MechanismDriver context base class."""
+
     def __init__(self, plugin, plugin_context):
         self._plugin = plugin
         # This temporarily creates a reference loop, but the
@@ -65,16 +67,21 @@ class MechanismDriverContext(object):
         # method call of the plugin.
         self._plugin_context = plugin_context
 
+    @property
+    def plugin_context(self):
+        return self._plugin_context
+
 
 class NetworkContext(MechanismDriverContext, api.NetworkContext):
 
     def __init__(self, plugin, plugin_context, network,
                  original_network=None, segments=None):
-        super(NetworkContext, self).__init__(plugin, plugin_context)
+        super().__init__(plugin, plugin_context)
         self._network = network
         self._original_network = original_network
         self._segments = segments_db.get_network_segments(
-            plugin_context, network['id']) if segments is None else segments
+            plugin_context, network['id'],
+            filter_dynamic=None) if segments is None else segments
 
     @property
     def current(self):
@@ -93,7 +100,7 @@ class SubnetContext(MechanismDriverContext, api.SubnetContext):
 
     def __init__(self, plugin, plugin_context, subnet, network,
                  original_subnet=None):
-        super(SubnetContext, self).__init__(plugin, plugin_context)
+        super().__init__(plugin, plugin_context)
         self._subnet = subnet
         self._original_subnet = original_subnet
         self._network_context = NetworkContext(plugin, plugin_context,
@@ -111,9 +118,9 @@ class SubnetContext(MechanismDriverContext, api.SubnetContext):
     def network(self):
         if self._network_context is None:
             network = self._plugin.get_network(
-                self._plugin_context, self.current['network_id'])
+                self.plugin_context, self.current['network_id'])
             self._network_context = NetworkContext(
-                self._plugin, self._plugin_context, network)
+                self._plugin, self.plugin_context, network)
         return self._network_context
 
 
@@ -121,7 +128,7 @@ class PortContext(MechanismDriverContext, api.PortContext):
 
     def __init__(self, plugin, plugin_context, port, network, binding,
                  binding_levels, original_port=None):
-        super(PortContext, self).__init__(plugin, plugin_context)
+        super().__init__(plugin, plugin_context)
         self._port = port
         self._original_port = original_port
         if isinstance(network, NetworkContext):
@@ -196,9 +203,9 @@ class PortContext(MechanismDriverContext, api.PortContext):
     def network(self):
         if not self._network_context:
             network = self._plugin.get_network(
-                self._plugin_context, self.current['network_id'])
+                self.plugin_context, self.current['network_id'])
             self._network_context = NetworkContext(
-                self._plugin, self._plugin_context, network)
+                self._plugin, self.plugin_context, network)
         return self._network_context
 
     @property
@@ -246,7 +253,7 @@ class PortContext(MechanismDriverContext, api.PortContext):
         # TODO(kevinbenton): eliminate the query below. The above should
         # always return since the port is bound to a network segment. Leaving
         # in for now for minimally invasive change for back-port.
-        segment = segments_db.get_segment_by_id(self._plugin_context,
+        segment = segments_db.get_segment_by_id(self.plugin_context,
                                                 segment_id)
         if not segment:
             LOG.warning("Could not expand segment %s", segment_id)
@@ -267,9 +274,8 @@ class PortContext(MechanismDriverContext, api.PortContext):
         # resolving bug 1367391?
         if self._port['device_owner'] == constants.DEVICE_OWNER_DVR_INTERFACE:
             return self._original_port and self._binding.host
-        else:
-            return (self._original_port and
-                    self._original_port.get(portbindings.HOST_ID))
+        return (self._original_port and
+                self._original_port.get(portbindings.HOST_ID))
 
     @property
     def vif_type(self):
@@ -292,7 +298,7 @@ class PortContext(MechanismDriverContext, api.PortContext):
         return self._segments_to_bind
 
     def host_agents(self, agent_type):
-        return self._plugin.get_agents(self._plugin_context,
+        return self._plugin.get_agents(self.plugin_context,
                                        filters={'agent_type': [agent_type],
                                                 'host': [self._binding.host]})
 
@@ -323,8 +329,8 @@ class PortContext(MechanismDriverContext, api.PortContext):
         network_id = self._network_context.current['id']
 
         return self._plugin.type_manager.allocate_dynamic_segment(
-                self._plugin_context, network_id, segment)
+            self._plugin_context, network_id, segment)
 
     def release_dynamic_segment(self, segment_id):
         return self._plugin.type_manager.release_dynamic_segment(
-                self._plugin_context, segment_id)
+            self.plugin_context, segment_id)

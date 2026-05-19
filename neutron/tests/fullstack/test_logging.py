@@ -18,7 +18,6 @@ from neutron_lib import constants
 from neutron_lib.plugins.ml2 import ovs_constants as ovs_const
 from oslo_utils import uuidutils
 
-from neutron.common import utils
 from neutron.tests.common import net_helpers
 from neutron.tests.fullstack import base
 from neutron.tests.fullstack.resources import environment
@@ -37,7 +36,7 @@ class BaseLoggingTestCase(base.BaseFullStackTestCase):
         env_desc = environment.EnvironmentDescription(
             mech_drivers='openvswitch', log=True)
         env = environment.Environment(env_desc, host_desc)
-        super(BaseLoggingTestCase, self).setUp(env)
+        super().setUp(env)
 
         self.tenant_id = uuidutils.generate_uuid()
         self.network = self.safe_client.create_network(
@@ -51,7 +50,7 @@ class BaseLoggingTestCase(base.BaseFullStackTestCase):
     def assert_no_connection(self, *args, **kwargs):
         netcat = net_helpers.NetcatTester(*args, **kwargs)
         try:
-            utils.wait_until_true(netcat.test_no_connectivity)
+            base.wait_until_true(netcat.test_no_connectivity)
         finally:
             netcat.stop_processes()
 
@@ -61,12 +60,12 @@ class BaseLoggingTestCase(base.BaseFullStackTestCase):
             flows = vm.bridge.dump_flows_for_table(table)
             flows_list = flows.splitlines()
             pattern = re.compile(
-                r"^.* table=%s.* actions=%s" % (table, actions))
+                fr"^.* table={table}.* actions={actions}")
             for flow in flows_list:
                 if pattern.match(flow.strip()):
                     return True
             return False
-        utils.wait_until_true(lambda: _is_log_flow_set(table, actions))
+        base.wait_until_true(lambda: _is_log_flow_set(table, actions))
 
     def _check_log(self, log_id, action, regex_str=None):
 
@@ -74,7 +73,7 @@ class BaseLoggingTestCase(base.BaseFullStackTestCase):
 
         def _is_log_event(log_id, action, regex_str):
             regex_p = re.compile(
-                r"^.*action=%s.* log_resource_ids=\[[^\]]*%s" % (
+                r"^.*action={}.* log_resource_ids=\[[^\]]*{}".format(
                     action, log_id) + ".*" + regex_str if regex_str else "")
 
             with open(config.network_log.local_output_log_base) as f:
@@ -83,7 +82,7 @@ class BaseLoggingTestCase(base.BaseFullStackTestCase):
                         return True
             return False
 
-        utils.wait_until_true(lambda: _is_log_event(log_id, action, regex_str))
+        base.wait_until_true(lambda: _is_log_event(log_id, action, regex_str))
 
 
 class TestLogging(BaseLoggingTestCase):

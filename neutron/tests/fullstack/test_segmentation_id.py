@@ -11,7 +11,6 @@
 #    under the License.
 
 from neutron_lib import constants
-from neutronclient.common import exceptions
 from oslo_utils import uuidutils
 
 from neutron.tests.common.agents import l2_extensions
@@ -37,7 +36,7 @@ class BaseSegmentationIdTest(base.BaseFullStackTestCase):
                 network_type=self.network_type),
             host_descriptions)
 
-        super(BaseSegmentationIdTest, self).setUp(env)
+        super().setUp(env)
         self.project_id = uuidutils.generate_uuid()
 
     def _create_network(self):
@@ -72,44 +71,36 @@ class TestSegmentationId(BaseSegmentationIdTest):
 
     scenarios = [
         ('Open vSwitch Agent', {'l2_agent_type': constants.AGENT_TYPE_OVS}),
-        ('Linux Bridge Agent', {
-            'l2_agent_type': constants.AGENT_TYPE_LINUXBRIDGE})]
+    ]
     num_hosts = 1
 
-    def test_change_segmentation_id_no_ports_in_network(self):
+    def test_change_segmentation_id(self):
         network = self._create_network()
-        # Now change segmentation_id to some other value
-        self._update_segmentation_id(network)
-
-    def test_change_segmentation_id_with_unbound_ports_in_network(self):
-        network = self._create_network()
+        # Now change segmentation_id to some other value when there are no
+        # ports created in network
+        network = self._update_segmentation_id(network)
 
         self.safe_client.create_subnet(
             self.project_id, network['id'], '20.0.0.0/24')
 
+        # Create some unbound and binding_failed ports
         # Unbound port
         self.safe_client.create_port(self.project_id, network['id'])
         # Port failed to bind
         self.safe_client.create_port(self.project_id, network['id'],
                                      "non-existing-host")
 
-        self._update_segmentation_id(network)
+        # Test update segmentation_id to some othe value with unbound and
+        # binding_failed ports created in the network
+        network = self._update_segmentation_id(network)
 
-    def test_change_segmentation_id_with_bound_ports_in_network(self):
-        network = self._create_network()
-
-        self.safe_client.create_subnet(
-            self.project_id, network['id'], '20.0.0.0/24')
+        # Create bound port
         self.safe_client.create_port(self.project_id, network['id'],
                                      self.environment.hosts[0].hostname)
 
-        if self.l2_agent_type == constants.AGENT_TYPE_LINUXBRIDGE:
-            # Linuxbridge agent don't support update of segmentation_id for
-            # the network so this should raise an exception
-            self.assertRaises(exceptions.BadRequest,
-                              self._update_segmentation_id, network)
-        else:
-            self._update_segmentation_id(network)
+        # Test update segmentation_id to some othe value when bound ports are
+        # created in the network
+        self._update_segmentation_id(network)
 
 
 class TestSegmentationIdConnectivity(BaseSegmentationIdTest):

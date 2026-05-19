@@ -1,0 +1,4 @@
+---
+other:
+  - |
+    Added ``ip_allocation`` extension support to the ML2/OVN mechanism driver.

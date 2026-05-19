@@ -45,14 +45,15 @@ Neutron Internals
    l2_agents
    l3_agent_extensions
    layer3
-   linuxbridge_agent
    live_migration
    local_ips
+   metadata
    ml2_ext_manager
    network_ip_availability
    objects_usage
    openvswitch_agent
    openvswitch_firewall
+   ovn/index
    ovs_vhostuser
    plugin-api
    policy
@@ -69,4 +70,3 @@ Neutron Internals
    sriov_nic_agent
    tag
    upgrade
-   ovn/index

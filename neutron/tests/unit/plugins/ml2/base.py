@@ -24,13 +24,13 @@ class ML2TestFramework(test_plugin.Ml2PluginV2TestCase):
     _mechanism_drivers = ['openvswitch']
 
     def get_additional_service_plugins(self):
-        p = super(ML2TestFramework, self).get_additional_service_plugins()
+        p = super().get_additional_service_plugins()
         p.update({'flavors_plugin_name': 'neutron.services.flavors.'
                                          'flavors_plugin.FlavorsPlugin'})
         return p
 
     def setUp(self):
-        super(ML2TestFramework, self).setUp()
+        super().setUp()
         self.core_plugin = directory.get_plugin()
         self.l3_plugin = directory.get_plugin(constants.L3)
 
@@ -40,6 +40,6 @@ class ML2TestFramework(test_plugin.Ml2PluginV2TestCase):
             {'router':
              {'name': 'router',
               'admin_state_up': admin_state_up,
-              'tenant_id': self._tenant_id,
+              'project_id': self._project_id,
               'ha': ha,
               'distributed': distributed}})

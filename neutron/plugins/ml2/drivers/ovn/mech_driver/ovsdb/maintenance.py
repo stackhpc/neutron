@@ -14,17 +14,20 @@
 #    under the License.
 
 import abc
-import copy
+import functools
 import inspect
-import re
 import threading
 
+import futurist
 from futurist import periodics
+from neutron_lib.api.definitions import external_net
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as pnet
 from neutron_lib import constants as n_const
 from neutron_lib import context as n_context
 from neutron_lib import exceptions as n_exc
+from neutron_lib.exceptions import address_group as ag_exc
+from neutron_lib.exceptions import l3 as l3_exc
 from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import timeutils
@@ -32,11 +35,15 @@ from ovsdbapp.backend.ovs_idl import event as row_event
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
+from neutron.conf.agent import ovs_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_hash_ring_db as hash_ring_db
 from neutron.db import ovn_revision_numbers_db as revision_numbers_db
+from neutron.objects import network as network_obj
 from neutron.objects import ports as ports_obj
-from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
+from neutron.objects import router as router_obj
+from neutron.objects import securitygroup as sg_obj
+from neutron import service
 
 
 CONF = cfg.CONF
@@ -44,9 +51,91 @@ LOG = log.getLogger(__name__)
 
 INCONSISTENCY_TYPE_CREATE_UPDATE = 'create/update'
 INCONSISTENCY_TYPE_DELETE = 'delete'
+# TODO(bpetermann): move MAINTENANCE_NB_IDL_LOCK_NAME to neutron-lib
+MAINTENANCE_NB_IDL_LOCK_NAME = "ovn_db_inconsistencies_periodics"
 
 
-class MaintenanceThread(object):
+def has_lock_periodic(*args, periodic_run_limit=0, **kwargs):
+    def wrapper(f):
+        _retries = 0
+
+        @functools.wraps(f)
+        @periodics.periodic(*args, **kwargs)
+        def decorator(self, *args, **kwargs):
+            # This periodic task is included in DBInconsistenciesPeriodics
+            # since it uses the lock to ensure only one worker is executing
+            # additonally, if periodic_run_limit parameter with value > 0 is
+            # provided and lock is not acquired for periodic_run_limit
+            # times, task will not be run anymore by this maintenance worker
+            nonlocal _retries
+            if not self.has_lock:
+                if periodic_run_limit > 0:
+                    if _retries >= periodic_run_limit:
+                        LOG.debug("Have not been able to acquire lock to run "
+                                  "task '%s' after %s tries, limit reached. "
+                                  "No more attempts will be made.",
+                                  f, _retries)
+                        raise periodics.NeverAgain()
+                    _retries += 1
+                return
+            return f(self, *args, **kwargs)
+        return decorator
+    return wrapper
+
+
+def log_maintenance_task(func=None, *, start_message=None):
+    """Wrap a maintenance task with timing logs.
+
+    Use ``@log_maintenance_task`` or pass optional ``start_message``: a static
+    string logged at DEBUG immediately after the standard "Starting OVN
+    maintenance task" line. For DEBUG lines that must run only after
+    in-method guards (early returns), keep those in the task body instead of
+    ``start_message``.
+    """
+
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            LOG.debug("Starting OVN maintenance task: %s", f.__name__)
+            if start_message:
+                LOG.debug("OVN maintenance task: %s", start_message)
+            watch = timeutils.StopWatch()
+            watch.start()
+            never_again = False
+            result = None
+            try:
+                result = f(*args, **kwargs)
+            except periodics.NeverAgain:
+                # Catch it, flag it, and move on to the shared logging below
+                never_again = True
+            except Exception:
+                # Real failures still get their own exception logging
+                watch.stop()
+                LOG.exception(
+                    "OVN maintenance task %(name)s failed after "
+                    "%(time).3f seconds",
+                    {'name': f.__name__, 'time': watch.elapsed()})
+                raise
+            # This handles BOTH normal success and NeverAgain
+            watch.stop()
+            LOG.info(
+                "OVN maintenance task %(name)s finished in "
+                "%(time).3f seconds",
+                {'name': f.__name__, 'time': watch.elapsed()})
+
+            # Re-raise the signal if the flag was set
+            if never_again:
+                raise periodics.NeverAgain()
+
+            return result
+        return wrapper
+
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+class MaintenanceThread:
 
     def __init__(self):
         self._callables = []
@@ -62,7 +151,10 @@ class MaintenanceThread(object):
 
     def start(self):
         if self._thread is None:
-            self._worker = periodics.PeriodicWorker(self._callables)
+            self._worker = periodics.PeriodicWorker(
+                self._callables,
+                executor_factory=lambda: futurist.ThreadPoolExecutor(
+                    max_workers=1))
             self._thread = threading.Thread(target=self._worker.start)
             self._thread.daemon = True
             self._thread.start()
@@ -88,7 +180,7 @@ class OVNNBDBReconnectionEvent(row_event.RowEvent):
         self.version = version
         table = 'Connection'
         events = (self.ROW_CREATE,)
-        super(OVNNBDBReconnectionEvent, self).__init__(events, table, None)
+        super().__init__(events, table, None)
         self.event_name = self.__class__.__name__
 
     def run(self, event, row, old):
@@ -98,7 +190,7 @@ class OVNNBDBReconnectionEvent(row_event.RowEvent):
             self.version = curr_version
 
 
-class SchemaAwarePeriodicsBase(object):
+class SchemaAwarePeriodicsBase:
 
     def __init__(self, ovn_client):
         self._nb_idl = ovn_client._nb_idl
@@ -137,9 +229,8 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         self._nb_idl = self._ovn_client._nb_idl
         self._sb_idl = self._ovn_client._sb_idl
         self._idl = self._nb_idl.idl
-        self._idl.set_lock('ovn_db_inconsistencies_periodics')
-        self._sync_timer = timeutils.StopWatch()
-        super(DBInconsistenciesPeriodics, self).__init__(ovn_client)
+        self._idl.set_lock(MAINTENANCE_NB_IDL_LOCK_NAME)
+        super().__init__(ovn_client)
 
         self._resources_func_map = {
             ovn_const.TYPE_NETWORKS: {
@@ -169,6 +260,13 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 'ovn_create': self._ovn_client.create_router,
                 'ovn_update': self._ovn_client.update_router,
                 'ovn_delete': self._ovn_client.delete_router,
+            },
+            ovn_const.TYPE_ADDRESS_GROUPS: {
+                'neutron_get': self._ovn_client._plugin.get_address_group,
+                'ovn_get': self._nb_idl.get_address_set,
+                'ovn_create': self._ovn_client.create_address_group,
+                'ovn_update': self._ovn_client.update_address_group,
+                'ovn_delete': self._ovn_client.delete_address_group,
             },
             ovn_const.TYPE_SECURITY_GROUPS: {
                 'neutron_get': self._ovn_client._plugin.get_security_group,
@@ -225,34 +323,60 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
             return
 
         ovn_obj = res_map['ovn_get'](row.resource_uuid)
-
-        if not ovn_obj:
-            res_map['ovn_create'](context, n_obj)
-        else:
-            if row.resource_type == ovn_const.TYPE_SECURITY_GROUP_RULES:
-                LOG.error("SG rule %s found with a revision number while "
-                          "this resource doesn't support updates",
-                          row.resource_uuid)
-            elif row.resource_type == ovn_const.TYPE_SECURITY_GROUPS:
-                # In OVN, we don't care about updates to security groups,
-                # so just bump the revision number to whatever it's
-                # supposed to be.
-                revision_numbers_db.bump_revision(context, n_obj,
-                                                  row.resource_type)
+        try:
+            if not ovn_obj:
+                res_map['ovn_create'](context, n_obj)
             else:
-                ext_ids = getattr(ovn_obj, 'external_ids', {})
-                ovn_revision = int(ext_ids.get(
-                    ovn_const.OVN_REV_NUM_EXT_ID_KEY, -1))
-                # If the resource exist in the OVN DB but the revision
-                # number is different from Neutron DB, updated it.
-                if ovn_revision != n_obj['revision_number']:
-                    res_map['ovn_update'](context, n_obj)
-                else:
-                    # If the resource exist and the revision number
-                    # is equal on both databases just bump the revision on
-                    # the cache table.
+                if row.resource_type == ovn_const.TYPE_SECURITY_GROUP_RULES:
+                    LOG.error("SG rule %s found with a revision number while "
+                              "this resource doesn't support updates",
+                              row.resource_uuid)
+                elif row.resource_type == ovn_const.TYPE_SECURITY_GROUPS:
+                    # In OVN, we don't care about updates to security groups,
+                    # so just bump the revision number to whatever it's
+                    # supposed to be.
                     revision_numbers_db.bump_revision(context, n_obj,
                                                       row.resource_type)
+                elif row.resource_type == ovn_const.TYPE_ADDRESS_GROUPS:
+                    need_bump = False
+                    for obj in ovn_obj:
+                        if not obj:
+                            # NOTE(liushy): We create two Address_Sets for
+                            # one Address_Group at one ovn_create func.
+                            res_map['ovn_create'](context, n_obj)
+                            need_bump = False
+                            break
+                        ext_ids = getattr(obj, 'external_ids', {})
+                        ovn_revision = int(ext_ids.get(
+                            ovn_const.OVN_REV_NUM_EXT_ID_KEY, -1))
+                        # NOTE(liushy): We have created two Address_Sets
+                        # for one Address_Group, and we update both of
+                        # them at one ovn_update func.
+                        if ovn_revision != n_obj['revision_number']:
+                            res_map['ovn_update'](context, n_obj)
+                            need_bump = False
+                            break
+                        need_bump = True
+                    if need_bump:
+                        revision_numbers_db.bump_revision(context, n_obj,
+                                                          row.resource_type)
+                else:
+                    ext_ids = getattr(ovn_obj, 'external_ids', {})
+                    ovn_revision = int(ext_ids.get(
+                        ovn_const.OVN_REV_NUM_EXT_ID_KEY, -1))
+                    # If the resource exist in the OVN DB but the revision
+                    # number is different from Neutron DB, updated it.
+                    if ovn_revision != n_obj['revision_number']:
+                        res_map['ovn_update'](context, n_obj)
+                    else:
+                        # If the resource exist and the revision number
+                        # is equal on both databases just bump the revision on
+                        # the cache table.
+                        revision_numbers_db.bump_revision(context, n_obj,
+                                                          row.resource_type)
+        except revision_numbers_db.StandardAttributeIDNotFound:
+            LOG.error('Standard attribute ID not found for object ID %s',
+                      n_obj['id'])
 
     def _fix_delete(self, context, row):
         res_map = self._resources_func_map[row.resource_type]
@@ -275,55 +399,6 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         else:
             self._ovn_client.update_subnet(context, sn_db_obj, n_db_obj)
 
-    # The migration will run just once per neutron-server instance. If the lock
-    # is held by some other neutron-server instance in the cloud, we'll attempt
-    # to perform the migration every 10 seconds until completed.
-    # TODO(ihrachys): Remove the migration to stateful fips in Z+1.
-    @periodics.periodic(spacing=10, run_immediately=True)
-    @rerun_on_schema_updates
-    def migrate_to_stateful_fips(self):
-        """Perform the migration from stateless to stateful Floating IPs. """
-        # Only the worker holding a valid lock within OVSDB will perform the
-        # migration.
-        if not self.has_lock:
-            return
-
-        admin_context = n_context.get_admin_context()
-        nb_sync = ovn_db_sync.OvnNbSynchronizer(
-            self._ovn_client._plugin, self._nb_idl, self._ovn_client._sb_idl,
-            None, None)
-        nb_sync.migrate_to_stateful_fips(admin_context)
-        raise periodics.NeverAgain()
-
-    # The migration will run just once per neutron-server instance. If the lock
-    # is held by some other neutron-server instance in the cloud, we'll attempt
-    # to perform the migration every 10 seconds until completed.
-    # TODO(jlibosva): Remove the migration to port groups at some point. It's
-    # been around since Queens release so it is good to drop this soon.
-    @periodics.periodic(spacing=10, run_immediately=True)
-    @rerun_on_schema_updates
-    def migrate_to_port_groups(self):
-        """Perform the migration from Address Sets to Port Groups. """
-        # TODO(dalvarez): Remove this in U cycle when we're sure that all
-        # versions are running using Port Groups (and OVS >= 2.10).
-
-        # If Port Groups are not supported or we've already migrated, we don't
-        # need to attempt to migrate again.
-        if not self._nb_idl.get_address_sets():
-            raise periodics.NeverAgain()
-
-        # Only the worker holding a valid lock within OVSDB will perform the
-        # migration.
-        if not self.has_lock:
-            return
-
-        admin_context = n_context.get_admin_context()
-        nb_sync = ovn_db_sync.OvnNbSynchronizer(
-            self._ovn_client._plugin, self._nb_idl, self._ovn_client._sb_idl,
-            None, None)
-        nb_sync.migrate_to_port_groups(admin_context)
-        raise periodics.NeverAgain()
-
     def _log_maintenance_inconsistencies(self, create_update_inconsistencies,
                                          delete_inconsistencies):
         if not CONF.debug:
@@ -340,7 +415,7 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 else:
                     c[f.resource_type] += 1
 
-            fail_str = ', '.join('{}={}'.format(k, v) for k, v in c.items())
+            fail_str = ', '.join(f'{k}={v}' for k, v in c.items())
             LOG.debug('Maintenance task: Number of inconsistencies '
                       'found at %(type_)s: %(fail_str)s',
                       {'type_': type_, 'fail_str': fail_str})
@@ -348,14 +423,11 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         _log(create_update_inconsistencies, INCONSISTENCY_TYPE_CREATE_UPDATE)
         _log(delete_inconsistencies, INCONSISTENCY_TYPE_DELETE)
 
-    @periodics.periodic(spacing=ovn_const.DB_CONSISTENCY_CHECK_INTERVAL,
-                        run_immediately=True)
+    @has_lock_periodic(spacing=ovn_const.DB_CONSISTENCY_CHECK_INTERVAL,
+                       run_immediately=True)
+    @log_maintenance_task(
+        start_message='Checking Neutron and OVN revision consistency.')
     def check_for_inconsistencies(self):
-        # Only the worker holding a valid lock within OVSDB will run
-        # this periodic
-        if not self.has_lock:
-            return
-
         admin_context = n_context.get_admin_context()
         create_update_inconsistencies = (
             revision_numbers_db.get_inconsistent_resources(admin_context))
@@ -366,10 +438,9 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
             return
 
         LOG.debug('Maintenance task: Synchronizing Neutron '
-                  'and OVN databases')
+                  'and OVN databases started')
         self._log_maintenance_inconsistencies(create_update_inconsistencies,
                                               delete_inconsistencies)
-        self._sync_timer.restart()
 
         dbg_log_msg = ('Maintenance task: Fixing resource %(res_uuid)s '
                        '(type: %(res_type)s) at %(type_)s')
@@ -415,14 +486,10 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                               {'res_uuid': row.resource_uuid,
                                'res_type': row.resource_type})
 
-        self._sync_timer.stop()
-        LOG.info('Maintenance task: Synchronization finished '
-                 '(took %.2f seconds)', self._sync_timer.elapsed())
-
     def _create_lrouter_port(self, context, port):
         router_id = port['device_id']
         iface_info = self._ovn_client._l3_plugin._add_neutron_router_interface(
-            context, router_id, {'port_id': port['id']}, may_exist=True)
+            context, router_id, {'port_id': port['id']})
         self._ovn_client.create_router_port(context, router_id, iface_info)
 
     def _check_subnet_global_dhcp_opts(self):
@@ -471,26 +538,66 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
 
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600,
-                        run_immediately=True)
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Check missing prefix router_name',
+            'in external_ids of LRPs.'))
+    def update_lrouter_ports_ext_ids_name_prefix(self):
+        """Update OVN logical router ports if missing external ids
+        "neutron-" prefix for router name.
+        """
+        lrp_key = ('external_ids', '!=',
+                   {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY: ''})
+        lrp_router_id_map = {
+            lrp['name']: lrp['external_ids'][
+                ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY]
+            for lrp in self._nb_idl.db_find(
+                'Logical_Router_Port', lrp_key).execute(check_error=True)
+            if not lrp['external_ids'].get(
+                ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY,
+                '').startswith(ovn_const.OVN_NAME_PREFIX)
+        }
+
+        if lrp_router_id_map:
+            LOG.debug('Update missing prefix for router_name in %d LRPs:\n%s',
+                      len(lrp_router_id_map), [lrp_router_id_map.keys()])
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for lrp_name, router_id in lrp_router_id_map.items():
+                    router_name = {
+                        ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                            ovn_const.OVN_NAME_PREFIX + router_id}
+                    txn.add(self._nb_idl.db_set(
+                        'Logical_Router_Port', lrp_name,
+                        ('external_ids', router_name)))
+
+        raise periodics.NeverAgain()
+
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message='Check global DHCP options consistency.')
     def check_global_dhcp_opts(self):
-        # This periodic task is included in DBInconsistenciesPeriodics since
-        # it uses the lock to ensure only one worker is executing
-        if not self.has_lock:
-            return
         if (not ovn_conf.get_global_dhcpv4_opts() and
                 not ovn_conf.get_global_dhcpv6_opts()):
             # No need to scan the subnets if the settings are unset.
             raise periodics.NeverAgain()
-        LOG.debug('Maintenance task: Checking DHCP options on subnets')
-        self._sync_timer.restart()
         fix_subnets = self._check_subnet_global_dhcp_opts()
         if fix_subnets:
             admin_context = n_context.get_admin_context()
             LOG.debug('Triggering update for %s subnets', len(fix_subnets))
+            net_ids = {s['network_id'] for s in fix_subnets}
+            nets = {n['id']: n for n in self._ovn_client._plugin.get_networks(
+                admin_context, filters={'id': list(net_ids)})}
             for subnet in fix_subnets:
-                neutron_net = self._ovn_client._plugin.get_network(
-                    admin_context, subnet['network_id'])
+                neutron_net = nets[subnet['network_id']]
                 try:
                     self._ovn_client.update_subnet(admin_context, subnet,
                                                    neutron_net)
@@ -498,166 +605,193 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                     LOG.exception('Failed to update subnet %s',
                                   subnet['id'])
 
-        self._sync_timer.stop()
-        LOG.info('Maintenance task: DHCP options check finished '
-                 '(took %.2f seconds)', self._sync_timer.elapsed())
-
         raise periodics.NeverAgain()
 
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600, run_immediately=True)
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message='Check for IGMP snoop support.')
     def check_for_igmp_snoop_support(self):
-        if not self.has_lock:
-            return
+        snooping_conf = ovs_conf.get_igmp_snooping_enabled()
+        flood_conf = ovs_conf.get_igmp_flood_unregistered()
 
-        with self._nb_idl.transaction(check_error=True) as txn:
-            value = ('true' if ovn_conf.is_igmp_snooping_enabled()
-                     else 'false')
-            for ls in self._nb_idl.ls_list().execute(check_error=True):
-                if (ls.other_config.get(ovn_const.MCAST_SNOOP,
-                                        None) == value or not ls.name):
-                    continue
-                txn.add(self._nb_idl.db_set(
-                    'Logical_Switch', ls.name,
-                    ('other_config', {
-                        ovn_const.MCAST_SNOOP: value,
-                        ovn_const.MCAST_FLOOD_UNREGISTERED: 'false'})))
-
-        raise periodics.NeverAgain()
-
-    def _delete_default_ha_chassis_group(self, txn):
-        # TODO(lucasgomes): Remove the deletion of the
-        # HA_CHASSIS_GROUP_DEFAULT_NAME in the Y cycle. We no longer
-        # have a default HA Chassis Group.
-        cmd = [self._nb_idl.ha_chassis_group_del(
-            ovn_const.HA_CHASSIS_GROUP_DEFAULT_NAME, if_exists=True)]
-        self._ovn_client._transaction(cmd, txn=txn)
-
-    # A static spacing value is used here, but this method will only run
-    # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600, run_immediately=True)
-    def check_for_ha_chassis_group(self):
-        # If external ports is not supported stop running
-        # this periodic task
-        if not self._ovn_client.is_external_ports_supported():
-            raise periodics.NeverAgain()
-
-        if not self.has_lock:
-            return
-
-        external_ports = self._nb_idl.db_find_rows(
-            'Logical_Switch_Port', ('type', '=', ovn_const.LSP_TYPE_EXTERNAL)
-        ).execute(check_error=True)
-
-        context = n_context.get_admin_context()
-        with self._nb_idl.transaction(check_error=True) as txn:
-            for port in external_ports:
-                network_id = port.external_ids[
-                    ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY].replace(
-                        ovn_const.OVN_NAME_PREFIX, '')
-                ha_ch_grp = self._ovn_client.sync_ha_chassis_group(
-                    context, network_id, txn)
-                try:
-                    port_ha_ch_uuid = port.ha_chassis_group[0].uuid
-                except IndexError:
-                    port_ha_ch_uuid = None
-                if port_ha_ch_uuid != ha_ch_grp:
-                    txn.add(self._nb_idl.set_lswitch_port(
-                        port.name, ha_chassis_group=ha_ch_grp))
-
-            self._delete_default_ha_chassis_group(txn)
-
-        raise periodics.NeverAgain()
-
-    # TODO(lucasagomes): Remove this in the Z cycle
-    # A static spacing value is used here, but this method will only run
-    # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600, run_immediately=True)
-    def check_for_mcast_flood_reports(self):
-        if not self.has_lock:
-            return
-
-        cmds = []
-        for port in self._nb_idl.lsp_list().execute(check_error=True):
-            port_type = port.type.strip()
-            if port_type in ("vtep", ovn_const.LSP_TYPE_LOCALPORT, "router"):
-                continue
-
-            options = port.options
-            if port_type == ovn_const.LSP_TYPE_LOCALNET:
-                mcast_flood_value = options.get(
-                    ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS)
-                if mcast_flood_value == 'false':
-                    continue
-                options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD: 'false'})
-            elif ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS in options:
-                continue
-
-            options.update({ovn_const.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'})
-            cmds.append(self._nb_idl.lsp_set_options(port.name, **options))
-
-        if cmds:
-            with self._nb_idl.transaction(check_error=True) as txn:
-                for cmd in cmds:
-                    txn.add(cmd)
-
-        raise periodics.NeverAgain()
-
-    # TODO(lucasagomes): Remove this in the Z cycle
-    # A static spacing value is used here, but this method will only run
-    # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600, run_immediately=True)
-    def check_router_mac_binding_options(self):
-        if not self.has_lock:
-            return
-
-        cmds = []
-        for router in self._nb_idl.lr_list().execute(check_error=True):
-            if (router.options.get('always_learn_from_arp_request') and
-                    router.options.get('dynamic_neigh_routers')):
-                continue
-
-            opts = copy.deepcopy(router.options)
-            opts.update({'always_learn_from_arp_request': 'false',
-                         'dynamic_neigh_routers': 'true'})
-            cmds.append(self._nb_idl.update_lrouter(router.name, options=opts))
-
-        if cmds:
-            with self._nb_idl.transaction(check_error=True) as txn:
-                for cmd in cmds:
-                    txn.add(cmd)
-        raise periodics.NeverAgain()
-
-    # TODO(ralonsoh): Remove this in the Z+2 cycle
-    # A static spacing value is used here, but this method will only run
-    # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600, run_immediately=True)
-    def update_port_qos_with_external_ids_reference(self):
-        """Update all OVN QoS registers with the port ID
-
-        This method will only update the OVN QoS registers related to port QoS,
-        not FIP QoS. FIP QoS have the corresponding "external_ids" reference.
-        """
-        if not self.has_lock:
-            return
-
-        regex = re.compile(
-            r'(inport|outport) == \"(?P<port_id>[a-z0-9\-]{36})\"')
         cmds = []
         for ls in self._nb_idl.ls_list().execute(check_error=True):
-            for qos in self._nb_idl.qos_list(ls.name).execute(
-                    check_error=True):
-                if qos.external_ids:
-                    continue
-                match = re.match(regex, qos.match)
-                if not match:
-                    continue
-                port_id = match.group('port_id')
-                external_ids = {ovn_const.OVN_PORT_EXT_ID_KEY: port_id}
-                cmds.append(self._nb_idl.db_set(
-                    'QoS', qos.uuid, ('external_ids', external_ids)))
+            if ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY not in ls.external_ids:
+                continue
+            snooping = ls.other_config.get(ovn_const.MCAST_SNOOP)
+            flood = ls.other_config.get(ovn_const.MCAST_FLOOD_UNREGISTERED)
 
+            if (not ls.name or (snooping == snooping_conf and
+                                flood == flood_conf)):
+                continue
+
+            cmds.append(self._nb_idl.db_set(
+                    'Logical_Switch', ls.name,
+                    ('other_config', {
+                        ovn_const.MCAST_SNOOP: snooping_conf,
+                        ovn_const.MCAST_FLOOD_UNREGISTERED: flood_conf})))
+
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+
+        raise periodics.NeverAgain()
+
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Ensure localnet ports have learn-fdb set per '
+            'configuration.'))
+    def check_localnet_port_has_learn_fdb(self):
+        ports = self._nb_idl.db_find_rows(
+            "Logical_Switch_Port", ("type", "=", ovn_const.LSP_TYPE_LOCALNET)
+        ).execute(check_error=True)
+
+        with self._nb_idl.transaction(check_error=True) as txn:
+            for port in ports:
+                if ovn_conf.is_learn_fdb_enabled():
+                    fdb_opt = port.options.get(
+                        ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB)
+                    if not fdb_opt or fdb_opt == 'false':
+                        txn.add(self._nb_idl.db_set(
+                            'Logical_Switch_Port', port.name,
+                            ('options',
+                             {ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'true'}
+                             )))
+                elif port.options.get(
+                        ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB) == 'true':
+                    txn.add(self._nb_idl.db_set(
+                        'Logical_Switch_Port', port.name,
+                        ('options',
+                         {ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'false'})))
+        raise periodics.NeverAgain()
+
+    # TODO(jlibosva): to remove in H+3=K (2028.1) cycle
+    #                 (2nd next SLURP release)
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    def add_provnet_ext_id_to_localnet_ports(self):
+        """Backfill OVN_PHYSNET_EXT_ID_KEY on existing localnet ports.
+
+        Newly created localnet ports will have the
+        ``neutron:provnet-physical-network`` external_id set to the physical
+        network name. This one-time task backfills the key on any existing
+        ports that were created before this change.
+        """
+        context = n_context.get_admin_context()
+        segments = network_obj.NetworkSegment.get_objects(context)
+        neutron_port_to_physnet = {
+            utils.ovn_provnet_port_name(seg.id): seg.physical_network
+            for seg in segments
+            if seg.physical_network
+        }
+
+        ports = self._nb_idl.db_find_rows(
+            'Logical_Switch_Port', ('type', '=', ovn_const.LSP_TYPE_LOCALNET)
+        ).execute(check_error=True)
+
+        cmds = []
+        for port in ports:
+            physnet = neutron_port_to_physnet.get(port.name)
+            if not physnet:
+                continue
+            if ovn_const.OVN_PHYSNET_EXT_ID_KEY in port.external_ids:
+                continue
+            cmds.append(self._nb_idl.db_set(
+                'Logical_Switch_Port', port.name,
+                ('external_ids',
+                 {ovn_const.OVN_PHYSNET_EXT_ID_KEY: physnet})))
+
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+
+        raise periodics.NeverAgain()
+
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Align router gateway redirect-type for provider '
+            'VLAN/FLAT networks.'))
+    def check_redirect_type_router_gateway_ports(self):
+        """Check OVN router gateway ports
+        Check for the option "redirect-type=bridged" value for
+        router gateway ports.
+        """
+        context = n_context.get_admin_context()
+        cmds = []
+        gw_ports = self._ovn_client._plugin.get_ports(
+            context, {'device_owner': [n_const.DEVICE_OWNER_ROUTER_GW]})
+        for gw_port in gw_ports:
+            router = self._ovn_client._l3_plugin.get_router(
+                context, gw_port['device_id'])
+            if not utils.is_ovn_provider_router(router):
+                continue
+            enable_redirect = False
+            if ovn_conf.is_ovn_distributed_floating_ip():
+                try:
+                    r_ports = self._ovn_client._get_router_ports(
+                        context, gw_port['device_id'])
+                except l3_exc.RouterNotFound:
+                    LOG.debug("No Router %s not found", gw_port['device_id'])
+                    continue
+                else:
+                    network_ids = {port['network_id'] for port in r_ports}
+                    networks = self._ovn_client._plugin.get_networks(
+                        context, filters={'id': network_ids})
+                    # NOTE(ltomasbo): For VLAN type networks connected through
+                    # the gateway port there is a need to set the redirect-type
+                    # option to bridge to ensure traffic is not centralized
+                    # through the controller.
+                    # If there are no VLAN type networks attached we need to
+                    # still make it centralized.
+                    if networks:
+                        enable_redirect = all(
+                            net.get(pnet.NETWORK_TYPE) in [n_const.TYPE_VLAN,
+                                                           n_const.TYPE_FLAT]
+                            for net in networks)
+
+            lrp_name = utils.ovn_lrouter_port_name(gw_port['id'])
+            lrp = self._nb_idl.get_lrouter_port(lrp_name)
+            if not lrp:
+                # NOTE(ralonsoh): the `Logical_Router_Port` has been deleted
+                # during the processing of the `gw_ports`.
+                continue
+
+            redirect_value = lrp.options.get(
+                ovn_const.LRP_OPTIONS_REDIRECT_TYPE)
+            if enable_redirect:
+                if redirect_value != ovn_const.BRIDGE_REDIRECT_TYPE:
+                    opt = {ovn_const.LRP_OPTIONS_REDIRECT_TYPE:
+                           ovn_const.BRIDGE_REDIRECT_TYPE}
+                    cmds.append(self._nb_idl.db_set(
+                        'Logical_Router_Port', lrp_name, ('options', opt)))
+            else:
+                if redirect_value == ovn_const.BRIDGE_REDIRECT_TYPE:
+                    cmds.append(self._nb_idl.db_remove(
+                        'Logical_Router_Port', lrp_name, 'options',
+                        (ovn_const.LRP_OPTIONS_REDIRECT_TYPE)))
         if cmds:
             with self._nb_idl.transaction(check_error=True) as txn:
                 for cmd in cmds:
@@ -666,29 +800,37 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
 
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600, run_immediately=True)
-    def check_vlan_distributed_ports(self):
-        """Check VLAN distributed ports
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Align reside-on-redirect-chassis on VLAN/FLAT '
+            'distributed ports.'))
+    def check_provider_distributed_ports(self):
+        """Check provider (VLAN and FLAT) distributed ports
         Check for the option "reside-on-redirect-chassis" value for
-        distributed VLAN ports.
+        distributed ports which belongs to the FLAT or VLAN networks.
         """
-        if not self.has_lock:
-            return
         context = n_context.get_admin_context()
         cmds = []
-        # Get router ports belonging to VLAN networks
+        # Get router ports belonging to VLAN or FLAT networks
         vlan_nets = self._ovn_client._plugin.get_networks(
-            context, {pnet.NETWORK_TYPE: [n_const.TYPE_VLAN]})
+            context, {pnet.NETWORK_TYPE: [n_const.TYPE_VLAN,
+                                          n_const.TYPE_FLAT]})
         vlan_net_ids = [vn['id'] for vn in vlan_nets]
         router_ports = self._ovn_client._plugin.get_ports(
             context, {'network_id': vlan_net_ids,
                       'device_owner': n_const.ROUTER_PORT_OWNERS})
-        expected_value = ('false' if ovn_conf.is_ovn_distributed_floating_ip()
-                          else 'true')
+
         for rp in router_ports:
+            expected_value = (
+                self._ovn_client._get_reside_redir_for_gateway_port(
+                    context, rp['device_id']))
             lrp_name = utils.ovn_lrouter_port_name(rp['id'])
             lrp = self._nb_idl.get_lrouter_port(lrp_name)
-            if lrp.options.get(
+            if lrp and lrp.options.get(
                     ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH) != expected_value:
                 opt = {ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH: expected_value}
                 cmds.append(self._nb_idl.db_set(
@@ -699,33 +841,45 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                     txn.add(cmd)
         raise periodics.NeverAgain()
 
-    # TODO(ralonsoh): Remove this in the Z+3 cycle. This method adds the
-    # "external_ids:OVN_GW_NETWORK_EXT_ID_KEY" to each router that has
-    # a gateway (that means, that has "external_ids:OVN_GW_PORT_EXT_ID_KEY").
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600, run_immediately=True)
-    def update_logical_router_with_gateway_network_id(self):
-        """Update all OVN logical router registers with the GW network ID"""
-        if not self.has_lock:
-            return
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Apply FDB aging limits to NB_Global and provider '
+            'switches.'))
+    def check_fdb_aging_settings(self):
+        """Check FDB aging settings
 
-        cmds = []
+        Ensure FDB aging settings are enforced. This method should NOT be
+        removed. It will be executed anytime the maintenance task is restarted.
+        If the ``fdb_age_threshold`` configuration parameter changes, this
+        method will update the ``Logical_Switch`` configuration.
+        """
         context = n_context.get_admin_context()
-        for lr in self._nb_idl.lr_list().execute(check_error=True):
-            gw_port = lr.external_ids.get(ovn_const.OVN_GW_PORT_EXT_ID_KEY)
-            gw_net = lr.external_ids.get(ovn_const.OVN_GW_NETWORK_EXT_ID_KEY)
-            if not gw_port or (gw_port and gw_net):
-                # This router does not have a gateway network assigned yet or
-                # it has a gateway port and its corresponding network.
+        cmds = [self._nb_idl.set_nb_global_options(
+            fdb_removal_limit=ovn_conf.get_fdb_removal_limit())]
+
+        config_fdb_age_threshold = ovn_conf.get_fdb_age_threshold()
+        # Get provider networks
+        nets = self._ovn_client._plugin.get_networks(context)
+        for net in nets:
+            if not utils.is_provider_network(net):
                 continue
+            ls_name = utils.ovn_name(net['id'])
+            ls = self._nb_idl.get_lswitch(ls_name)
+            ls_fdb_age_threshold = ls.other_config.get(
+                ovn_const.LS_OPTIONS_FDB_AGE_THRESHOLD)
 
-            port = self._ovn_client._plugin.get_port(context, gw_port)
-            external_ids = {
-                ovn_const.OVN_GW_NETWORK_EXT_ID_KEY: port['network_id']}
-            cmds.append(self._nb_idl.db_set(
-                'Logical_Router', lr.uuid, ('external_ids', external_ids)))
-
+            if config_fdb_age_threshold != ls_fdb_age_threshold:
+                other_config = {ovn_const.LS_OPTIONS_FDB_AGE_THRESHOLD:
+                                config_fdb_age_threshold}
+                cmds.append(self._nb_idl.db_set(
+                    'Logical_Switch', ls_name,
+                    ('other_config', other_config)))
         if cmds:
             with self._nb_idl.transaction(check_error=True) as txn:
                 for cmd in cmds:
@@ -734,21 +888,35 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
 
     # A static spacing value is used here, but this method will only run
     # once per lock due to the use of periodics.NeverAgain().
-    @periodics.periodic(spacing=600, run_immediately=True)
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message='Update MAC binding aging and router MAC age limits.')
+    def update_mac_aging_settings(self):
+        """Ensure that MAC_Binding aging options are set"""
+        removal_limit = ovn_conf.get_ovn_mac_binding_removal_limit()
+        with self._nb_idl.transaction(check_error=True) as txn:
+            txn.add(self._nb_idl.set_nb_global_options(
+                mac_binding_removal_limit=removal_limit))
+            txn.add(self._nb_idl.set_router_mac_age_limit())
+        raise periodics.NeverAgain()
+
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message='Sync baremetal port DHCP options with configuration.')
     def check_baremetal_ports_dhcp_options(self):
         """Update baremetal ports DHCP options
 
         Update baremetal ports DHCP options based on the
         "disable_ovn_dhcp_for_baremetal_ports" configuration option.
         """
-        # If external ports is not supported stop running
-        # this periodic task
-        if not self._ovn_client.is_external_ports_supported():
-            raise periodics.NeverAgain()
-
-        if not self.has_lock:
-            return
-
         context = n_context.get_admin_context()
         ports = ports_obj.Port.get_ports_by_vnic_type_and_host(
             context, portbindings.VNIC_BAREMETAL)
@@ -773,43 +941,247 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                         update_dhcp = True
 
                 if update_dhcp:
-                    port_info = self._ovn_client._get_port_options(port)
+                    port_info = self._ovn_client._get_port_options(
+                        context, port)
                     dhcpv4_options, dhcpv6_options = (
                         self._ovn_client.update_port_dhcp_options(
                             port_info, txn))
                     txn.add(self._nb_idl.set_lswitch_port(
-                                lport_name=port['id'],
-                                dhcpv4_options=dhcpv4_options,
-                                dhcpv6_options=dhcpv6_options,
-                                if_exists=False))
+                        lport_name=port['id'],
+                        dhcpv4_options=dhcpv4_options,
+                        dhcpv6_options=dhcpv6_options,
+                        if_exists=False))
 
         raise periodics.NeverAgain()
 
-    # TODO(ralonsoh): Remove this in the Z+4 cycle
-    @periodics.periodic(spacing=600, run_immediately=True)
-    def update_port_virtual_type(self):
-        """Set type=virtual to those ports with parents
-        Before LP#1973276, any virtual port with "device_owner" defined, lost
-        its type=virtual. This task restores the type for those ports updated
-        before the fix https://review.opendev.org/c/openstack/neutron/+/841711.
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Remove default routes with empty destination from '
+            'routers.'))
+    def check_router_default_route_empty_dst_ip(self):
+        """Check routers with default route with empty dst-ip (LP: #2002993).
         """
-        if not self.has_lock:
-            return
-
-        context = n_context.get_admin_context()
         cmds = []
-        for lsp in self._nb_idl.lsp_list().execute(check_error=True):
-            if lsp.type != '':
+        for router in self._nb_idl.lr_list().execute(check_error=True):
+            if ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY not in router.external_ids:
+                continue
+            routes_to_delete = [
+                (r.ip_prefix, '')
+                for r in self._nb_idl.lr_route_list(router.uuid).execute(
+                    check_error=True)
+                if r.nexthop == '' and r.ip_prefix in (n_const.IPv4_ANY,
+                                                       n_const.IPv6_ANY)
+            ]
+            cmds.append(
+                self._nb_idl.delete_static_routes(router.name,
+                                                  routes_to_delete))
+
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+
+        raise periodics.NeverAgain()
+
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Refresh ACL logging fair meter after configuration '
+            'reload.'))
+    def check_fair_meter_consistency(self):
+        """Update the logging meter after neutron-server reload
+
+        When we change the rate and burst limit we need to update the fair
+        meter band to apply the new values. This is called from the ML2/OVN
+        driver after the OVN NB idl is loaded
+
+        """
+        meter_name = (
+            cfg.CONF.network_log.local_output_log_base or "acl_log_meter")
+        self._ovn_client.create_ovn_fair_meter(meter_name, from_reload=True)
+        raise periodics.NeverAgain()
+
+    @has_lock_periodic(spacing=86400, run_immediately=True)
+    @log_maintenance_task(
+        start_message='Purge stale hash ring nodes older than five days.')
+    def cleanup_old_hash_ring_nodes(self):
+        """Daily task to cleanup old stable Hash Ring node entries.
+
+        Runs once a day and clean up Hash Ring entries that haven't
+        been updated in more than 5 days. See LP #2033281 for more
+        information.
+
+        """
+        context = n_context.get_admin_context()
+        hash_ring_db.cleanup_old_nodes(context, days=5)
+
+    @has_lock_periodic(spacing=86400, run_immediately=True)
+    @log_maintenance_task(
+        start_message='Apply ovn_nb_global settings to NB_Global options.')
+    def configure_nb_global(self):
+        """Configure Northbound OVN NB_Global options
+
+        The method goes over all config options from ovn_nb_global config
+        sections and configures same key/value pairs to the NB_Global:options
+        column.
+        """
+        options = {opt.name: str(cfg.CONF.ovn_nb_global.get(opt.name)).lower()
+                   for opt in ovn_conf.nb_global_opts}
+
+        self._nb_idl.set_nb_global_options(**options).execute(
+            check_error=True)
+
+        raise periodics.NeverAgain()
+
+    @has_lock_periodic(spacing=86400, run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Sync router.distributed with distributed floating IP '
+            'config.'))
+    def update_router_distributed_flag(self):
+        """Set "enable_distributed_floating_ip" on the router.distributed flag.
+
+        This method is needed to sync the static configuration parameter
+        "enable_distributed_floating_ip", loaded when the Neutron API starts,
+        and the router.distributed flag.
+
+        NOTE: remove this method when the RFE that allows to define the
+        distributed flag per FIP is implemented. At this point, the
+        router.distributed flag will be useless.
+            RFE: https://bugs.launchpad.net/neutron/+bug/1978039
+        """
+        distributed = ovn_conf.is_ovn_distributed_floating_ip()
+        router_obj.RouterExtraAttributes.update_distributed_flag(
+            n_context.get_admin_context(), distributed)
+
+        raise periodics.NeverAgain()
+
+    # TODO(ralonsoh): Remove this method in the G+4 cycle (SLURP release)
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Set network type and physnet external_ids on logical '
+            'switches.'))
+    def set_network_type_and_physnet(self):
+        """Add the network type and physnet to the Logical_Switch registers"""
+        context = n_context.get_admin_context()
+        net_segments = network_obj.NetworkSegment.get_objects(context)
+        net_type = {seg.network_id: seg.network_type for seg in net_segments}
+        net_physnet = {seg.network_id: seg.physical_network
+                       for seg in net_segments}
+        cmds = []
+        for ls in self._nb_idl.ls_list().execute(check_error=True):
+            if ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY not in ls.external_ids:
                 continue
 
-            port = self._ovn_client._plugin.get_port(context, lsp.name)
-            for ip in port.get('fixed_ips', []):
-                if utils.get_virtual_port_parents(
-                        self._nb_idl, ip['ip_address'], port['network_id'],
-                        port['id']):
-                    cmds.append(self._nb_idl.db_set(
-                        'Logical_Switch_Port', lsp.uuid,
-                        ('type', ovn_const.LSP_TYPE_VIRTUAL)))
+            net_id = utils.get_neutron_name(ls.name)
+            physnet = net_physnet[net_id]
+            if ovn_const.OVN_NETTYPE_EXT_ID_KEY not in ls.external_ids or (
+                ovn_const.OVN_PHYSNET_EXT_ID_KEY not in ls.external_ids and
+                physnet
+            ):
+                external_ids = {
+                    ovn_const.OVN_NETTYPE_EXT_ID_KEY: net_type[net_id]}
+                if physnet:
+                    external_ids[ovn_const.OVN_PHYSNET_EXT_ID_KEY] = physnet
+                cmds.append(self._nb_idl.db_set(
+                    'Logical_Switch', ls.uuid, ('external_ids', external_ids)))
+
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+
+        raise periodics.NeverAgain()
+
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Sync broadcast-arps-to-all-routers on external '
+            'networks.'))
+    def check_network_broadcast_arps_to_all_routers(self):
+        """Check the broadcast-arps-to-all-routers config
+
+        Ensure that the broadcast-arps-to-all-routers is set accordingly
+        to the ML2/OVN configuration option.
+        """
+        context = n_context.get_admin_context()
+        networks = self._ovn_client._plugin.get_networks(
+            context, filters={external_net.EXTERNAL: [True]})
+        cmds = []
+        for net in networks:
+            ls_name = utils.ovn_name(net['id'])
+            ls = self._nb_idl.get_lswitch(ls_name)
+            broadcast_value = ls.other_config.get(
+                ovn_const.LS_OPTIONS_BROADCAST_ARPS_ROUTERS)
+            expected_broadcast_value = (
+                'true'
+                if ovn_conf.is_broadcast_arps_to_all_routers_enabled() else
+                'false')
+            # Assert the config value is the right one
+            if broadcast_value == expected_broadcast_value:
+                continue
+            # If not, set the right value
+            other_config = {ovn_const.LS_OPTIONS_BROADCAST_ARPS_ROUTERS:
+                            expected_broadcast_value}
+            cmds.append(self._nb_idl.db_set('Logical_Switch', ls_name,
+                                            ('other_config', other_config)))
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+        raise periodics.NeverAgain()
+
+    # TODO(racosta): Remove this method in the E+2 cycle (SLURP release)
+    @has_lock_periodic(spacing=600, run_immediately=True)
+    @log_maintenance_task(
+        start_message='Mark Neutron-owned static routes in OVN external_ids.')
+    def update_router_static_routes(self):
+        """Set external_ids column to any Neutron's owned static route.
+        """
+
+        context = n_context.get_admin_context()
+        sroute_update = []
+        lrouters = self._nb_idl.get_all_logical_routers_static_routes()
+        for router in lrouters:
+            sroutes = router['static_routes']
+            for sroute in sroutes:
+                # Skip Static Routes that are already configured with an
+                # external_id key
+                if (ovn_const.OVN_LRSR_EXT_ID_KEY not in
+                        sroute.external_ids.keys()):
+                    sroute_update.append({'sroute': sroute,
+                                          'name': router['name']})
+
+        routes_cache = {}
+        cmds = []
+        columns = {'external_ids': {ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}
+        for sroute in sroute_update:
+            lrouter = utils.ovn_name(sroute['name'])
+            if lrouter not in routes_cache.keys():
+                router_db = self._ovn_client._l3_plugin.get_router(
+                    context, sroute['name'], fields=['routes'])
+                routes_cache[lrouter] = router_db.get('routes')
+
+            ovn_route = sroute['sroute']
+            for db_route in routes_cache[lrouter]:
+                if (ovn_route.ip_prefix == db_route['destination'] and
+                        ovn_route.nexthop == db_route['nexthop']):
+                    cmds.append(self._nb_idl.set_static_route(sroute['sroute'],
+                                                              **columns))
                     break
 
         if cmds:
@@ -818,16 +1190,297 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                     txn.add(cmd)
         raise periodics.NeverAgain()
 
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message='Set distributed floating IP flag in NB_Global.')
+    def set_fip_distributed_flag(self):
+        """Set the NB_Global.external_ids:fip-distributed flag.
 
-class HashRingHealthCheckPeriodics(object):
+        This method should NOT be removed. It will be executed anytime the
+        maintenance task is restarted. If the
+        ``enable_distributed_floating_ip`` configuration parameter changes,
+        this method will update the ``NB_Global`` register.
+        """
+        distributed = ovn_conf.is_ovn_distributed_floating_ip()
+        LOG.debug(
+            "Setting fip-distributed flag in NB_Global to %s", distributed)
+        self._nb_idl.db_set(
+            'NB_Global', '.', external_ids={
+                ovn_const.OVN_FIP_DISTRIBUTED_KEY: str(distributed)}).execute(
+                    check_error=True)
+        raise periodics.NeverAgain()
 
-    def __init__(self, group):
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message=(
+            'Apply ovn_owned option on DNS records per '
+            'configuration.'))
+    def set_ovn_owned_dns_option(self):
+        """Set the ovn_owned option as configured for the DNS records"""
+        cmds = []
+        ovn_owned = ('true' if ovn_conf.is_dns_records_ovn_owned()
+                     else 'false')
+        dns_options = {ovn_const.OVN_OWNED: ovn_owned}
+        for dns in self._nb_idl.dns_list().execute(check_error=True):
+            if ('ls_name' in dns.external_ids and
+                    dns.options.get(ovn_const.OVN_OWNED) != ovn_owned):
+                cmds.append(self._nb_idl.dns_set_options(
+                    dns.uuid, **dns_options))
+
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+
+        raise periodics.NeverAgain()
+
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message='Apply HA chassis failover BFD settings to NB_Global.')
+    def update_ha_failover(self):
+        """Set the OVN BFD settings to control the HA failover timeout"""
+        strategy = cfg.CONF.ovn.ha_failover_strategy
+        if strategy == ovn_const.OVN_HA_FAILOVER_NORMAL:
+            bfd_min_rx = ovn_const.OVN_BFD_MIN_RX
+            bfd_min_tx = ovn_const.OVN_BFD_MIN_TX
+            bfd_mult = ovn_const.OVN_BFD_MULT
+        elif strategy == ovn_const.OVN_HA_FAILOVER_AGGRESSIVE:
+            bfd_min_rx = ovn_const.OVN_BFD_MIN_RX / 2
+            bfd_min_tx = ovn_const.OVN_BFD_MIN_TX
+            bfd_mult = ovn_const.OVN_BFD_MULT
+        elif strategy == ovn_const.OVN_HA_FAILOVER_CONSERVATIVE:
+            bfd_min_rx = ovn_const.OVN_BFD_MIN_RX
+            bfd_min_tx = ovn_const.OVN_BFD_MIN_TX
+            bfd_mult = ovn_const.OVN_BFD_MULT * 2
+        else:
+            bfd_min_rx = cfg.CONF.ovn.bfd_min_rx
+            bfd_min_tx = cfg.CONF.ovn.bfd_min_tx
+            bfd_mult = cfg.CONF.ovn.bfd_mult
+
+        options = {'bfd-min-rx': str(bfd_min_rx),
+                   'bfd-min-tx': str(bfd_min_tx),
+                   'bfd-mult': str(bfd_mult),
+                   }
+        self._nb_idl.set_nb_global_options(**options).execute(
+            check_error=True)
+
+        raise periodics.NeverAgain()
+
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message='Backfill network_id on DHCP_Options external_ids.')
+    def check_dhcp_options_consistency(self):
+        admin_context = n_context.get_admin_context()
+        cmds = []
+        all_dhcp_options = self._nb_idl.db_list_rows('DHCP_Options').execute(
+            check_error=True)
+        subnet_to_network_map = {
+            subnet['id']: subnet['network_id']
+            for subnet in self._ovn_client._plugin.get_subnets(
+                admin_context, fields=['id', 'network_id'])
+        }
+        for dhcp_options in all_dhcp_options:
+            if (ovn_const.OVN_NETWORK_ID_EXT_ID_KEY in
+                    dhcp_options.external_ids):
+                continue
+            try:
+                subnet_id = dhcp_options.external_ids['subnet_id']
+            except KeyError:
+                LOG.error('DHCP_Options %s have no subnet_id', dhcp_options)
+                continue
+            cmds.append(self._nb_idl.db_set(
+                'DHCP_Options',
+                dhcp_options.uuid,
+                external_ids={
+                    ovn_const.OVN_NETWORK_ID_EXT_ID_KEY:
+                        subnet_to_network_map[subnet_id],
+                }
+            ))
+        if cmds:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                for cmd in cmds:
+                    txn.add(cmd)
+        raise periodics.NeverAgain()
+
+    # TODO(ralonsoh): to remove in G+4 (2028.1) cycle (2nd next SLURP release)
+
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    @log_maintenance_task(
+        start_message='Repair Address_Sets and ACLs for address group rules.')
+    def update_security_group_with_address_group(self):
+        """Create all Address_Set and update the corresponding ACLs"""
+        # 1. List all Address Groups with missing Address_Set registers.
+        admin_context = n_context.get_admin_context()
+        ag_ids_missing_as = []
+        for ag in self._ovn_client._plugin.get_address_groups(admin_context):
+            for ip_version in n_const.IP_ALLOWED_VERSIONS:
+                as_name = utils.ovn_ag_addrset_name(
+                    ag['id'], 'ip' + str(ip_version))
+                if not self._nb_idl.lookup('Address_Set', as_name,
+                                           default=None):
+                    ag_ids_missing_as.append(ag['id'])
+                    break
+
+        # 2. Create the corresponding Address_Set (IPv4, IPv6) registers.
+        # The ``create_address_group`` method calls ``address_set_add`` with
+        # may_exist=True, so is safe if any of these registers already exists.
+        # This operation will also create the OVN revision number for each
+        # Address Group.
+        for ag_id in ag_ids_missing_as:
+            try:
+                _ag = self._ovn_client._plugin.get_address_group(
+                    admin_context, ag_id)
+            except ag_exc.AddressGroupNotFound:
+                continue
+            self._ovn_client.create_address_group(admin_context, _ag)
+
+        # 3. Update all the ACLs associated to the SG rules that have these
+        # Address Groups.
+        filter = {'remote_address_group_id': ag_ids_missing_as}
+        for sg_rule in sg_obj.SecurityGroupRule.get_objects(
+                admin_context, **filter):
+            # Delete the current ACL.
+            self._ovn_client._nb_idl.delete_acl_by_sg_id(
+                sg_rule['security_group_id'], sg_rule['id'],
+                if_exists=True).execute(check_error=True)
+            # Re-create the ACL including the Address Group (OVN Address_Set).
+            self._ovn_client.create_security_group_rule(
+                admin_context, sg_rule)
+
+        raise periodics.NeverAgain()
+
+    # TODO(ralonsoh): to remove in H+3=K (2028.1) cycle (2nd next SLURP
+    # release)
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    def update_virtual_port_parent_hostname(self):
+        """Virtual ports should have parent_hostname, NOT portbinding.host"""
+        # 1. List and store all virtual ports with
+        # "external_ids:neutron:host_id"
+        lsp_with_host_id = []
+        for lsp in self._nb_idl.lsp_list().execute(check_error=True):
+            if lsp.type != ovn_const.LSP_TYPE_VIRTUAL:
+                continue
+
+            if lsp.external_ids.get(ovn_const.OVN_HOST_ID_EXT_ID_KEY):
+                lsp_with_host_id.append(lsp)
+
+        # 2. For all these LSPs, **if present** during this second loop,
+        # (2.1) update the LSP.external_ids dictionary, (2.2) remove the
+        # Neutron port host and (2.3) update the Neutron port VIF details.
+        admin_context = n_context.get_admin_context()
+        for lsp in lsp_with_host_id:
+            host_id = lsp.external_ids[ovn_const.OVN_HOST_ID_EXT_ID_KEY]
+            self._ovn_client.update_virtual_port_parent_host(
+                admin_context, lsp.name, hostname=host_id)
+            self._nb_idl.db_remove(
+                'Logical_Switch_Port', lsp.uuid, 'external_ids',
+                ovn_const.OVN_HOST_ID_EXT_ID_KEY).execute(check_error=True)
+
+        raise periodics.NeverAgain()
+
+    # TODO(ralonsoh): to remove in H+3=K (2028.1) cycle (2nd next SLURP
+    # release)
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    def migrate_lrp_gateway_chassis_to_ha_chassis_group(self):
+        """Migrate the LRP Gateway_Chassis to HA_Chassis_Group"""
+        with self._nb_idl.transaction(check_error=True) as txn:
+            for lrp in self._nb_idl.db_list_rows(
+                    'Logical_Router_Port').execute(check_error=True):
+                if not lrp.gateway_chassis:
+                    continue
+
+                r_name = lrp.external_ids.get(
+                    ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY)
+                if not r_name:
+                    LOG.warning('Logical_Router_Port %s does not '
+                                'have the router name in external_ids.',
+                                lrp.name)
+                    continue
+
+                chassis_prio = {}
+                for gc in lrp.gateway_chassis:
+                    chassis_prio[gc.chassis_name] = gc.priority
+
+                lr = self._nb_idl.lookup('Logical_Router', r_name,
+                                         default=None)
+                if not lr:
+                    # NOTE(ralonsoh): this is almost impossible to have a
+                    # LRP without a LR, but we consider this case too.
+                    LOG.warning('Logical_Router %s does not exist', r_name)
+                    continue
+
+                az_hints = lr.external_ids.get(
+                    ovn_const.OVN_AZ_HINTS_EXT_ID_KEY, '')
+                router_id = utils.get_neutron_name(r_name)
+                # Add the new HA_Chassis_Group and assign to the LRP.
+                external_ids = {
+                    ovn_const.OVN_AZ_HINTS_EXT_ID_KEY: ','.join(az_hints),
+                    ovn_const.OVN_ROUTER_ID_EXT_ID_KEY: router_id,
+                }
+                hcg_cmd = txn.add(self._nb_idl.ha_chassis_group_with_hc_add(
+                    r_name, chassis_prio, may_exist=True,
+                    external_ids=external_ids))
+                txn.add(self._nb_idl.db_set(
+                    'Logical_Router_Port', lrp.uuid,
+                    ('ha_chassis_group', hcg_cmd)))
+                # Unset the Gateway_Chassis in the LRP.
+                txn.add(self._nb_idl.db_clear(
+                    'Logical_Router_Port', lrp.uuid, 'gateway_chassis'))
+
+        raise periodics.NeverAgain()
+
+
+class HashRingHealthCheckPeriodics:
+
+    def __init__(self, group, node_uuid):
         self._group = group
+        self._node_uuid = node_uuid
         self.ctx = n_context.get_admin_context()
 
     @periodics.periodic(spacing=ovn_const.HASH_RING_TOUCH_INTERVAL)
-    def touch_hash_ring_nodes(self):
+    def touch_hash_ring_node(self):
         # NOTE(lucasagomes): Note that we do not rely on the OVSDB lock
         # here because we want the maintenance tasks from each instance to
         # execute this task.
-        hash_ring_db.touch_nodes_from_host(self.ctx, self._group)
+        LOG.debug(
+            'Touching Hash Ring node "%s" from periodic health check thread',
+            self._node_uuid)
+        hash_ring_db.touch_node(self.ctx, self._node_uuid)
+
+        # Check the number of the nodes in the ring and log a message in
+        # case they are out of sync. See LP #2024205 for more information
+        # on this issue.
+        api_workers = service._get_api_workers()
+        num_nodes = hash_ring_db.count_nodes_from_host(self.ctx, self._group)
+
+        if num_nodes > api_workers:
+            LOG.critical(
+                'The number of nodes in the Hash Ring (%d) is higher than '
+                'the number of API workers (%d) for host "%s". Something is '
+                'not right and OVSDB events could be missed because of this. '
+                'Please check the status of the Neutron processes, this can '
+                'happen when the API workers are killed and restarted. '
+                'Restarting the service should fix the issue, see LP '
+                '#2024205 for more information.',
+                num_nodes, api_workers, cfg.CONF.host)

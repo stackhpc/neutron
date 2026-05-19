@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # Copyright 2018 Red Hat, Inc.
 # All Rights Reserved.
 #
@@ -16,7 +18,7 @@
 import os
 import sys
 
-from neutron_lib import constants
+from neutron_lib import constants as const
 from openstack import connection
 
 
@@ -25,8 +27,8 @@ GENEVE_ENCAP_OVERHEAD = 38
 # map of network types to migrate and the difference in overhead size when
 # converted to Geneve.
 NETWORK_TYPE_OVERHEAD_DIFF = {
-    'vxlan': GENEVE_ENCAP_OVERHEAD - constants.VXLAN_ENCAP_OVERHEAD,
-    'gre': GENEVE_ENCAP_OVERHEAD - constants.GRE_ENCAP_OVERHEAD,
+    const.TYPE_VXLAN: GENEVE_ENCAP_OVERHEAD - const.VXLAN_ENCAP_OVERHEAD,
+    const.TYPE_GRE: GENEVE_ENCAP_OVERHEAD - const.GRE_ENCAP_OVERHEAD,
 }
 
 
@@ -83,8 +85,9 @@ def verify_network_mtu():
     success = True
     for network in conn.network.networks():
         if network.provider_physical_network is None and (
-            network.provider_network_type in NETWORK_TYPE_OVERHEAD_DIFF) and (
-                'adapted_mtu' not in network.tags):
+                network.provider_network_type in
+                NETWORK_TYPE_OVERHEAD_DIFF) and (
+                    'adapted_mtu' not in network.tags):
             print("adapted_mtu tag is not set for the Network "
                   "[" + str(network.name) + "]")
             success = False

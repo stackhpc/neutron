@@ -18,6 +18,8 @@ import uuid
 
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net
+from neutron_lib.api.definitions import qinq as qinq_apidef
+from neutron_lib.api.definitions import vlantransparent as vlan_apidef
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib import constants
@@ -53,6 +55,11 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     resource_provider_uuid5_namespace = uuid.UUID(
         '87ee7d5c-73bb-11e8-9008-c4d987b2a692')
 
+    _explicitly_not_supported_extensions = set([
+        vlan_apidef.ALIAS,
+        qinq_apidef.ALIAS
+    ])
+
     def __init__(self):
         sg_enabled = securitygroups_rpc.is_firewall_enabled()
         vif_details = {portbindings.CAP_PORT_FILTER: sg_enabled,
@@ -69,7 +76,7 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                                 portbindings.VNIC_VHOST_VDPA,
                                 ]
         prohibit_list = cfg.CONF.OVS_DRIVER.vnic_type_prohibit_list
-        super(OpenvswitchMechanismDriver, self).__init__(
+        super().__init__(
             constants.AGENT_TYPE_OVS,
             portbindings.VIF_TYPE_OVS,
             vif_details,
@@ -105,13 +112,9 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         if 'bridge_mappings' in agent['configurations']:
             return {k: [v] for k, v in
                     agent['configurations']['bridge_mappings'].items()}
-        else:
-            raise ValueError(_('Cannot standardize bridge mappings of agent '
-                               'type: %s'), agent['agent_type'])
-
-    def check_vlan_transparency(self, context):
-        """Currently Openvswitch driver doesn't support vlan transparency."""
-        return False
+        raise ValueError(
+            _('Cannot standardize bridge mappings of agent type: %s'),
+            agent['agent_type'])
 
     def bind_port(self, context):
         vnic_type = context.current.get(portbindings.VNIC_TYPE,
@@ -130,7 +133,7 @@ class OpenvswitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             LOG.debug("Refusing to bind due to unsupported vnic_type: %s with "
                       "no switchdev capability", portbindings.VNIC_DIRECT)
             return
-        super(OpenvswitchMechanismDriver, self).bind_port(context)
+        super().bind_port(context)
 
     def get_supported_vif_type(self, agent):
         caps = agent['configurations'].get('ovs_capabilities', {})

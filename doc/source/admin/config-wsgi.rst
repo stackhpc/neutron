@@ -1,9 +1,9 @@
 .. _config-wsgi:
 
-Installing Neutron API via WSGI
+WSGI Usage with the Neutron API
 ===============================
 
-This document is a guide to deploying neutron using WSGI. There are two ways to
+This document is a guide to deploying Neutron using WSGI. There are two ways to
 deploy using WSGI: ``uwsgi`` and Apache ``mod_wsgi``.
 
 Please note that if you intend to use mode uwsgi, you should install the
@@ -21,7 +21,7 @@ WSGI Application
 ----------------
 
 The function ``neutron.server.get_application`` will setup a WSGI application
-to run behind uwsgi and mod_wsgi.
+to run behind a WSGI server like uwsgi or mod_wsgi.
 
 Neutron API behind uwsgi
 ------------------------
@@ -33,19 +33,20 @@ Create a ``/etc/neutron/neutron-api-uwsgi.ini`` file with the content below:
     [uwsgi]
     chmod-socket = 666
     socket = /var/run/uwsgi/neutron-api.socket
+    start-time = %t
     lazy-apps = true
     add-header = Connection: close
     buffer-size = 65535
     hook-master-start = unix_signal:15 gracefully_kill_them_all
     thunder-lock = true
-    plugins = python
+    plugins = http,python3
     enable-threads = true
-    worker-reload-mercy = 90
+    worker-reload-mercy = 80
     exit-on-reload = false
     die-on-term = true
     master = true
     processes = 2
-    wsgi-file = <path-to-neutron-bin-dir>/neutron-api
+    module = neutron.wsgi.api:application
 
 .. end
 
@@ -54,63 +55,6 @@ Start neutron-api:
 .. code-block:: console
 
     # uwsgi --procname-prefix neutron-api --ini /etc/neutron/neutron-api-uwsgi.ini
-
-.. end
-
-Neutron API behind mod_wsgi
----------------------------
-
-Create ``/etc/apache2/neutron.conf`` with content below:
-
-.. code-block:: ini
-
-    Listen 9696
-    LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-agent}i\" %D(us)" neutron_combined
-
-    <Directory /usr/local/bin>
-        Require all granted
-    </Directory>
-
-    <VirtualHost *:9696>
-        WSGIDaemonProcess neutron-server processes=1 threads=1 user=stack display-name=%{GROUP}
-        WSGIProcessGroup neutron-server
-        WSGIScriptAlias / <path-to-neutron-bin-dir>/neutron-api
-        WSGIApplicationGroup %{GLOBAL}
-        WSGIPassAuthorization On
-        ErrorLogFormat "%M"
-        ErrorLog /var/log/neutron/neutron.log
-        CustomLog /var/log/neutron/neutron_access.log neutron_combined
-    </VirtualHost>
-
-    Alias /networking <path-to-neutron-bin-dir>/neutron-api
-    <Location /networking>
-        SetHandler wsgi-script
-        Options +ExecCGI
-        WSGIProcessGroup neutron-server
-        WSGIApplicationGroup %{GLOBAL}
-        WSGIPassAuthorization On
-    </Location>
-
-    WSGISocketPrefix /var/run/apache2
-
-.. end
-
-For deb-based systems copy or symlink the file to ``/etc/apache2/sites-available``.
-Then enable the neutron site:
-
-.. code-block:: console
-
-    # a2ensite neutron
-    # systemctl reload apache2.service
-
-.. end
-
-For rpm-based systems copy the file to ``/etc/httpd/conf.d``. Then enable the
-neutron site:
-
-.. code-block:: console
-
-    # systemctl reload httpd.service
 
 .. end
 
@@ -148,4 +92,21 @@ using about 2GB of RAM in steady-state.
 For rpc_workers, there needs to be enough to keep up with incoming
 events from the various neutron agents. Signs that there are too few
 can be agent heartbeats arriving late, nova vif bindings timing out
-on the hypervisors, or rpc message timeout exceptions in agent logs.
+on the hypervisors, or rpc message timeout exceptions in agent logs
+(for example, "broken pipe" errors).
+
+There is also the rpc_state_report_workers option, which determines
+the number fo RPC worker processes dedicated to process state reports
+from the various agents. This may be increased to resolve frequent delay
+in processing agents heartbeats.
+
+.. note::
+   If OVN ML2 plugin is used without any additional agents, neutron requires
+   no worker for RPC message processing. Set both rpc_workers and
+   rpc_state_report_workers to 0, to disable RPC workers.
+
+.. note::
+   ML2/OVN uses the ``[uwsgi]start-time = %t`` parameter to create the OVN hash
+   ring registers during the initialization process. This value is populated
+   by the uWSGi process with the start time. For more information, check
+   `Configuring uWSGI <https://uwsgi-docs.readthedocs.io/en/latest/Configuration.html>_`.

@@ -50,10 +50,10 @@ class OvsdbMonitor(async_process.AsyncProcess):
             cmd.append(','.join(columns))
         if format:
             cmd.append('--format=%s' % format)
-        super(OvsdbMonitor, self).__init__(cmd, run_as_root=run_as_root,
-                                           respawn_interval=respawn_interval,
-                                           log_output=True,
-                                           die_on_error=False)
+        super().__init__(cmd, run_as_root=run_as_root,
+                         respawn_interval=respawn_interval,
+                         log_output=True,
+                         die_on_error=False)
         self.new_events = {'added': [], 'removed': [], 'modified': []}
 
     def get_events(self):
@@ -63,7 +63,7 @@ class OvsdbMonitor(async_process.AsyncProcess):
         return events
 
     def start(self, block=False, timeout=60):
-        super(OvsdbMonitor, self).start()
+        super().start()
         if block:
             utils.wait_until_true(self.is_active, timeout=timeout)
 
@@ -80,7 +80,7 @@ class SimpleInterfaceMonitor(OvsdbMonitor):
                  bridge_names=None, ovs=None):
         self._bridge_names = bridge_names or []
         self._ovs = ovs
-        super(SimpleInterfaceMonitor, self).__init__(
+        super().__init__(
             'Interface',
             columns=['name', 'ofport', 'external_ids'],
             format='json',
@@ -117,6 +117,8 @@ class SimpleInterfaceMonitor(OvsdbMonitor):
         dev_to_ofport = {}
         for row in self.iter_stdout():
             json = jsonutils.loads(row).get('data')
+            LOG.debug('Parsing %(len)s new events from OVS: %(events)s',
+                      {"len": len(json), "events": json})
             for ovs_id, action, name, ofport, external_ids in json:
                 if external_ids:
                     external_ids = ovsdb.val_to_py(external_ids)
@@ -141,6 +143,16 @@ class SimpleInterfaceMonitor(OvsdbMonitor):
         self.new_events['added'].extend(devices_added)
         self.new_events['removed'].extend(devices_removed)
         self.new_events['modified'].extend(devices_modified)
+
+        LOG.debug(
+            'Current size of new_events: added=%(added)s '
+            'modified=%(modified)s removed=%(removed)s. '
+            'New events: %(new_events)s',
+            {"added": len(self.new_events['added']),
+             "modified": len(self.new_events['modified']),
+             "removed": len(self.new_events['removed']),
+             "new_events": self.new_events})
+
         # update any events with ofports received from 'new' action
         for event in self.new_events['added']:
             event['ofport'] = dev_to_ofport.get(event['name'], event['ofport'])

@@ -21,23 +21,25 @@ from oslo_utils import uuidutils
 from neutron.tests.functional.db import test_migrations
 
 
-class NetworkDhcpAgentBindingMigrationMixin(object):
+class TestNetworkDhcpAgentBindingMigration(test_migrations.TestWalkMigrations):
     """Validates binding_index for NetworkDhcpAgentBinding migration."""
 
     def _create_so(self, o_type, values):
         """create standard attr object."""
-        stan = db_utils.get_table(self.engine, 'standardattributes')
-        # find next available id taking into account existing records
-        rec_ids = [r.id for r in self.engine.execute(stan.select()).fetchall()]
-        next_id = max([0] + rec_ids) + 1
-        self.engine.execute(stan.insert().values({'id': next_id,
-                                                  'resource_type': o_type}))
+        with self.engine.connect() as conn, conn.begin():
+            stan = db_utils.get_table(self.engine, 'standardattributes')
+            # find next available id taking into account existing records
+            rec_ids = [r.id for r in conn.execute(stan.select()).fetchall()]
+            next_id = max([0] + rec_ids) + 1
+            conn.execute(stan.insert().values({'id': next_id,
+                                               'resource_type': o_type}))
         values['standard_attr_id'] = next_id
         return self._create_rec(o_type, values)
 
     def _create_rec(self, o_type, values):
         otable = db_utils.get_table(self.engine, o_type)
-        self.engine.execute(otable.insert().values(values))
+        with self.engine.connect() as conn, conn.begin():
+            conn.execute(otable.insert().values(values))
 
     def _make_network_agents_and_bindings(self, network_id):
         self._create_so('networks', {'id': network_id})
@@ -68,23 +70,12 @@ class NetworkDhcpAgentBindingMigrationMixin(object):
 
     def _check_c3e9d13c4367(self, engine, data):
         bindings_table = db_utils.get_table(engine, 'networkdhcpagentbindings')
-        rows = engine.execute(bindings_table.select()).fetchall()
+        with self.engine.connect() as conn, conn.begin():
+            rows = conn.execute(bindings_table.select()).fetchall()
 
-        networks_to_bindings = collections.defaultdict(list)
-        for network_id, agent_id, binding_index in rows:
-            networks_to_bindings[network_id].append(binding_index)
+            networks_to_bindings = collections.defaultdict(list)
+            for network_id, agent_id, binding_index in rows:
+                networks_to_bindings[network_id].append(binding_index)
 
-        for binding_indices in networks_to_bindings.values():
-            self.assertEqual(list(range(1, 3)), sorted(binding_indices))
-
-
-class TestNetworkDhcpAgentBindingMigrationMySQL(
-                                    NetworkDhcpAgentBindingMigrationMixin,
-                                    test_migrations.TestWalkMigrationsMySQL):
-    pass
-
-
-class TestNetworkDhcpAgentBindingMigrationPostgreSQL(
-        NetworkDhcpAgentBindingMigrationMixin,
-        test_migrations.TestWalkMigrationsPostgreSQL):
-    pass
+            for binding_indices in networks_to_bindings.values():
+                self.assertEqual(list(range(1, 3)), sorted(binding_indices))

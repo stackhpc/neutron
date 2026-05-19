@@ -13,36 +13,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import threading
-
-from ovsdbapp import event
+from oslo_utils import uuidutils
 
 from neutron.agent.common import ovs_lib
+from neutron.common import utils as common_utils
 from neutron.tests.functional import base
-
-
-class WaitForBridgesEvent(event.RowEvent):
-    event_name = 'WaitForBridgesEvent'
-    ONETIME = True
-
-    def __init__(self, bridges, timeout=5):
-        self.bridges_not_seen = set(bridges)
-        self.timeout = timeout
-        self.event = threading.Event()
-        super(WaitForBridgesEvent, self).__init__(
-            (self.ROW_CREATE,), 'Bridge', None)
-
-    def matches(self, event, row, old=None):
-        if event not in self.events or row._table.name != self.table:
-            return False
-        self.bridges_not_seen.discard(row.name)
-        return not self.bridges_not_seen
-
-    def run(self, event, row, old):
-        self.event.set()
-
-    def wait(self):
-        return self.event.wait(self.timeout)
 
 
 class BridgeMonitorTestCase(base.BaseSudoTestCase):
@@ -52,16 +27,30 @@ class BridgeMonitorTestCase(base.BaseSudoTestCase):
             self.ovs.delete_bridge(bridge)
 
     def test_create_bridges(self):
-        bridges_to_monitor = ['br01', 'br02', 'br03']
-        bridges_to_create = ['br01', 'br02', 'br03', 'br04', 'br05']
+        bridges_to_create = [
+            'br_' + uuidutils.generate_uuid()[:12],
+            'br_' + uuidutils.generate_uuid()[:12],
+            'br_' + uuidutils.generate_uuid()[:12],
+            'br_' + uuidutils.generate_uuid()[:12],
+            'br_' + uuidutils.generate_uuid()[:12],
+        ]
+        bridges_to_monitor = bridges_to_create[:3]
         self.ovs = ovs_lib.BaseOVS()
+        self._delete_bridges(bridges_to_create)
+
         self.ovs.ovsdb.idl_monitor.start_bridge_monitor(bridges_to_monitor)
         self.addCleanup(self._delete_bridges, bridges_to_create)
-        event = WaitForBridgesEvent(bridges_to_monitor)
-        self.ovs.ovsdb.idl_monitor.notify_handler.watch_event(event)
         for bridge in bridges_to_create:
             self.ovs.add_bridge(bridge)
-        self.assertTrue(event.wait())
-        self.assertEqual(bridges_to_monitor,
-                         self.ovs.ovsdb.idl_monitor.bridges_added)
-        self.assertEqual([], self.ovs.ovsdb.idl_monitor.bridges_added)
+
+        _idl_mon = self.ovs.ovsdb.idl_monitor
+        try:
+            common_utils.wait_until_true(
+                lambda: set(bridges_to_monitor) ==
+                set(_idl_mon._bridges_added_list),
+                timeout=10)
+        except common_utils.WaitTimeout:
+            self.fail(f'Bridges to monitor: {set(bridges_to_monitor)}, '
+                      f'bridges added: {set(_idl_mon._bridges_added_list)}')
+        self.assertEqual(bridges_to_monitor, _idl_mon.bridges_added)
+        self.assertEqual([], _idl_mon.bridges_added)

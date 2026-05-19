@@ -22,7 +22,6 @@ from neutron.db.models import l3
 from neutron.db.models import port_forwarding as models
 from neutron.objects import base
 from neutron_lib import constants as lib_const
-from oslo_utils import versionutils
 from oslo_versionedobjects import fields as obj_fields
 
 FIELDS_NOT_SUPPORT_FILTER = ['internal_ip_address', 'internal_port']
@@ -65,9 +64,7 @@ class PortForwarding(base.NeutronDbObject):
                                   'created_at']
 
     synthetic_fields = ['floating_ip_address', 'router_id']
-    fields_no_update = {
-        'id', 'floatingip_id'
-    }
+    fields_no_update = ['id', 'floatingip_id']
 
     def __eq__(self, other):
         for attr in self.fields:
@@ -103,7 +100,7 @@ class PortForwarding(base.NeutronDbObject):
             )]
 
         if ":" not in intrn_port_range:
-            intrn_port_range = "%s:%s" % (intrn_port_range, intrn_port_range)
+            intrn_port_range = "{ipr}:{ipr}".format(ipr=intrn_port_range)
 
         extrn_min, extrn_max = map(int, extrn_port_range.split(':'))
         intrn_min, intrn_max = map(int, intrn_port_range.split(':'))
@@ -126,7 +123,7 @@ class PortForwarding(base.NeutronDbObject):
     def obj_load_attr(self, attrname):
         if attrname in ['floating_ip_address', 'router_id']:
             return self._load_attr_from_fip(attrname)
-        super(PortForwarding, self).obj_load_attr(attrname)
+        super().obj_load_attr(attrname)
 
     def _load_attr_from_fip(self, attrname):
         value = getattr(self.db_obj.floating_ip, attrname)
@@ -134,23 +131,9 @@ class PortForwarding(base.NeutronDbObject):
         self.obj_reset_changes([attrname])
 
     def from_db_object(self, db_obj):
-        super(PortForwarding, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
         self._load_attr_from_fip(attrname='router_id')
         self._load_attr_from_fip(attrname='floating_ip_address')
-
-    def obj_make_compatible(self, primitive, target_version):
-        _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 2):
-            primitive.pop('description', None)
-        if _target_version < (1, 3):
-            primitive['internal_port'] = int(
-                str(primitive.pop(
-                    'internal_port_range',
-                    str(primitive.get('internal_port', '')))).split(':')[0])
-            primitive['external_port'] = int(
-                str(primitive.pop(
-                    'external_port_range',
-                    str(primitive.get('external_port', '')))).split(':')[0])
 
     @staticmethod
     def _modify_single_ports_to_db(result):
@@ -204,10 +187,10 @@ class PortForwarding(base.NeutronDbObject):
         if not internal_port_start or not external_port_start:
             return
 
-        result['external_port_range'] = '%s:%s' % (external_port_start,
-                                                   external_port_end)
-        result['internal_port_range'] = '%s:%s' % (internal_port_start,
-                                                   internal_port_end)
+        result['external_port_range'] = '{}:{}'.format(external_port_start,
+                                                       external_port_end)
+        result['internal_port_range'] = '{}:{}'.format(internal_port_start,
+                                                       internal_port_end)
 
     @staticmethod
     def _modify_single_ports_from_db(result,
@@ -226,7 +209,7 @@ class PortForwarding(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        result = super(PortForwarding, cls).modify_fields_from_db(db_obj)
+        result = super().modify_fields_from_db(db_obj)
         if 'internal_ip_address' in result:
             result['internal_ip_address'] = netaddr.IPAddress(
                 result['internal_ip_address'], version=lib_const.IP_VERSION_4)
@@ -252,7 +235,7 @@ class PortForwarding(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(PortForwarding, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         cls._modify_ports_range_to_db(result)
         cls._modify_single_ports_to_db(result)
         if 'internal_ip_address' in result:
@@ -277,9 +260,12 @@ class PortForwarding(base.NeutronDbObject):
 
     @staticmethod
     def _unique_port_forwarding(query):
+
+        def _row_one(row):
+            return row[1]
+
         q = query.order_by(l3.FloatingIP.router_id)
-        keyfunc = lambda row: row[1]
-        group_iterator = itertools.groupby(q, keyfunc)
+        group_iterator = itertools.groupby(q, _row_one)
 
         result = []
         for key, value in group_iterator:

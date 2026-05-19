@@ -19,6 +19,7 @@ from unittest import mock
 
 from neutron_lib.api.definitions import l3
 from neutron_lib import constants as n_const
+from neutron_lib.plugins.ml2 import api
 from neutron_lib.utils import net
 from oslo_utils import uuidutils
 
@@ -26,7 +27,7 @@ from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils as ovn_utils
 
 
-class FakeOvsdbNbOvnIdl(object):
+class FakeOvsdbNbOvnIdl:
 
     def __init__(self, **kwargs):
         self.lswitch_table = FakeOvsdbTable.create_one_ovsdb_table()
@@ -40,6 +41,8 @@ class FakeOvsdbNbOvnIdl(object):
         self.dhcp_options_table = FakeOvsdbTable.create_one_ovsdb_table()
         self.nat_table = FakeOvsdbTable.create_one_ovsdb_table()
         self.port_group_table = FakeOvsdbTable.create_one_ovsdb_table()
+        self.ha_chassis_group_table = FakeOvsdbTable.create_one_ovsdb_table()
+        self.ha_chassis_table = FakeOvsdbTable.create_one_ovsdb_table()
         self._tables = {}
         self._tables['Logical_Switch'] = self.lswitch_table
         self._tables['Logical_Switch_Port'] = self.lsp_table
@@ -52,6 +55,8 @@ class FakeOvsdbNbOvnIdl(object):
         self._tables['DHCP_Options'] = self.dhcp_options_table
         self._tables['NAT'] = self.nat_table
         self._tables['Port_Group'] = self.port_group_table
+        self._tables['HA_Chassis_Group'] = self.ha_chassis_group_table
+        self._tables['HA_Chassis'] = self.ha_chassis_table
         self.transaction = mock.MagicMock()
         self.create_transaction = mock.MagicMock()
         self.ls_add = mock.Mock()
@@ -60,11 +65,11 @@ class FakeOvsdbNbOvnIdl(object):
         self.set_lswitch_port = mock.Mock()
         self.delete_lswitch_port = mock.Mock()
         self.get_acls_for_lswitches = mock.Mock()
-        self.create_lrouter = mock.Mock()
         self.lrp_del = mock.Mock()
         self.lrp_set_options = mock.Mock()
+        self.lr_add = mock.Mock()
         self.update_lrouter = mock.Mock()
-        self.delete_lrouter = mock.Mock()
+        self.lr_del = mock.Mock()
         self.add_lrouter_port = mock.Mock()
         self.update_lrouter_port = mock.Mock()
         self.delete_lrouter_port = mock.Mock()
@@ -74,12 +79,13 @@ class FakeOvsdbNbOvnIdl(object):
         self.update_acls = mock.Mock()
         self.idl = mock.Mock()
         self.add_static_route = mock.Mock()
-        self.delete_static_route = mock.Mock()
+        self.delete_static_routes = mock.Mock()
         self.get_all_chassis_gateway_bindings = mock.Mock()
-        self.get_chassis_gateways = mock.Mock()
+        self.get_ha_chassis_group_from_chassis = mock.Mock()
         self.get_gateway_chassis_binding = mock.Mock()
         self.get_gateway_chassis_az_hints = mock.Mock()
         self.get_gateway_chassis_az_hints.return_value = []
+        self.get_chassis_gateways = mock.Mock()
         self.get_unhosted_gateways = mock.Mock()
         self.add_dhcp_options = mock.Mock()
         self.delete_dhcp_options = mock.Mock()
@@ -112,13 +118,10 @@ class FakeOvsdbNbOvnIdl(object):
         self.ls_set_dns_records = mock.Mock()
         self.get_floatingip = mock.Mock()
         self.get_floatingip.return_value = None
+        self.get_floatingips = mock.Mock()
+        self.get_floatingips.return_value = []
         self.check_revision_number = mock.Mock()
         self.lookup = mock.MagicMock()
-        # TODO(lucasagomes): The get_floatingip_by_ips() method is part
-        # of a backwards compatibility layer for the Pike -> Queens release,
-        # remove it in the Rocky release.
-        self.get_floatingip_by_ips = mock.Mock()
-        self.get_floatingip_by_ips.return_value = None
         self.get_router_floatingip_lbs = mock.Mock()
         self.get_router_floatingip_lbs.return_value = []
         self.is_col_present = mock.Mock()
@@ -133,6 +136,7 @@ class FakeOvsdbNbOvnIdl(object):
         self.pg_acl_del = mock.Mock()
         self.pg_del = mock.Mock()
         self.pg_add = mock.Mock()
+        self.pg_get = mock.Mock()
         self.get_port_group = mock.Mock()
         self.pg_add_ports = mock.Mock()
         self.pg_del_ports = mock.Mock()
@@ -143,6 +147,7 @@ class FakeOvsdbNbOvnIdl(object):
         self.lsp_list = mock.MagicMock()
         self.db_find = mock.Mock()
         self.db_find_rows = mock.Mock()
+        self.db_get = mock.Mock()
         self.db_set = mock.Mock()
         self.db_clear = mock.Mock()
         self.db_remove = mock.Mock()
@@ -163,9 +168,18 @@ class FakeOvsdbNbOvnIdl(object):
         self.ha_chassis_group_del = mock.Mock()
         self.ha_chassis_group_add_chassis = mock.Mock()
         self.ha_chassis_group_del_chassis = mock.Mock()
+        self.get_lrouter_port = mock.Mock()
+        self.get_lrouter_gw_ports = mock.Mock()
+        self.lrp_get = mock.Mock()
+        self.get_lrp_from_ha_chassis_group = mock.Mock(return_value=[])
+        self.get_schema_version = mock.Mock(return_value='3.6.0')
+        self.get_lrouter_port = mock.Mock()
+        self.schedule_unhosted_gateways = mock.Mock()
+        self.get_lrouter_by_lrouter_port = mock.Mock()
+        self.schedule_new_gateway = mock.Mock()
 
 
-class FakeOvsdbSbOvnIdl(object):
+class FakeOvsdbSbOvnIdl:
 
     def __init__(self, **kwargs):
         self.chassis_exists = mock.Mock()
@@ -178,30 +192,36 @@ class FakeOvsdbSbOvnIdl(object):
         self._get_chassis_physnets = mock.Mock()
         self._get_chassis_physnets.return_value = ['fake-physnet']
         self.get_chassis_and_physnets = mock.Mock()
-        self.get_gateway_chassis_from_cms_options = mock.Mock()
+        self.get_gateway_chassis_from_cms_options = mock.Mock(return_value=[])
+        self.get_extport_chassis_from_cms_options = mock.Mock(return_value=[])
         self.is_col_present = mock.Mock()
         self.is_col_present.return_value = False
+        self.db_find = mock.MagicMock()
+        self.db_find_rows = mock.MagicMock()
+        self.db_list_rows = mock.Mock()
         self.db_set = mock.Mock()
         self.lookup = mock.MagicMock()
         self.chassis_list = mock.MagicMock()
         self.is_table_present = mock.Mock()
         self.is_table_present.return_value = False
         self.get_chassis_by_card_serial_from_cms_options = mock.Mock()
+        self.get_schema_version = mock.Mock(return_value='3.6.0')
+        self.get_chassis_host_for_port = mock.Mock(return_value=set())
 
 
-class FakeOvsdbTransaction(object):
+class FakeOvsdbTransaction:
     def __init__(self, **kwargs):
         self.insert = mock.Mock()
 
 
-class FakePlugin(object):
+class FakePlugin:
 
     def __init__(self, **kwargs):
         self.get_ports = mock.Mock()
         self._get_port_security_group_bindings = mock.Mock()
 
 
-class FakeStandardAttribute(object):
+class FakeStandardAttribute:
 
     def __init__(self, _id=1, resource_type=mock.ANY, description=mock.ANY,
                  revision_number=1):
@@ -211,14 +231,14 @@ class FakeStandardAttribute(object):
         self.revision_number = revision_number
 
 
-class FakeQosNetworkPolicyBinding(object):
+class FakeQosNetworkPolicyBinding:
 
     def __init__(self, policy_id=mock.ANY, network_id=mock.ANY):
         self.policy_id = policy_id
         self.network_id = network_id
 
 
-class FakeQosFIPPolicyBinding(object):
+class FakeQosFIPPolicyBinding:
 
     def __init__(self, policy_id=mock.ANY, fip_id=mock.ANY):
         self.policy_id = policy_id
@@ -240,7 +260,7 @@ class FakeResource(dict):
             A dictionary with all methods
         """
         info = info or {}
-        super(FakeResource, self).__init__(info)
+        super().__init__(info)
         methods = methods or {}
 
         self.__name__ = type(self).__name__
@@ -275,8 +295,8 @@ class FakeResource(dict):
     def __repr__(self):
         reprkeys = sorted(k for k in self.__dict__.keys() if k[0] != '_' and
                           k != 'manager')
-        info = ", ".join("%s=%s" % (k, getattr(self, k)) for k in reprkeys)
-        return "<%s %s>" % (self.__class__.__name__, info)
+        info = ", ".join(f"{k}={getattr(self, k)}" for k in reprkeys)
+        return f"<{self.__class__.__name__} {info}>"
 
     def keys(self):
         return self._info.keys()
@@ -285,11 +305,11 @@ class FakeResource(dict):
         return self._info
 
     def update(self, info):
-        super(FakeResource, self).update(info)
+        super().update(info)
         self._add_details(info)
 
 
-class FakeNetwork(object):
+class FakeNetwork:
     """Fake one or more networks."""
 
     @staticmethod
@@ -309,7 +329,7 @@ class FakeNetwork(object):
             'id': 'network-id-' + fake_uuid,
             'name': 'network-name-' + fake_uuid,
             'status': 'ACTIVE',
-            'tenant_id': 'project-id-' + fake_uuid,
+            'project_id': 'project-id-' + fake_uuid,
             'admin_state_up': True,
             'shared': False,
             'subnets': [],
@@ -321,6 +341,7 @@ class FakeNetwork(object):
             'availability_zone_hints': [],
             'is_default': False,
             'standard_attr_id': 1,
+            'mtu': 1500,
         }
 
         # Overwrite default attributes.
@@ -330,11 +351,15 @@ class FakeNetwork(object):
                             loaded=True)
 
 
-class FakeNetworkContext(object):
+class FakeNetworkContext(api.NetworkContext):
     def __init__(self, network, segments):
         self.fake_network = network
         self.fake_segments = segments
         self._plugin_context = mock.MagicMock()
+
+    @property
+    def plugin_context(self):
+        return self._plugin_context
 
     @property
     def current(self):
@@ -349,12 +374,16 @@ class FakeNetworkContext(object):
         return self.fake_segments
 
 
-class FakeSubnetContext(object):
+class FakeSubnetContext:
     def __init__(self, subnet, original_subnet=None, network=None):
         self.fake_subnet = subnet
         self.fake_original_subnet = original_subnet
         self.fake_network = FakeNetworkContext(network, None)
         self._plugin_context = mock.MagicMock()
+
+    @property
+    def plugin_context(self):
+        return self._plugin_context
 
     @property
     def current(self):
@@ -392,6 +421,7 @@ class FakeOvsdbRow(FakeResource):
             'uuid': fake_uuid,
             'name': 'name-' + fake_uuid,
             'external_ids': {},
+            'additional_chassis': [],
         }
 
         # Set default methods.
@@ -401,6 +431,7 @@ class FakeOvsdbRow(FakeResource):
             'delvalue': None,
             'verify': None,
             'setkey': None,
+            'delkey': None,
         }
 
         # Overwrite default attributes and methods.
@@ -465,7 +496,7 @@ class FakeOvsdbTable(FakeResource):
         return result
 
 
-class FakePort(object):
+class FakePort:
     """Fake one or more ports."""
 
     @staticmethod
@@ -483,7 +514,7 @@ class FakePort(object):
         fake_uuid = uuidutils.generate_uuid()
         port_attrs = {
             'admin_state_up': True,
-            'allowed_address_pairs': [{}],
+            'allowed_address_pairs': [],
             'binding:host_id': 'binding-host-id-' + fake_uuid,
             'binding:profile': {},
             'binding:vif_details': {},
@@ -503,7 +534,7 @@ class FakePort(object):
             'port_security_enabled': True,
             'security_groups': [],
             'status': 'ACTIVE',
-            'tenant_id': 'project-id-' + fake_uuid,
+            'project_id': 'project-id-' + fake_uuid,
         }
 
         # Overwrite default attributes.
@@ -513,7 +544,7 @@ class FakePort(object):
                             loaded=True)
 
 
-class FakePortContext(object):
+class FakePortContext:
     def __init__(self, port, host, segments_to_bind):
         self.fake_port = port
         self.fake_host = host
@@ -533,7 +564,7 @@ class FakePortContext(object):
         return self.fake_segments_to_bind
 
 
-class FakeSecurityGroup(object):
+class FakeSecurityGroup:
     """Fake one or more security groups."""
 
     @staticmethod
@@ -553,7 +584,7 @@ class FakeSecurityGroup(object):
             'id': 'security-group-id-' + fake_uuid,
             'name': 'security-group-name-' + fake_uuid,
             'description': 'security-group-description-' + fake_uuid,
-            'tenant_id': 'project-id-' + fake_uuid,
+            'project_id': 'project-id-' + fake_uuid,
             'security_group_rules': [],
         }
 
@@ -564,7 +595,7 @@ class FakeSecurityGroup(object):
                             loaded=True)
 
 
-class FakeSecurityGroupRule(object):
+class FakeSecurityGroupRule:
     """Fake one or more security group rules."""
 
     @staticmethod
@@ -588,10 +619,10 @@ class FakeSecurityGroupRule(object):
             'port_range_min': 22,
             'protocol': 'tcp',
             'remote_group_id': None,
-            'remote_ip_prefix': '0.0.0.0/0',
-            'normalized_cidr': '0.0.0.0/0',
+            'remote_ip_prefix': n_const.IPv4_ANY,
+            'normalized_cidr': n_const.IPv4_ANY,
             'security_group_id': 'security-group-id-' + fake_uuid,
-            'tenant_id': 'project-id-' + fake_uuid,
+            'project_id': 'project-id-' + fake_uuid,
         }
 
         # Overwrite default attributes.
@@ -608,7 +639,7 @@ class FakeSecurityGroupRule(object):
                             loaded=True)
 
 
-class FakeSegment(object):
+class FakeSegment:
     """Fake one or more segments."""
 
     @staticmethod
@@ -638,7 +669,7 @@ class FakeSegment(object):
                             loaded=True)
 
 
-class FakeSubnet(object):
+class FakeSubnet:
     """Fake one or more subnets."""
 
     @staticmethod
@@ -659,7 +690,7 @@ class FakeSubnet(object):
             'name': 'subnet-name-' + fake_uuid,
             'network_id': 'network-id-' + fake_uuid,
             'cidr': '10.10.10.0/24',
-            'tenant_id': 'project-id-' + fake_uuid,
+            'project_id': 'project-id-' + fake_uuid,
             'enable_dhcp': True,
             'dns_nameservers': [],
             'allocation_pools': [],
@@ -678,7 +709,7 @@ class FakeSubnet(object):
                             loaded=True)
 
 
-class FakeFloatingIp(object):
+class FakeFloatingIp:
     """Fake one or more floating ips."""
 
     @staticmethod
@@ -694,9 +725,10 @@ class FakeFloatingIp(object):
 
         # Set default attributes.
         fake_uuid = uuidutils.generate_uuid()
+        standard_attr = FakeStandardAttribute()
         fip_attrs = {
             'id': 'fip-id-' + fake_uuid,
-            'tenant_id': '',
+            'project_id': '',
             'fixed_ip_address': '10.0.0.10',
             'fixed_port': FakePort.create_one_port(),
             'floating_ip_address': '172.21.0.100',
@@ -709,8 +741,8 @@ class FakeFloatingIp(object):
             'dns': '',
             'dns_domain': '',
             'dns_name': '',
-            'project_id': '',
-            'standard_attr': FakeStandardAttribute(),
+            'standard_attr': standard_attr,
+            'standard_attr_id': standard_attr.id,
             'qos_policy_binding': FakeQosFIPPolicyBinding(),
             'qos_network_policy_binding': FakeQosNetworkPolicyBinding(),
         }
@@ -722,7 +754,43 @@ class FakeFloatingIp(object):
                             loaded=True)
 
 
-class FakeOVNPort(object):
+class FakeRouter:
+    """Fake one or more Neutron routers."""
+
+    @staticmethod
+    def create_one_router(attrs=None):
+        """Create a fake router.
+
+        :param Dictionary attrs:
+            A dictionary with all attributes
+        :return:
+            A FakeResource object faking the router
+        """
+        attrs = attrs or {}
+
+        # Set default attributes.
+        router_id = uuidutils.generate_uuid()
+        router_attrs = {
+            'id': 'router-' + router_id,
+            'name': 'router-' + router_id,
+            'project_id': '',
+            'admin_state_up': True,
+            'status': 'ACTIVE',
+            'gw_port_id': {},
+            'enable_snat': True,
+            'flavor_id': None,
+            'extra_attributes': {},
+            'qos_policy_id': None,
+            'availability_zones': [],
+            'availability_zone_hints': [],
+        }
+
+        # Overwrite default attributes.
+        router_attrs.update(attrs)
+        return FakeResource(info=copy.deepcopy(router_attrs), loaded=True)
+
+
+class FakeOVNPort:
     """Fake one or more ports."""
 
     @staticmethod
@@ -756,7 +824,7 @@ class FakeOVNPort(object):
 
         # Overwrite default attributes.
         port_attrs.update(attrs)
-        return type('Logical_Switch_Port', (object, ), port_attrs)
+        return type('Logical_Switch_Port', (object, ), port_attrs)()
 
     @staticmethod
     def from_neutron_port(port):
@@ -779,10 +847,47 @@ class FakeOVNPort(object):
 
 
 FakeStaticRoute = collections.namedtuple(
-    'Static_Routes', ['ip_prefix', 'nexthop', 'external_ids'])
+    'Static_Routes', ['ip_prefix', 'nexthop', 'external_ids', 'bfd'],
+    defaults=([],))
 
 
-class FakeOVNRouter(object):
+class FakeOVNRouterPort:
+    """Fake one or more Logical Router Ports."""
+
+    @staticmethod
+    def create_one_port(attrs=None):
+        """Create a fake ovn Logical Router Port.
+
+        :param Dictionary attrs:
+            A dictionary with all attributes
+        :return:
+            A FakeResource object faking the port
+        """
+        attrs = attrs or {}
+
+        # Set default attributes.
+        fake_uuid = uuidutils.generate_uuid()
+        port_attrs = {
+            'enabled': True,
+            'external_ids': {},
+            'gateway_chassis': [],
+            'ha_chassis_group': [],
+            'ipv6_prefix': [],
+            'ipv6_ra_configs': {},
+            'mac': '',
+            'name': fake_uuid,
+            'networks': [],
+            'options': {},
+            'peer': '',
+            'status': '',
+        }
+
+        # Overwrite default attributes.
+        port_attrs.update(attrs)
+        return type('Logical_Router_Port', (object, ), port_attrs)()
+
+
+class FakeOVNRouter:
 
     @staticmethod
     def create_one_router(attrs=None):
@@ -799,7 +904,7 @@ class FakeOVNRouter(object):
 
         # Overwrite default attributes.
         router_attrs.update(attrs)
-        return type('Logical_Router', (object, ), router_attrs)
+        return type('Logical_Router', (object, ), router_attrs)()
 
     @staticmethod
     def from_neutron_router(router):
@@ -812,11 +917,11 @@ class FakeOVNRouter(object):
             return subnet_id
 
         external_ids = {
-            ovn_const.OVN_GW_PORT_EXT_ID_KEY: router.get('gw_port_id') or '',
             ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
                 router.get('name', 'no_router_name')}
 
         # Get the routes
+        ports = []
         routes = []
         for r in router.get('routes', []):
             routes.append(FakeStaticRoute(ip_prefix=r['destination'],
@@ -829,53 +934,62 @@ class FakeOVNRouter(object):
                 ovn_const.OVN_ROUTER_IS_EXT_GW: 'true',
                 ovn_const.OVN_SUBNET_EXT_ID_KEY: _get_subnet_id(gw_info)}
             routes.append(FakeStaticRoute(
-                ip_prefix='0.0.0.0/0', nexthop='',
+                ip_prefix=n_const.IPv4_ANY, nexthop='',
                 external_ids=external_ids))
+            ports.append(FakeOVNRouterPort.create_one_port(
+                attrs={
+                    'external_ids': {ovn_const.OVN_ROUTER_IS_EXT_GW: 'True'},
+                }))
 
         return FakeOVNRouter.create_one_router(
             {'external_ids': external_ids,
              'enabled': router.get('admin_state_up') or False,
              'name': ovn_utils.ovn_name(router['id']),
+             'ports': ports,
              'static_routes': routes})
 
 
-class FakeChassis(object):
+class FakeChassis:
 
     @staticmethod
     def create(attrs=None, az_list=None, chassis_as_gw=False,
                bridge_mappings=None, rp_bandwidths=None,
                rp_inventory_defaults=None, rp_hypervisors=None,
-               card_serial_number=None):
+               card_serial_number=None, chassis_as_extport=False,
+               datapath_type=None):
         cms_opts = []
         if az_list:
-            cms_opts.append("%s=%s" % (ovn_const.CMS_OPT_AVAILABILITY_ZONES,
-                                       ':'.join(az_list)))
+            cms_opts.append("{}={}".format(
+                ovn_const.CMS_OPT_AVAILABILITY_ZONES, ':'.join(az_list)))
         if chassis_as_gw:
             cms_opts.append(ovn_const.CMS_OPT_CHASSIS_AS_GW)
 
+        if chassis_as_extport:
+            cms_opts.append(ovn_const.CMS_OPT_CHASSIS_AS_EXTPORT_HOST)
+
         if rp_bandwidths:
-            cms_opts.append('%s=%s' % (n_const.RP_BANDWIDTHS,
-                                       ';'.join(rp_bandwidths)))
+            cms_opts.append('{}={}'.format(n_const.RP_BANDWIDTHS,
+                                           ';'.join(rp_bandwidths)))
         elif rp_bandwidths == '':  # Test wrongly defined parameter
             cms_opts.append('%s=' % n_const.RP_BANDWIDTHS)
 
         if rp_inventory_defaults:
-            inv_defaults = ';'.join('%s:%s' % (key, value) for key, value in
-                                    rp_inventory_defaults.items())
-            cms_opts.append('%s=%s' % (n_const.RP_INVENTORY_DEFAULTS,
-                                       inv_defaults))
+            inv_defaults = ';'.join('{}:{}'.format(
+                key, value) for key, value in rp_inventory_defaults.items())
+            cms_opts.append('{}={}'.format(n_const.RP_INVENTORY_DEFAULTS,
+                                           inv_defaults))
         elif rp_inventory_defaults == '':  # Test wrongly defined parameter
             cms_opts.append('%s=' % n_const.RP_INVENTORY_DEFAULTS)
 
         if rp_hypervisors:
-            cms_opts.append('%s=%s' % (ovn_const.RP_HYPERVISORS,
-                                       ';'.join(rp_hypervisors)))
+            cms_opts.append('{}={}'.format(n_const.RP_HYPERVISORS,
+                                           ';'.join(rp_hypervisors)))
         elif rp_hypervisors == '':  # Test wrongly defined parameter
-            cms_opts.append('%s=' % ovn_const.RP_HYPERVISORS)
+            cms_opts.append('%s=' % n_const.RP_HYPERVISORS)
 
         if card_serial_number:
-            cms_opts.append('%s=%s' % (ovn_const.CMS_OPT_CARD_SERIAL_NUMBER,
-                                       card_serial_number))
+            cms_opts.append('{}={}'.format(
+                ovn_const.CMS_OPT_CARD_SERIAL_NUMBER, card_serial_number))
 
         # NOTE(ralonsoh): LP#1990229, once min OVN version >= 20.06, the CMS
         # options and the bridge mappings should be stored only in
@@ -886,6 +1000,9 @@ class FakeChassis(object):
 
         if bridge_mappings:
             other_config['ovn-bridge-mappings'] = ','.join(bridge_mappings)
+
+        if datapath_type:
+            other_config[ovn_const.OVN_DATAPATH_TYPE] = datapath_type
 
         chassis_attrs = {
             'encaps': [],
@@ -899,4 +1016,4 @@ class FakeChassis(object):
 
         # Overwrite default attributes.
         chassis_attrs.update(attrs or {})
-        return type('Chassis', (object, ), chassis_attrs)
+        return type('Chassis', (object, ), chassis_attrs)()

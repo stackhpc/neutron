@@ -7,13 +7,13 @@ Configuration
 .. toctree::
    :maxdepth: 2
 
-   config-services-agent
-   config-ml2
+   config-active-active-l3gw
    config-address-scopes
    config-auto-allocation
    config-az
    config-bgp-dynamic-routing
-   config-dhcp-ha
+   config-bgp-floating-ip-over-l2-segmented-network
+   config-services-agent
    config-dns-int
    config-dns-int-ext-serv
    config-dns-res
@@ -22,25 +22,28 @@ Configuration
    config-fip-port-forwardings
    config-ipam
    config-ipv6
-   config-logging
    config-macvtap
+   config-metadata-caching
+   config-metadata-rate-limiting
+   config-ml2
    config-mtu
    config-ndp-proxy
    config-network-segment-ranges
    config-ovs-dpdk
    config-ovs-offload
    config-ovsfwdriver
+   config-logging
    config-qos
    config-qos-min-bw
    config-qos-min-pps
    config-rbac
    config-routed-networks
-   config-sfc
+   config-router-flavor-ovn
    config-sriov
-   config-subnet-pools
-   config-subnet-onboard
+   config-sfc
    config-service-subnets
-   config-bgp-floating-ip-over-l2-segmented-network
+   config-subnet-onboard
+   config-subnet-pools
    config-trunking
    config-wsgi
 

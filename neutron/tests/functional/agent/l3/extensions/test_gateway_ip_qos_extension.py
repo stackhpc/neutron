@@ -66,10 +66,11 @@ class RouterGatewayIPQosAgentExtensionTestFramework(
             direction=constants.EGRESS_DIRECTION)
 
     def setUp(self):
-        super(RouterGatewayIPQosAgentExtensionTestFramework, self).setUp()
+        super().setUp()
         self.conf.set_override('extensions', ['gateway_ip_qos'], 'agent')
         self.agent = neutron_l3_agent.L3NATAgentWithStateReport('agent1',
                                                                 self.conf)
+        self.agent.init_host()
         self._set_pull_mock()
         self.set_test_qos_rules(INGRESS_EGRESS_POLICY_ID,
                                 [self.test_bw_limit_rule_1,
@@ -191,8 +192,3 @@ class TestRouterGatewayIPQosAgentExtensionDVR(
 
     def test_ha_dvr_edge_router_gateway_ip_qos(self):
         self._test_dvr_gateway_ip_qos(enable_ha=True)
-
-
-class LinuxBridgeRouterGatewayIPQosAgentExtensionTestCase(
-        TestRouterGatewayIPQosAgentExtension):
-    INTERFACE_DRIVER = 'neutron.agent.linux.interface.BridgeInterfaceDriver'

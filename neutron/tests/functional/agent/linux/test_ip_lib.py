@@ -17,6 +17,7 @@ import collections
 import copy
 import itertools
 import signal
+import unittest
 
 import netaddr
 from neutron_lib import constants
@@ -57,11 +58,14 @@ TEST_IP_NUD_STATES = ((TEST_IP_NEIGH, 'permanent'),
 
 class IpLibTestFramework(functional_base.BaseSudoTestCase):
     def setUp(self):
-        super(IpLibTestFramework, self).setUp()
+        super().setUp()
         self._configure()
 
     def _configure(self):
         config.register_interface_driver_opts_helper(cfg.CONF)
+        # TODO(tkajinam): This is not needed theoretically but for some reasons
+        # the option defaults to None in tests. Make sure the expected default
+        # is used to avoid failure in the following import_object.
         cfg.CONF.set_override(
             'interface_driver',
             'neutron.agent.linux.interface.OVSInterfaceDriver')
@@ -271,7 +275,7 @@ class IpLibTestCase(IpLibTestFramework):
         self.addCleanup(ip.netns.delete, attr.namespace)
         self.assertFalse(ip_lib.vxlan_in_use(9999, namespace=attr.namespace))
         device = ip.add_vxlan('test_vxlan_device', 9999, local='fd00::1',
-            group=TEST_IP6_VXLAN_GROUP, dev='test_device')
+                              group=TEST_IP6_VXLAN_GROUP, dev='test_device')
         self.addCleanup(self._safe_delete_device, device)
         self.assertTrue(ip_lib.vxlan_in_use(9999, namespace=attr.namespace))
         device.link.delete()
@@ -612,6 +616,9 @@ class IpLibTestCase(IpLibTestFramework):
             cidr = netaddr.IPNetwork(ip_address['cidr'])
             self.assertNotEqual(ip_version, cidr.version)
 
+    def _get_cidrs_from_device(self, device_obj):
+        return [ip_info['cidr'] for ip_info in device_obj.addr.list()]
+
     def test_add_ip_address(self):
         ip_addresses = [
             (netaddr.IPNetwork("10.10.10.10/30"), "global", '10.10.10.11'),
@@ -628,21 +635,77 @@ class IpLibTestCase(IpLibTestFramework):
         self.assertRaises(RuntimeError,
                           device.addr.add, str(ip_address[0]), ip_address[1])
 
+    def test_add_ip_addresses(self):
+        expected_cidrs = [
+            "10.10.10.10/30",
+            "11.11.11.11/28",
+            "2801::1/120",
+            "fe80::/64"
+        ]
+        attr = self.generate_device_details(ip_cidrs=[])
+        device = self.manage_device(attr)
+
+        device.addr.add_multiple(expected_cidrs)
+
+        self.assertListEqual(
+            expected_cidrs,
+            self._get_cidrs_from_device(device)
+        )
+
     def test_delete_ip_address(self):
         attr = self.generate_device_details()
         cidr = attr.ip_cidrs[0]
         device = self.manage_device(attr)
 
-        device_cidrs = [ip_info['cidr'] for ip_info in device.addr.list()]
-        self.assertIn(cidr, device_cidrs)
+        device_cidrs_before_delete = self._get_cidrs_from_device(device)
+        self.assertIn(cidr, device_cidrs_before_delete)
 
         device.addr.delete(cidr)
-        device_cidrs = [ip_info['cidr'] for ip_info in device.addr.list()]
-        self.assertNotIn(cidr, device_cidrs)
+        device_cidrs_after_delete = self._get_cidrs_from_device(device)
+        self.assertNotIn(cidr, device_cidrs_after_delete)
 
         # Try to delete not existing IP address, it should be just fine and
         # finish without any error raised
         device.addr.delete(cidr)
+
+    def test_delete_all_ip_addresses(self):
+        cidrs = [
+            "10.10.10.10/30",
+            "11.11.11.11/28",
+            "2801::1/120",
+            "fe80::/64"
+        ]
+        attr = self.generate_device_details(ip_cidrs=cidrs)
+        device = self.manage_device(attr)
+
+        device_cidrs_before_delete = self._get_cidrs_from_device(device)
+        self.assertCountEqual(cidrs, device_cidrs_before_delete)
+
+        device.addr.delete_multiple(cidrs)
+
+        self.assertEqual(0, len(device.addr.list()))
+
+    def test_delete_some_ip_addresses(self):
+        cidrs = [
+            "10.10.10.10/30",
+            "11.11.11.11/28",
+            "2801::1/120",
+            "fe80::/64"
+        ]
+        attr = self.generate_device_details(ip_cidrs=cidrs)
+        device = self.manage_device(attr)
+
+        device_cidrs_before_delete = self._get_cidrs_from_device(device)
+        self.assertCountEqual(cidrs, device_cidrs_before_delete)
+
+        # delete the last two cidrs
+        device.addr.delete_multiple(cidrs[-2:])
+
+        # confirm only remaining cidrs are present
+        self.assertCountEqual(
+            cidrs[:2],
+            self._get_cidrs_from_device(device)
+        )
 
     def test_flush_ip_addresses(self):
         ip_addresses = [
@@ -681,7 +744,7 @@ class TestSetIpNonlocalBind(functional_base.BaseSudoTestCase):
 class NamespaceTestCase(functional_base.BaseSudoTestCase):
 
     def setUp(self):
-        super(NamespaceTestCase, self).setUp()
+        super().setUp()
         self.namespace = 'test_ns_' + uuidutils.generate_uuid()
         ip_lib.create_network_namespace(self.namespace)
         self.addCleanup(self._delete_namespace)
@@ -712,8 +775,12 @@ class NamespaceTestCase(functional_base.BaseSudoTestCase):
 
 class IpMonitorTestCase(functional_base.BaseLoggingTestCase):
 
+    # TODO(ralonsoh): refactor this test to make it compatible after the
+    # eventlet removal.
+    @unittest.skip('This test is skipped after the eventlet removal and '
+                   'needs to be refactored')
     def setUp(self):
-        super(IpMonitorTestCase, self).setUp()
+        super().setUp()
         self.addCleanup(self._cleanup)
         self.namespace = 'ns_' + uuidutils.generate_uuid()
         priv_ip_lib.create_netns(self.namespace)
@@ -746,7 +813,7 @@ class IpMonitorTestCase(functional_base.BaseLoggingTestCase):
     def _read_file(self, ip_addresses):
         try:
             registers = []
-            with open(self.temp_file, 'r') as f:
+            with open(self.temp_file) as f:
                 data = f.read()
                 for line in data.splitlines():
                     register = jsonutils.loads(line)
@@ -757,7 +824,7 @@ class IpMonitorTestCase(functional_base.BaseLoggingTestCase):
                 if ip_address not in registers:
                     return False
             return True
-        except (OSError, IOError, ValueError):
+        except (OSError, ValueError):
             return False
 
     def _check_read_file(self, ip_addresses):
@@ -765,7 +832,7 @@ class IpMonitorTestCase(functional_base.BaseLoggingTestCase):
             utils.wait_until_true(lambda: self._read_file(ip_addresses),
                                   timeout=30)
         except utils.WaitTimeout:
-            with open(self.temp_file, 'r') as f:
+            with open(self.temp_file) as f:
                 registers = f.read()
             self.fail('Defined IP addresses: %s, IP addresses registered: %s' %
                       (ip_addresses, registers))
@@ -858,7 +925,7 @@ class IpMonitorTestCase(functional_base.BaseLoggingTestCase):
 class IpRouteCommandTestCase(functional_base.BaseSudoTestCase):
 
     def setUp(self):
-        super(IpRouteCommandTestCase, self).setUp()
+        super().setUp()
         self.namespace = self.useFixture(net_helpers.NamespaceFixture()).name
         ip_lib.IPWrapper(self.namespace).add_dummy('test_device')
         self.device = ip_lib.IPDevice('test_device', namespace=self.namespace)
@@ -872,14 +939,17 @@ class IpRouteCommandTestCase(functional_base.BaseSudoTestCase):
     def _assert_route(self, ip_version, table=None, source_prefix=None,
                       cidr=None, scope=None, via=None, metric=None,
                       not_in=False):
+        routes = self.device.route.list_routes(ip_version, table=table)
         if not_in:
-            fn = lambda: cmp not in self.device.route.list_routes(ip_version,
-                                                                  table=table)
-            msg = 'Route found: %s'
+            def fn():
+                return cmp not in routes
+            msg = 'Route found: %s\nRoutes present: {routes}'.format(
+                routes=routes)
         else:
-            fn = lambda: cmp in self.device.route.list_routes(ip_version,
-                                                              table=table)
-            msg = 'Route not found: %s'
+            def fn():
+                return cmp in routes
+            msg = 'Route not found: %s\nRoutes present: {routes}'.format(
+                routes=routes)
 
         if cidr:
             ip_version = utils.get_ip_version(cidr)
@@ -1012,7 +1082,7 @@ class IpRouteCommandTestCase(functional_base.BaseSudoTestCase):
 class IpAddrCommandTestCase(functional_base.BaseSudoTestCase):
 
     def setUp(self):
-        super(IpAddrCommandTestCase, self).setUp()
+        super().setUp()
         self.namespace = self.useFixture(net_helpers.NamespaceFixture()).name
         ip_lib.IPWrapper(self.namespace).add_dummy('test_device')
         self.device = ip_lib.IPDevice('test_device', namespace=self.namespace)

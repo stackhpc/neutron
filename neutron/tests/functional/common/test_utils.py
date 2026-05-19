@@ -29,8 +29,8 @@ class TestWaitUntilTrue(base.BaseLoggingTestCase):
             utils.wait_until_true(lambda: False, 2)
 
 
-class _TestIsSessionActive(testlib_api.SqlTestCase):
-
+class TestIsSessionActive(testlib_api.SqlTestCase,
+                          testlib_api.MySQLTestCaseMixin):
     DRIVER = None
 
     def setUp(self):
@@ -38,8 +38,8 @@ class _TestIsSessionActive(testlib_api.SqlTestCase):
             self.skipTest('No driver defined')
         super().setUp()
 
-    def test_1(self):
-        context = n_context.Context(user_id=None, tenant_id=None,
+    def test_is_session_active(self):
+        context = n_context.Context(user_id=None, project_id=None,
                                     is_admin=True, overwrite=False)
         self.assertFalse(db_api.is_session_active(context.session))
         with db_api.CONTEXT_WRITER.using(context):
@@ -47,13 +47,3 @@ class _TestIsSessionActive(testlib_api.SqlTestCase):
             self.assertTrue(db_api.is_session_active(context.session))
 
         self.assertFalse(db_api.is_session_active(context.session))
-
-
-class TestIsSessionActivePostgreSQL(testlib_api.PostgreSQLTestCaseMixin,
-                                    _TestIsSessionActive):
-    pass
-
-
-class TestIsSessionActiveMySQL(testlib_api.MySQLTestCaseMixin,
-                               _TestIsSessionActive):
-    pass

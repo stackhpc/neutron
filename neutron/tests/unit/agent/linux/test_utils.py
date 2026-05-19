@@ -12,7 +12,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
 import signal
 import socket
 from unittest import mock
@@ -21,7 +20,6 @@ import testtools
 
 from neutron_lib import exceptions
 from neutron_lib import fixture as lib_fixtures
-from oslo_config import cfg
 import oslo_i18n
 
 from neutron.agent.linux import utils
@@ -34,10 +32,10 @@ _marker = object()
 
 class AgentUtilsExecuteTest(base.BaseTestCase):
     def setUp(self):
-        super(AgentUtilsExecuteTest, self).setUp()
+        super().setUp()
         self.test_file = self.get_temp_file_path('test_execute.tmp')
         open(self.test_file, 'w').close()
-        self.process = mock.patch('eventlet.green.subprocess.Popen').start()
+        self.process = mock.patch('subprocess.Popen').start()
         self.process.return_value.returncode = 0
         self.mock_popen = self.process.return_value.communicate
 
@@ -177,7 +175,7 @@ class AgentUtilsExecuteTest(base.BaseTestCase):
 
 class AgentUtilsExecuteEncodeTest(base.BaseTestCase):
     def setUp(self):
-        super(AgentUtilsExecuteEncodeTest, self).setUp()
+        super().setUp()
         self.test_file = self.get_temp_file_path('test_execute.tmp')
         open(self.test_file, 'w').close()
 
@@ -263,7 +261,7 @@ class TestKillProcess(base.BaseTestCase):
 class TestGetCmdlineFromPid(base.BaseTestCase):
 
     def setUp(self):
-        super(TestGetCmdlineFromPid, self).setUp()
+        super().setUp()
         self.pid = 34
         self.process_is_running_mock = mock.patch.object(
             utils, "process_is_running").start()
@@ -274,7 +272,7 @@ class TestGetCmdlineFromPid(base.BaseTestCase):
             lib_fixtures.OpenFixture('/proc/%s/cmdline' % self.pid, process)
         ).mock_open
         cmdline = utils.get_cmdline_from_pid(self.pid)
-        mock_open.assert_called_once_with('/proc/%s/cmdline' % self.pid, 'r')
+        mock_open.assert_called_once_with('/proc/%s/cmdline' % self.pid)
         self.assertEqual(expected_cmd, cmdline)
 
     def test_cmdline_separated_with_null_char(self):
@@ -306,9 +304,9 @@ class TestGetCmdlineFromPid(base.BaseTestCase):
         mock_open = self.useFixture(
             lib_fixtures.OpenFixture('/proc/%s/cmdline' % self.pid, 'process')
         ).mock_open
-        mock_open.side_effect = IOError()
+        mock_open.side_effect = OSError()
         cmdline = utils.get_cmdline_from_pid(self.pid)
-        mock_open.assert_called_once_with('/proc/%s/cmdline' % self.pid, 'r')
+        mock_open.assert_called_once_with('/proc/%s/cmdline' % self.pid)
         self.assertEqual([], cmdline)
 
 
@@ -395,12 +393,12 @@ class TestPathUtilities(base.BaseTestCase):
             ['/bar/../foo', 'input_param'], 'proc_name'))
 
 
-class FakeUser(object):
+class FakeUser:
     def __init__(self, name):
         self.pw_name = name
 
 
-class FakeGroup(object):
+class FakeGroup:
     def __init__(self, name):
         self.gr_name = name
 
@@ -484,86 +482,3 @@ class TestUnixDomainHttpConnection(base.BaseTestCase):
                     mock.call().connect('/the/path')]
                 )
                 self.assertEqual(conn.timeout, 3)
-
-
-class TestUnixDomainHttpProtocol(base.BaseTestCase):
-    def setUp(self):
-        super(TestUnixDomainHttpProtocol, self).setUp()
-        self.ewhi = mock.patch('eventlet.wsgi.HttpProtocol.__init__').start()
-
-    def test_init_empty_client(self):
-        for addr in ('', b''):
-            utils.UnixDomainHttpProtocol(mock.Mock(), addr, mock.Mock())
-            self.ewhi.assert_called_once_with(mock.ANY, mock.ANY,
-                                              ('<local>', 0), mock.ANY)
-            self.ewhi.reset_mock()
-
-    def test_init_with_client(self):
-        utils.UnixDomainHttpProtocol(mock.Mock(), 'foo', mock.Mock())
-        self.ewhi.assert_called_once_with(mock.ANY, mock.ANY, 'foo', mock.ANY)
-
-    def test_init_new_style_empty_client(self):
-        conn_state = ['', mock.Mock(), mock.Mock()]
-        # have to make a copy since the init will modify what we pass
-        csc = copy.copy(conn_state)
-        csc[0] = ('<local>', 0)
-        utils.UnixDomainHttpProtocol(conn_state, mock.Mock())
-        self.ewhi.assert_called_once_with(mock.ANY, csc, mock.ANY)
-
-    def test_init_new_style_client(self):
-        conn_state = ['foo', mock.Mock(), mock.Mock()]
-        utils.UnixDomainHttpProtocol(conn_state, mock.Mock())
-        self.ewhi.assert_called_once_with(mock.ANY, conn_state, mock.ANY)
-
-    def test_init_unknown_client(self):
-        utils.UnixDomainHttpProtocol('foo')
-        self.ewhi.assert_called_once_with(mock.ANY, 'foo')
-
-
-class TestUnixDomainWSGIServer(base.BaseTestCase):
-    def setUp(self):
-        super(TestUnixDomainWSGIServer, self).setUp()
-        self.eventlet_p = mock.patch.object(utils, 'eventlet')
-        self.eventlet = self.eventlet_p.start()
-
-    def test_start(self):
-        self.server = utils.UnixDomainWSGIServer('test')
-        mock_app = mock.Mock()
-        with mock.patch.object(self.server, '_launch') as launcher:
-            self.server.start(mock_app, '/the/path', workers=5, backlog=128)
-            self.eventlet.assert_has_calls([
-                mock.call.listen(
-                    '/the/path',
-                    family=socket.AF_UNIX,
-                    backlog=128
-                )]
-            )
-            launcher.assert_called_once_with(mock_app, workers=5)
-
-    def test_run(self):
-        self.server = utils.UnixDomainWSGIServer('test')
-        self.server._run('app', 'sock')
-
-        self.eventlet.wsgi.server.assert_called_once_with(
-            'sock',
-            'app',
-            protocol=utils.UnixDomainHttpProtocol,
-            log=mock.ANY,
-            log_format=cfg.CONF.wsgi_log_format,
-            max_size=self.server.num_threads
-        )
-
-    def test_num_threads(self):
-        num_threads = 8
-        self.server = utils.UnixDomainWSGIServer('test',
-                                                 num_threads=num_threads)
-        self.server._run('app', 'sock')
-
-        self.eventlet.wsgi.server.assert_called_once_with(
-            'sock',
-            'app',
-            protocol=utils.UnixDomainHttpProtocol,
-            log=mock.ANY,
-            log_format=cfg.CONF.wsgi_log_format,
-            max_size=num_threads
-        )

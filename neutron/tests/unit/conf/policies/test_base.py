@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import tempfile
 import warnings
 
 from neutron_lib import context
@@ -57,17 +58,13 @@ class PolicyBaseTestCase(tests_base.BaseTestCase):
         # That tests are testing only new default policies.
         cfg.CONF.set_override(
             'enforce_new_defaults', True, group='oslo_policy')
-        # TODO(slaweq): Remove that override once fix
-        # https://review.opendev.org/c/openstack/oslo.policy/+/804980 will be
-        # merged and released in oslo_policy
-        cfg.CONF.set_override(
-            'enforce_scope', True, group='oslo_policy')
-        super(PolicyBaseTestCase, self).setUp()
+        super().setUp()
         self.project_id = uuidutils.generate_uuid()
         self.system_user_id = uuidutils.generate_uuid()
         self.user_id = uuidutils.generate_uuid()
         self._prepare_system_scope_personas()
         self._prepare_project_scope_personas()
+        self._prepare_service_persona()
         self.alt_project_id = uuidutils.generate_uuid()
 
     def _prepare_system_scope_personas(self):
@@ -87,7 +84,11 @@ class PolicyBaseTestCase(tests_base.BaseTestCase):
     def _prepare_project_scope_personas(self):
         self.project_admin_ctx = context.Context(
             user_id=self.user_id,
-            roles=['admin', 'member', 'reader'],
+            roles=['admin', 'manager', 'member', 'reader'],
+            project_id=self.project_id)
+        self.project_manager_ctx = context.Context(
+            user_id=self.user_id,
+            roles=['manager', 'member', 'reader'],
             project_id=self.project_id)
         self.project_member_ctx = context.Context(
             user_id=self.user_id,
@@ -98,11 +99,17 @@ class PolicyBaseTestCase(tests_base.BaseTestCase):
             roles=['reader'],
             project_id=self.project_id)
 
+    def _prepare_service_persona(self):
+        self.service_ctx = context.Context(
+            user_id='service',
+            roles=['service'],
+            project_id='service')
+
 
 class RuleScopesTestCase(PolicyBaseTestCase):
 
     def setUp(self):
-        super(RuleScopesTestCase, self).setUp()
+        super().setUp()
         policy.init()
 
     def test_rules_are_single_scoped(self):
@@ -113,13 +120,24 @@ class RuleScopesTestCase(PolicyBaseTestCase):
             if len(rule.scope_types) == 1:
                 # If rule has only one scope, it's fine
                 continue
-            else:
-                expected_scope_types = SCOPE_TYPES_EXCEPTIONS.get(
-                    rule_name, [])
-                fail_msg = (
-                    "Rule %s have scope types %s which are not defined "
-                    "in the exceptions list: %s" % (
-                        rule_name, rule.scope_types, expected_scope_types))
-                self.assertListEqual(expected_scope_types,
-                                     rule.scope_types,
-                                     fail_msg)
+            expected_scope_types = SCOPE_TYPES_EXCEPTIONS.get(rule_name, [])
+            fail_msg = (
+                "Rule %s have scope types %s which are not defined "
+                "in the exceptions list: %s" % (
+                    rule_name, rule.scope_types, expected_scope_types))
+            self.assertListEqual(expected_scope_types,
+                                 rule.scope_types,
+                                 fail_msg)
+
+
+def write_policies(policies):
+    env_path = tempfile.mkdtemp(prefix='policy_test_', dir='/tmp/')
+    with tempfile.NamedTemporaryFile('w+', dir=env_path,
+                                     delete=False) as policy_file:
+        policy_file.write(str(policies))
+    return env_path, policy_file.name
+
+
+def reload_policies(policy_file):
+    policy.reset()
+    policy.init(policy_file=policy_file, suppress_deprecation_warnings=True)

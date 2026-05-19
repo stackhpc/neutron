@@ -101,7 +101,7 @@
         - { dest: '/etc/neutron/neutron.conf', section: 'DEFAULT', option: 'notification_drivers', value: 'ovn-qos' }
         - { dest: '/etc/neutron/plugins/ml2/ml2_conf.ini', section: 'ml2', option: 'mechanism_drivers', value: 'ovn' }
         - { dest: '/etc/neutron/plugins/ml2/ml2_conf.ini', section: 'ml2', option: 'type_drivers', value: 'geneve,vxlan,vlan,flat' }
-        - { dest: '/etc/neutron/plugins/ml2/ml2_conf.ini', section: 'ml2', option: 'tenant_network_types', value: 'geneve' }
+        - { dest: '/etc/neutron/plugins/ml2/ml2_conf.ini', section: 'ml2', option: 'project_network_types', value: 'geneve' }
         - { dest: '/etc/neutron/plugins/ml2/ml2_conf.ini', section: 'ml2_type_geneve', option: 'vni_ranges', value: '1:65536' }
         - { dest: '/etc/neutron/plugins/ml2/ml2_conf.ini', section: 'ml2_type_geneve', option: 'max_header_size', value: '38' }
         - { dest: '/etc/neutron/plugins/ml2/ml2_conf.ini', section: 'ovn', option: 'ovn_nb_connection', value: '"tcp:{{ ovn_db_ip }}:6641"' }

@@ -10,6 +10,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -23,6 +24,24 @@ RESOURCE_PATH = '/subnetpools/{id}'
 ONBOARD_PATH = '/subnetpools/{id}/onboard_network_subnets'
 ADD_PREFIXES_PATH = '/subnetpools/{id}/add_prefixes'
 REMOVE_PREFIXES_PATH = '/subnetpools/{id}/remove_prefixes'
+TAGS_PATH = RESOURCE_PATH + '/tags'
+TAG_PATH = RESOURCE_PATH + '/tags/{tag_id}'
+
+ACTION_GET_TAGS: list[policy.Operation] = [
+    {'method': 'GET', 'path': TAGS_PATH},
+    {'method': 'GET', 'path': TAG_PATH},
+]
+ACTION_PUT_TAGS: list[policy.Operation] = [
+    {'method': 'PUT', 'path': TAGS_PATH},
+    {'method': 'PUT', 'path': TAG_PATH},
+]
+ACTION_POST_TAGS: list[policy.Operation] = [
+    {'method': 'POST', 'path': TAGS_PATH},
+]
+ACTION_DELETE_TAGS: list[policy.Operation] = [
+    {'method': 'DELETE', 'path': TAGS_PATH},
+    {'method': 'DELETE', 'path': TAG_PATH},
+]
 
 
 rules = [
@@ -33,9 +52,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='create_subnetpool',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Create a subnetpool',
         operations=[
@@ -46,7 +63,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='create_subnetpool',
-            check_str=base.RULE_ANY,
+            check_str=neutron_policy.RULE_ANY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -63,7 +80,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='create_subnetpool:shared',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -82,15 +99,26 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='create_subnetpool:is_default',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='create_subnetpool:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description='Create the subnetpool tags',
+        operations=ACTION_POST_TAGS,
+        deprecated_rule=policy.DeprecatedRule(
+            name='create_subnetpools_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
+    ),
+    policy.DocumentedRuleDefault(
         name='get_subnetpool',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_READER,
+        check_str=neutron_policy.policy_or(
+            base.ADMIN_OR_PROJECT_READER,
             'rule:shared_subnetpools'
         ),
         scope_types=['project'],
@@ -107,17 +135,33 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='get_subnetpool',
-            check_str=base.policy_or(
-                base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.policy_or(
+                neutron_policy.RULE_ADMIN_OR_OWNER,
                 'rule:shared_subnetpools'),
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='get_subnetpool:tags',
+        check_str=neutron_policy.policy_or(
+            base.ADMIN_OR_PROJECT_READER,
+            'rule:shared_subnetpools'
+        ),
+        scope_types=['project'],
+        description='Get the subnetpool tags',
+        operations=ACTION_GET_TAGS,
+        deprecated_rule=policy.DeprecatedRule(
+            name='get_subnetpools_tags',
+            check_str=neutron_policy.policy_or(
+                base.ADMIN_OR_PROJECT_READER,
+                'rule:shared_subnetpools'
+            ),
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
+    ),
+    policy.DocumentedRuleDefault(
         name='update_subnetpool',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Update a subnetpool',
         operations=[
@@ -128,7 +172,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='update_subnetpool',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -145,15 +189,25 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='update_subnetpool:is_default',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='update_subnetpool:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description='Update the subnetpool tags',
+        operations=ACTION_PUT_TAGS,
+        deprecated_rule=policy.DeprecatedRule(
+            name='update_subnetpools_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
+    ),
+    policy.DocumentedRuleDefault(
         name='delete_subnetpool',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Delete a subnetpool',
         operations=[
@@ -164,15 +218,25 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='delete_subnetpool',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='delete_subnetpool:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description='Delete the subnetpool tags',
+        operations=ACTION_DELETE_TAGS,
+        deprecated_rule=policy.DeprecatedRule(
+            name='delete_subnetpools_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
+    ),
+    policy.DocumentedRuleDefault(
         name='onboard_network_subnets',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Onboard existing subnet into a subnetpool',
         operations=[
@@ -183,15 +247,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='onboard_network_subnets',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='add_prefixes',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Add prefixes to a subnetpool',
         operations=[
@@ -202,15 +264,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='add_prefixes',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='remove_prefixes',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Remove unallocated prefixes from a subnetpool',
         operations=[
@@ -221,7 +281,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='remove_prefixes',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),

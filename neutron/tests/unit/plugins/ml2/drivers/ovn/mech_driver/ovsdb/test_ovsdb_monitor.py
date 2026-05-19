@@ -16,6 +16,7 @@ import copy
 import datetime
 import os
 from unittest import mock
+import uuid
 
 from neutron_lib.plugins import constants as n_const
 from neutron_lib.plugins import directory
@@ -30,6 +31,7 @@ from ovsdbapp.backend.ovs_idl import idlutils
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import hash_ring_manager
 from neutron.common.ovn import utils
+from neutron.common import utils as n_utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_hash_ring_db
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import impl_idl_ovn
@@ -60,7 +62,12 @@ OVN_NB_SCHEMA = {
                 "port_security": {"type": {"key": "string",
                                            "min": 0,
                                            "max": "unlimited"}},
-                "up": {"type": {"key": "boolean", "min": 0, "max": 1}}},
+                "up": {"type": {"key": "boolean", "min": 0, "max": 1}},
+                "enabled": {"type": {"key": "boolean", "min": 0, "max": 1}},
+                "external_ids": {
+                    "type": {"key": "string", "value": "string",
+                             "min": 0, "max": "unlimited"}},
+            },
             "indexes": [["name"]],
             "isRoot": False,
         },
@@ -100,7 +107,7 @@ ROW_UPDATE = ovsdb_monitor.BaseEvent.ROW_UPDATE
 class TestOvnDbNotifyHandler(base.BaseTestCase):
 
     def setUp(self):
-        super(TestOvnDbNotifyHandler, self).setUp()
+        super().setUp()
         self.handler = ovsdb_monitor.OvnDbNotifyHandler(mock.ANY)
 
     def test_watch_and_unwatch_events(self):
@@ -160,7 +167,7 @@ class TestOvnConnection(base.BaseTestCase):
 
     def setUp(self):
         ovn_conf.register_opts()
-        super(TestOvnConnection, self).setUp()
+        super().setUp()
 
     @mock.patch.object(idlutils, 'get_schema_helper')
     @mock.patch.object(idlutils, 'wait_for_change')
@@ -171,7 +178,8 @@ class TestOvnConnection(base.BaseTestCase):
         impl_idl_ovn.Backend.schema = schema
         helper = impl_idl_ovn.OvsdbNbOvnIdl.schema_helper
         _idl = idl_class.from_server('punix:/fake', helper, mock.Mock())
-        self.ovn_connection = connection.Connection(_idl, mock.Mock())
+        with mock.patch.object(connection, 'TransactionQueue'):
+            self.ovn_connection = connection.Connection(_idl, mock.Mock())
         with mock.patch.object(poller, 'Poller'), \
                 mock.patch('threading.Thread'):
             self.ovn_connection.start()
@@ -182,9 +190,9 @@ class TestOvnConnection(base.BaseTestCase):
 
     def test_connection_nb_start(self):
         ovn_conf.cfg.CONF.set_override('ovn_nb_private_key', 'foo-key', 'ovn')
-        Stream.ssl_set_private_key_file = mock.Mock()
-        Stream.ssl_set_certificate_file = mock.Mock()
-        Stream.ssl_set_ca_cert_file = mock.Mock()
+        mock.patch.object(Stream, 'ssl_set_private_key_file').start()
+        mock.patch.object(Stream, 'ssl_set_certificate_file').start()
+        mock.patch.object(Stream, 'ssl_set_ca_cert_file').start()
 
         self._test_connection_start(idl_class=ovsdb_monitor.OvnNbIdl,
                                     schema='OVN_Northbound')
@@ -202,7 +210,7 @@ class TestOvnIdlDistributedLock(base.BaseTestCase):
 
     def setUp(self):
         ovn_conf.register_opts()
-        super(TestOvnIdlDistributedLock, self).setUp()
+        super().setUp()
         self.node_uuid = uuidutils.generate_uuid()
         self.fake_driver = mock.Mock()
         self.fake_driver.node_uuid = self.node_uuid
@@ -218,7 +226,8 @@ class TestOvnIdlDistributedLock(base.BaseTestCase):
 
         self.mock_get_node = mock.patch.object(
             hash_ring_manager.HashRingManager,
-            'get_node', return_value=self.node_uuid).start()
+            'get_node',
+            return_value=(self.node_uuid, timeutils.utcnow())).start()
         self.mock_update_tables = mock.patch.object(
             self.idl, 'update_tables').start()
 
@@ -229,16 +238,22 @@ class TestOvnIdlDistributedLock(base.BaseTestCase):
         self.assertEqual(2, len(self.idl.notify_handler.mock_calls))
 
     @mock.patch.object(ovn_hash_ring_db, 'touch_node')
-    def test_notify(self, mock_touch_node):
+    def test_notify_updated_node(self, mock_touch_node):
         self.idl.notify(self.fake_event, self.fake_row)
+        mock_touch_node.assert_not_called()
+        self._assert_has_notify_calls()
 
+    @mock.patch.object(ovn_hash_ring_db, 'touch_node')
+    def test_notify_not_updated_node(self, mock_touch_node):
+        updated_at = timeutils.utcnow() - datetime.timedelta(
+            seconds=ovn_const.HASH_RING_CACHE_TIMEOUT + 10)
+        self.mock_get_node.return_value = (self.node_uuid, updated_at)
+        self.idl.notify(self.fake_event, self.fake_row)
         mock_touch_node.assert_called_once_with(mock.ANY, self.node_uuid)
         self._assert_has_notify_calls()
 
     @mock.patch.object(ovn_hash_ring_db, 'touch_node')
     def test_notify_skip_touch_node(self, mock_touch_node):
-        # Set a time for last touch
-        self.idl._last_touch = timeutils.utcnow()
         self.idl.notify(self.fake_event, self.fake_row)
 
         # Assert that touch_node() wasn't called
@@ -247,15 +262,12 @@ class TestOvnIdlDistributedLock(base.BaseTestCase):
 
     @mock.patch.object(ovn_hash_ring_db, 'touch_node')
     def test_notify_last_touch_expired(self, mock_touch_node):
-        # Set a time for last touch
-        self.idl._last_touch = timeutils.utcnow()
+        # make the node old enough to require a touch
+        updated_at = timeutils.utcnow() - datetime.timedelta(
+            seconds=ovn_const.HASH_RING_TOUCH_INTERVAL + 1)
+        self.mock_get_node.return_value = (self.node_uuid, updated_at)
 
-        # Let's expire the touch node interval for the next utcnow()
-        with mock.patch.object(timeutils, 'utcnow') as mock_utcnow:
-            mock_utcnow.return_value = (
-                self.idl._last_touch + datetime.timedelta(
-                    seconds=ovn_const.HASH_RING_TOUCH_INTERVAL + 1))
-            self.idl.notify(self.fake_event, self.fake_row)
+        self.idl.notify(self.fake_event, self.fake_row)
 
         # Assert that touch_node() was invoked
         mock_touch_node.assert_called_once_with(mock.ANY, self.node_uuid)
@@ -264,6 +276,9 @@ class TestOvnIdlDistributedLock(base.BaseTestCase):
     @mock.patch.object(ovsdb_monitor.LOG, 'exception')
     @mock.patch.object(ovn_hash_ring_db, 'touch_node')
     def test_notify_touch_node_exception(self, mock_touch_node, mock_log):
+        updated_at = timeutils.utcnow() - datetime.timedelta(
+            seconds=ovn_const.HASH_RING_CACHE_TIMEOUT + 10)
+        self.mock_get_node.return_value = (self.node_uuid, updated_at)
         mock_touch_node.side_effect = Exception('BoOooOmmMmmMm')
         self.idl.notify(self.fake_event, self.fake_row)
 
@@ -275,79 +290,17 @@ class TestOvnIdlDistributedLock(base.BaseTestCase):
         self._assert_has_notify_calls()
 
     def test_notify_different_node(self):
-        self.mock_get_node.return_value = 'different-node-uuid'
+        self.mock_get_node.return_value = ('different-node-uuid',
+                                           timeutils.utcnow())
         self.idl.notify('fake-event', self.fake_row)
         # Assert that notify() wasn't called for a different node uuid
         self.idl.notify_handler.notify.assert_called_once_with(
             self.fake_event, self.fake_row, None, global_=True)
 
-    @staticmethod
-    def _create_fake_row(table_name):
-        # name is a parameter in Mock() so it can't be passed to constructor
-        table = mock.Mock()
-        table.name = table_name
-        return fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'_table': table, 'schema': ['foo']})
-
-    def test_handle_db_schema_changes_no_match_events(self):
-        other_table_row = self._create_fake_row('other')
-        database_table_row = self._create_fake_row('Database')
-
-        self.idl.handle_db_schema_changes(
-            ovsdb_monitor.BaseEvent.ROW_UPDATE, other_table_row)
-        self.idl.handle_db_schema_changes(
-            ovsdb_monitor.BaseEvent.ROW_CREATE, other_table_row)
-        self.idl.handle_db_schema_changes(
-            ovsdb_monitor.BaseEvent.ROW_UPDATE, database_table_row)
-
-        self.assertFalse(self.mock_update_tables.called)
-
-    def _test_handle_db_schema(self, agent_table, chassis_private_present):
-        database_table_row = self._create_fake_row('Database')
-        self.idl._tables_to_register[database_table_row.name] = 'foo'
-
-        self.fake_driver.agent_chassis_table = agent_table
-        if chassis_private_present:
-            self.idl.tables['Chassis_Private'] = 'foo'
-        else:
-            try:
-                del self.idl.tables['Chassis_Private']
-            except KeyError:
-                pass
-
-        self.idl.handle_db_schema_changes(
-            ovsdb_monitor.BaseEvent.ROW_CREATE, database_table_row)
-
-    def test_handle_db_schema_changes_old_schema_to_old_schema(self):
-        """Agents use Chassis and should keep using Chassis table"""
-        self._test_handle_db_schema('Chassis', chassis_private_present=False)
-        self.assertEqual('Chassis', self.fake_driver.agent_chassis_table)
-
-    def test_handle_db_schema_changes_old_schema_to_new_schema(self):
-        """Agents use Chassis and should start using Chassis_Private table"""
-        self._test_handle_db_schema('Chassis', chassis_private_present=True)
-        self.assertEqual('Chassis_Private',
-                         self.fake_driver.agent_chassis_table)
-
-    def test_handle_db_schema_changes_new_schema_to_old_schema(self):
-        """Agents use Chassis_Private and should start using Chassis table"""
-        self._test_handle_db_schema('Chassis_Private',
-                                    chassis_private_present=False)
-        self.assertEqual('Chassis', self.fake_driver.agent_chassis_table)
-
-    def test_handle_db_schema_changes_new_schema_to_new_schema(self):
-        """Agents use Chassis_Private and should keep using Chassis_Private
-           table.
-        """
-        self._test_handle_db_schema('Chassis_Private',
-                                    chassis_private_present=True)
-        self.assertEqual('Chassis_Private',
-                         self.fake_driver.agent_chassis_table)
-
 
 class TestPortBindingChassisUpdateEvent(base.BaseTestCase):
     def setUp(self):
-        super(TestPortBindingChassisUpdateEvent, self).setUp()
+        super().setUp()
         self.driver = mock.Mock()
         self.event = ovsdb_monitor.PortBindingChassisUpdateEvent(self.driver)
 
@@ -357,6 +310,7 @@ class TestPortBindingChassisUpdateEvent(base.BaseTestCase):
             self.driver.set_port_status_up.assert_called()
         else:
             self.driver.set_port_status_up.assert_not_called()
+        self.driver.set_port_status_up.reset_mock()
 
     def test_event_matches(self):
         # NOTE(twilson) This primarily tests implementation details. If a
@@ -365,33 +319,132 @@ class TestPortBindingChassisUpdateEvent(base.BaseTestCase):
         pbtable = fakes.FakeOvsdbTable.create_one_ovsdb_table(
             attrs={'name': 'Port_Binding'})
         ovsdb_row = fakes.FakeOvsdbRow.create_one_ovsdb_row
-        self.driver.nb_ovn.lookup.return_value = ovsdb_row(attrs={'up': True})
+        self.driver.nb_ovn.lookup.return_value = ovsdb_row(
+            attrs={'up': True, 'enabled': True})
+
+        # Port binding change.
         self._test_event(
             self.event.ROW_UPDATE,
             ovsdb_row(attrs={'_table': pbtable, 'chassis': 'one',
-                             'type': '_fake_', 'logical_port': 'foo'}),
+                             'type': '_fake_', 'logical_port': 'foo',
+                             'options': {}}),
             ovsdb_row(attrs={'_table': pbtable, 'chassis': 'two',
                              'type': '_fake_'}))
+
+        # Port binding change because of a live migration in progress.
+        options = {
+            ovn_const.LSP_OPTIONS_REQUESTED_CHASSIS_KEY: 'chassis1,chassis2'}
+        self._test_event(
+            self.event.ROW_UPDATE,
+            ovsdb_row(attrs={'_table': pbtable, 'chassis': 'one',
+                             'type': '_fake_', 'logical_port': 'foo',
+                             'options': options}),
+            ovsdb_row(attrs={'_table': pbtable, 'chassis': 'two',
+                             'type': '_fake_'}))
+
+
+class TestPortBindingUpdateVirtualPortsEvent(base.BaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.event = ovsdb_monitor.PortBindingUpdateVirtualPortsEvent(None)
+
+        self.pbtable = fakes.FakeOvsdbTable.create_one_ovsdb_table(
+            attrs={'name': 'Port_Binding'})
+        self.ovsdb_row = fakes.FakeOvsdbRow.create_one_ovsdb_row
+
+        self.row = self.ovsdb_row(
+            attrs={'_table': self.pbtable,
+                   'chassis': 'newchassis',
+                   'external_ids': {
+                       ovn_const.OVN_PORT_NAME_EXT_ID_KEY: 'fake-port'},
+                   'options': {
+                       'virtual-parents': 'uuid1,uuid2'}})
+
+    def test_delete_event_matches(self):
+        # Delete event (only type virtual).
+        self.assertFalse(self.event.match_fn(
+            self.event.ROW_DELETE,
+            self.ovsdb_row(attrs={'_table': self.pbtable, 'type': '_fake_'}),
+            None))
+        self.assertTrue(self.event.match_fn(
+            self.event.ROW_DELETE,
+            self.ovsdb_row(attrs={
+                '_table': self.pbtable, 'type': 'virtual',
+                'external_ids': {
+                    ovn_const.OVN_PORT_NAME_EXT_ID_KEY: 'fake-port'}}),
+            None))
+
+    def test_delete_event_non_neutron_port_skipped(self):
+        self.assertFalse(self.event.match_fn(
+            self.event.ROW_DELETE,
+            self.ovsdb_row(attrs={
+                '_table': self.pbtable, 'type': 'virtual',
+                'external_ids': {}}),
+            None))
+
+    def test_update_event_non_neutron_port_skipped(self):
+        non_neutron_row = self.ovsdb_row(
+            attrs={'_table': self.pbtable,
+                   'chassis': 'newchassis',
+                   'external_ids': {},
+                   'options': {'virtual-parents': 'uuid1,uuid2'}})
+        self.assertFalse(self.event.match_fn(
+            self.event.ROW_UPDATE, non_neutron_row,
+            self.ovsdb_row(attrs={'_table': self.pbtable,
+                                  'chassis': 'oldchassis'})))
+
+    def test_event_no_match_no_options(self):
+        # Unrelated portbind change (no options in old, so no virtual parents)
+        self.assertFalse(self.event.match_fn(
+            self.event.ROW_UPDATE, self.row,
+            self.ovsdb_row(attrs={'_table': self.pbtable,
+                                  'name': 'somename'})))
+
+    def test_event_no_match_other_options_change(self):
+        # Non-virtual parent change, no chassis has changed
+        old = self.ovsdb_row(
+            attrs={'_table': self.pbtable,
+                   'options': {
+                       'virtual-parents': 'uuid1,uuid2',
+                       'other-opt': '_fake_'}})
+
+        self.assertFalse(self.event.match_fn(self.event.ROW_UPDATE,
+                                             self.row, old))
+
+    def test_event_match_chassis_change(self):
+        # Port binding change (chassis changed, and marked in old)
+        self.assertTrue(self.event.match_fn(
+            self.event.ROW_UPDATE, self.row,
+            self.ovsdb_row(attrs={'_table': self.pbtable,
+                                  'chassis': 'fakechassis'})))
+
+    def test_event_match_virtual_parent_change(self):
+        # Virtual parent change
+        old = self.ovsdb_row(attrs={'_table': self.pbtable,
+                                    'options': {
+                                        'virtual-parents': 'uuid1,uuid3'}})
+        self.assertTrue(self.event.match_fn(self.event.ROW_UPDATE,
+                                            self.row, old))
 
 
 class TestOvnNbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
 
     def setUp(self):
-        super(TestOvnNbIdlNotifyHandler, self).setUp()
+        super().setUp()
         helper = ovs_idl.SchemaHelper(schema_json=OVN_NB_SCHEMA)
         helper.register_all()
         self.idl = ovsdb_monitor.OvnNbIdl(self.mech_driver, "remote", helper)
         self.lp_table = self.idl.tables.get('Logical_Switch_Port')
         self.mech_driver.set_port_status_up = mock.Mock()
         self.mech_driver.set_port_status_down = mock.Mock()
-        mock.patch.object(self.idl, 'handle_db_schema_changes').start()
         self._mock_hash_ring = mock.patch.object(
-            self.idl._hash_ring, 'get_node', return_value=self.idl._node_uuid)
+            self.idl._hash_ring, 'get_node',
+            return_value=(self.idl._node_uuid, timeutils.utcnow()))
         self._mock_hash_ring.start()
 
     def _test_lsp_helper(self, event, new_row_json, old_row_json=None,
                          table=None):
-        row_uuid = uuidutils.generate_uuid()
+        row_uuid = uuid.UUID(uuidutils.generate_uuid())
         if not table:
             table = self.lp_table
         lp_row = ovs_idl.Row.from_json(self.idl, table,
@@ -407,52 +460,78 @@ class TestOvnNbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
         # Execute the notifications queued
         self.idl.notify_handler.notify_loop()
 
-    def test_lsp_up_create_event(self):
-        row_data = {"up": True, "name": "foo-name"}
+    def test_lsp_create_event(self):
+        row_data = {
+            'name': 'foo',
+            'external_ids': [
+                "map", [[ovn_const.OVN_PORT_NAME_EXT_ID_KEY, 'foo']]]}
+
+        # up and enabled
+        row_data.update({'up': True, 'enabled': True})
         self._test_lsp_helper('create', row_data)
-        self.mech_driver.set_port_status_up.assert_called_once_with("foo-name")
+        self.mech_driver.set_port_status_up.assert_called_once_with('foo')
         self.assertFalse(self.mech_driver.set_port_status_down.called)
+        self.mech_driver.set_port_status_up.reset_mock()
 
-    def test_lsp_down_create_event(self):
-        row_data = {"up": False, "name": "foo-name"}
-        self._test_lsp_helper('create', row_data)
-        self.mech_driver.set_port_status_down.assert_called_once_with(
-            "foo-name")
-        self.assertFalse(self.mech_driver.set_port_status_up.called)
-
-    def test_lsp_up_not_set_event(self):
-        row_data = {"up": ['set', []], "name": "foo-name"}
-        self._test_lsp_helper('create', row_data)
-        self.assertFalse(self.mech_driver.set_port_status_up.called)
-        self.assertFalse(self.mech_driver.set_port_status_down.called)
-
-    def test_unwatch_logical_switch_port_create_events(self):
-        self.idl.unwatch_logical_switch_port_create_events()
-        row_data = {"up": True, "name": "foo-name"}
+        # up and disabled
+        row_data.update({'up': True, 'enabled': False})
         self._test_lsp_helper('create', row_data)
         self.assertFalse(self.mech_driver.set_port_status_up.called)
-        self.assertFalse(self.mech_driver.set_port_status_down.called)
+        self.mech_driver.set_port_status_down.assert_called_once_with('foo')
+        self.mech_driver.set_port_status_down.reset_mock()
 
-        row_data["up"] = False
+        # down and enabled
+        row_data.update({'up': False, 'enabled': True})
+        self._test_lsp_helper('create', row_data)
+        self.assertFalse(self.mech_driver.set_port_status_up.called)
+        self.mech_driver.set_port_status_down.assert_called_once_with('foo')
+        self.mech_driver.set_port_status_down.reset_mock()
+
+        # down and disabled
+        row_data.update({'up': False, 'enabled': False})
+        self._test_lsp_helper('create', row_data)
+        self.assertFalse(self.mech_driver.set_port_status_up.called)
+        self.mech_driver.set_port_status_down.assert_called_once_with('foo')
+        self.mech_driver.set_port_status_down.reset_mock()
+
+        # Not set to up
+        row_data.update({'up': ['set', []], 'enabled': True})
+        self._test_lsp_helper('create', row_data)
+        self.assertFalse(self.mech_driver.set_port_status_up.called)
+        self.mech_driver.set_port_status_down.assert_called_once_with('foo')
+
+    def test_lsp_create_event_non_neutron_port_skipped(self):
+        row_data = {'name': 'foo', 'up': True, 'enabled': True,
+                    'external_ids': ["map", []]}
         self._test_lsp_helper('create', row_data)
         self.assertFalse(self.mech_driver.set_port_status_up.called)
         self.assertFalse(self.mech_driver.set_port_status_down.called)
-
-    def test_post_connect(self):
-        self.idl.post_connect()
-        self.assertIsNone(self.idl._lsp_create_up_event)
-        self.assertIsNone(self.idl._lsp_create_down_event)
 
     def test_lsp_up_update_event(self):
-        new_row_json = {"up": True, "name": "foo-name"}
+        new_row_json = {
+            'up': True, 'enabled': True, 'name': 'foo-name',
+            'external_ids': [
+                "map", [[ovn_const.OVN_PORT_NAME_EXT_ID_KEY, 'foo-name']]]}
         old_row_json = {"up": False}
         self._test_lsp_helper('update', new_row_json,
                               old_row_json=old_row_json)
         self.mech_driver.set_port_status_up.assert_called_once_with("foo-name")
         self.assertFalse(self.mech_driver.set_port_status_down.called)
 
+    def test_lsp_up_update_event_non_neutron_port_skipped(self):
+        new_row_json = {'up': True, 'enabled': True, 'name': 'foo-name',
+                        'external_ids': ["map", []]}
+        old_row_json = {"up": False}
+        self._test_lsp_helper('update', new_row_json,
+                              old_row_json=old_row_json)
+        self.assertFalse(self.mech_driver.set_port_status_up.called)
+        self.assertFalse(self.mech_driver.set_port_status_down.called)
+
     def test_lsp_down_update_event(self):
-        new_row_json = {"up": False, "name": "foo-name"}
+        new_row_json = {
+            'up': False, 'enabled': False, 'name': 'foo-name',
+            'external_ids':
+                ["map", [[ovn_const.OVN_PORT_NAME_EXT_ID_KEY, 'foo-name']]]}
         old_row_json = {"up": True}
         self._test_lsp_helper('update', new_row_json,
                               old_row_json=old_row_json)
@@ -460,23 +539,40 @@ class TestOvnNbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
             "foo-name")
         self.assertFalse(self.mech_driver.set_port_status_up.called)
 
+    def test_lsp_down_update_event_non_neutron_port_skipped(self):
+        new_row_json = {'up': False, 'enabled': False, 'name': 'foo-name'}
+        old_row_json = {"up": True}
+        self._test_lsp_helper('update', new_row_json,
+                              old_row_json=old_row_json)
+        self.assertFalse(self.mech_driver.set_port_status_up.called)
+        self.assertFalse(self.mech_driver.set_port_status_down.called)
+
     def test_lsp_up_update_event_no_old_data(self):
-        new_row_json = {"up": True, "name": "foo-name"}
+        new_row_json = {
+            'up': True, 'enabled': True, 'name': 'foo-name',
+            'external_ids': [
+                "map", [[ovn_const.OVN_PORT_NAME_EXT_ID_KEY, 'foo-name']]]}
         self._test_lsp_helper('update', new_row_json,
                               old_row_json=None)
         self.assertFalse(self.mech_driver.set_port_status_up.called)
         self.assertFalse(self.mech_driver.set_port_status_down.called)
 
     def test_lsp_down_update_event_no_old_data(self):
-        new_row_json = {"up": False, "name": "foo-name"}
+        new_row_json = {
+            "up": False, "name": "foo-name",
+            'external_ids': [
+                "map", [[ovn_const.OVN_PORT_NAME_EXT_ID_KEY, 'foo-name']]]}
         self._test_lsp_helper('update', new_row_json,
                               old_row_json=None)
         self.assertFalse(self.mech_driver.set_port_status_up.called)
         self.assertFalse(self.mech_driver.set_port_status_down.called)
 
     def test_lsp_other_column_update_event(self):
-        new_row_json = {"up": False, "name": "foo-name",
-                        "addresses": ["10.0.0.2"]}
+        new_row_json = {
+            "up": False, "name": "foo-name",
+            "addresses": ["10.0.0.2"],
+            'external_ids': [
+                "map", [[ovn_const.OVN_PORT_NAME_EXT_ID_KEY, 'foo-name']]]}
         old_row_json = {"addresses": ["10.0.0.3"]}
         self._test_lsp_helper('update', new_row_json,
                               old_row_json=old_row_json)
@@ -509,10 +605,9 @@ class TestOvnSbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
     l3_plugin = 'ovn-router'
 
     def setUp(self):
-        super(TestOvnSbIdlNotifyHandler, self).setUp()
+        super().setUp()
         sb_helper = ovs_idl.SchemaHelper(schema_json=OVN_SB_SCHEMA)
         sb_helper.register_table('Chassis')
-        self.driver.agent_chassis_table = 'Chassis'
         self.sb_idl = ovsdb_monitor.OvnSbIdl(self.mech_driver, "remote",
                                              sb_helper)
         self.sb_idl.post_connect()
@@ -525,15 +620,16 @@ class TestOvnSbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
             "name": "fake-name",
             "hostname": "fake-hostname",
             "other_config": ['map', [["ovn-bridge-mappings",
-                                      "fake-phynet1:fake-br1"]]]
+                                      "fake-phynet1:fake-br1"]]],
+            "external_ids": ['map', []],
         }
         self._mock_hash_ring = mock.patch.object(
             self.sb_idl._hash_ring, 'get_node',
-            return_value=self.sb_idl._node_uuid)
+            return_value=(self.sb_idl._node_uuid, timeutils.utcnow()))
         self._mock_hash_ring.start()
 
     def _test_chassis_helper(self, event, new_row_json, old_row_json=None):
-        row_uuid = uuidutils.generate_uuid()
+        row_uuid = uuid.UUID(uuidutils.generate_uuid())
         table = self.chassis_table
         row = ovs_idl.Row.from_json(self.sb_idl, table, row_uuid, new_row_json)
         if old_row_json:
@@ -544,36 +640,55 @@ class TestOvnSbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
         self.sb_idl.notify(event, row, updates=old_row)
         # Add a STOP EVENT to the queue
         self.sb_idl.notify_handler.shutdown()
-        # Execute the notifications queued
-        self.sb_idl.notify_handler.notify_loop()
+        # The ``notify_handler.notify_loop()`` call is done by the
+        # ``notify_handler.start()`` method, that is a ``OvnDbNotifyHandler``
+        # instance class, inheriting from ``ovsdbapp.event.RowEventHandler``.
+
+    def _wait_update_segment_host_mapping(self, *args):
+        def called():
+            try:
+                (self.mech_driver.update_segment_host_mapping.
+                 assert_called_once_with(*args))
+                return True
+            except AssertionError:
+                return False
+
+        n_utils.wait_until_true(called, timeout=10)
+
+    def _wait_schedule_unhosted_gateways(self, *args, **kwargs):
+        def called():
+            try:
+                (self.l3_plugin.schedule_unhosted_gateways.
+                 assert_called_once_with(*args, **kwargs))
+                return True
+            except AssertionError:
+                return False
+
+        n_utils.wait_until_true(called, timeout=10)
 
     def test_chassis_create_event(self):
         old_row_json = {'other_config': ['map', []]}
         self._test_chassis_helper('create', self.row_json,
                                   old_row_json=old_row_json)
-        self.mech_driver.update_segment_host_mapping.assert_called_once_with(
+        self._wait_update_segment_host_mapping(
             'fake-hostname', ['fake-phynet1'])
-        self.l3_plugin.schedule_unhosted_gateways.assert_called_once_with(
-            event_from_chassis=None)
+        self._wait_schedule_unhosted_gateways(event_from_chassis=None)
 
     def test_chassis_delete_event(self):
         old_row_json = {'other_config': ['map', []]}
         self._test_chassis_helper('delete', self.row_json,
                                   old_row_json=old_row_json)
-        self.mech_driver.update_segment_host_mapping.assert_called_once_with(
-            'fake-hostname', [])
-        self.l3_plugin.schedule_unhosted_gateways.assert_called_once_with(
-            event_from_chassis='fake-name')
+        self._wait_update_segment_host_mapping('fake-hostname', [])
+        self._wait_schedule_unhosted_gateways(event_from_chassis='fake-name')
 
     def test_chassis_update_event(self):
         old_row_json = copy.deepcopy(self.row_json)
         old_row_json['other_config'][1][0][1] = (
             "fake-phynet2:fake-br2")
         self._test_chassis_helper('update', self.row_json, old_row_json)
-        self.mech_driver.update_segment_host_mapping.assert_called_once_with(
+        self._wait_update_segment_host_mapping(
             'fake-hostname', ['fake-phynet1'])
-        self.l3_plugin.schedule_unhosted_gateways.assert_called_once_with(
-            event_from_chassis=None)
+        self._wait_schedule_unhosted_gateways(event_from_chassis=None)
 
     def test_chassis_update_event_reschedule_not_needed(self):
         self.row_json['other_config'][1].append(['foo_field', 'foo_value_new'])
@@ -588,26 +703,23 @@ class TestOvnSbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
         old_row_json = copy.deepcopy(self.row_json)
         self.row_json['other_config'][1][0][1] = ''
         self._test_chassis_helper('update', self.row_json, old_row_json)
-        self.l3_plugin.schedule_unhosted_gateways.assert_called_once_with(
-            event_from_chassis='fake-name')
+        self._wait_schedule_unhosted_gateways(event_from_chassis='fake-name')
 
     def test_chassis_update_event_reschedule_add_physnet(self):
         old_row_json = copy.deepcopy(self.row_json)
         self.row_json['other_config'][1][0][1] += ',foo_physnet:foo_br'
         self._test_chassis_helper('update', self.row_json, old_row_json)
-        self.mech_driver.update_segment_host_mapping.assert_called_once_with(
+        self._wait_update_segment_host_mapping(
             'fake-hostname', ['fake-phynet1', 'foo_physnet'])
-        self.l3_plugin.schedule_unhosted_gateways.assert_called_once_with(
-            event_from_chassis=None)
+        self._wait_schedule_unhosted_gateways(event_from_chassis=None)
 
     def test_chassis_update_event_reschedule_add_and_remove_physnet(self):
         old_row_json = copy.deepcopy(self.row_json)
         self.row_json['other_config'][1][0][1] = 'foo_physnet:foo_br'
         self._test_chassis_helper('update', self.row_json, old_row_json)
-        self.mech_driver.update_segment_host_mapping.assert_called_once_with(
+        self._wait_update_segment_host_mapping(
             'fake-hostname', ['foo_physnet'])
-        self.l3_plugin.schedule_unhosted_gateways.assert_called_once_with(
-            event_from_chassis=None)
+        self._wait_schedule_unhosted_gateways(event_from_chassis=None)
 
     def test_chassis_update_empty_no_external_ids(self):
         old_row_json = copy.deepcopy(self.row_json)
@@ -625,10 +737,9 @@ class TestOvnSbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
 class TestChassisEvent(base.BaseTestCase):
 
     def setUp(self):
-        super(TestChassisEvent, self).setUp()
+        super().setUp()
         self.driver = mock.MagicMock()
         self.nb_ovn = self.driver.nb_ovn
-        self.driver._ovn_client.is_external_ports_supported.return_value = True
         self.event = ovsdb_monitor.ChassisEvent(self.driver)
         self.is_gw_ch_mock = mock.patch.object(
             utils, 'is_gateway_chassis').start()
@@ -729,3 +840,129 @@ class TestChassisEvent(base.BaseTestCase):
         # after it became a Gateway chassis
         self._test_handle_ha_chassis_group_changes_create(
             self.event.ROW_UPDATE)
+
+
+class TestChassisOVNAgentWriteEvent(base.BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.driver = mock.MagicMock()
+        self.event = ovsdb_monitor.ChassisOVNAgentWriteEvent(self.driver)
+        self.ovsdb_row = fakes.FakeOvsdbRow.create_one_ovsdb_row
+
+    def test_match_fn_no_agent_id(self):
+        # Should not match if no agent ID
+        row = self.ovsdb_row(attrs={'external_ids': {}})
+        self.assertFalse(self.event.match_fn(self.event.ROW_CREATE, row))
+
+    def test_match_fn_create_event(self):
+        # Should match CREATE events with valid agent ID
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-123'}})
+        self.assertTrue(self.event.match_fn(self.event.ROW_CREATE, row))
+
+    def test_match_fn_update_no_chassis(self):
+        # Should not match UPDATE events if no chassis
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-123'},
+                   'chassis': None})
+        old = self.ovsdb_row(attrs={'external_ids': {}})
+        self.assertFalse(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_match_fn_update_no_old_external_ids(self):
+        # Should not match UPDATE events if old row has no external_ids
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-123'},
+                   'chassis': 'chassis-1'})
+        old = self.ovsdb_row(attrs={})
+        self.assertFalse(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_match_fn_update_sb_cfg_changed(self):
+        # Should match UPDATE events when sb_cfg changes
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-123',
+                ovn_const.OVN_AGENT_NEUTRON_SB_CFG_KEY: '456'},
+                   'chassis': 'chassis-1'})
+        old = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-123',
+                ovn_const.OVN_AGENT_NEUTRON_SB_CFG_KEY: '123'}})
+        self.assertTrue(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_match_fn_update_sb_cfg_unchanged(self):
+        # Should not match UPDATE events when sb_cfg is unchanged
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-123',
+                ovn_const.OVN_AGENT_NEUTRON_SB_CFG_KEY: '123'},
+                   'chassis': 'chassis-1'})
+        old = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-123',
+                ovn_const.OVN_AGENT_NEUTRON_SB_CFG_KEY: '123'}})
+        self.assertFalse(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_run_ovn_neutron_agent(self):
+        # Test run method with neutron agent
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-123'}})
+
+        with mock.patch('neutron.plugins.ml2.drivers.ovn.agent.neutron_agent.'
+                        'AgentCache') as agent_cache:
+            self.event.run(self.event.ROW_CREATE, row, None)
+            agent_cache.assert_has_calls([
+                mock.call().update(
+                    ovn_const.OVN_NEUTRON_AGENT, row, clear_down=True)])
+
+    def test_run_metadata_agent(self):
+        # Test run method with metadata agent
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_AGENT_METADATA_ID_KEY: 'metadata-456'}})
+
+        with mock.patch('neutron.plugins.ml2.drivers.ovn.agent.neutron_agent.'
+                        'AgentCache') as agent_cache:
+            self.event.run(self.event.ROW_CREATE, row, None)
+            agent_cache.assert_has_calls([
+                mock.call().update(
+                    ovn_const.OVN_METADATA_AGENT, row, clear_down=True)])
+
+
+class TestFIPAddDeleteEvent(base.BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.driver = mock.Mock()
+        self.event = ovsdb_monitor.FIPAddDeleteEvent(self.driver)
+        self.ovsdb_row = fakes.FakeOvsdbRow.create_one_ovsdb_row
+
+    def test_match_fn_neutron_fip(self):
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_FIP_EXT_ID_KEY: 'fip-uuid-123'},
+                   'external_ip': '1.2.3.4'})
+        self.assertTrue(self.event.match_fn(self.event.ROW_CREATE, row))
+
+    def test_match_fn_non_neutron_nat_skipped(self):
+        row = self.ovsdb_row(
+            attrs={'external_ids': {},
+                   'external_ip': '1.2.3.4'})
+        self.assertFalse(self.event.match_fn(self.event.ROW_CREATE, row))
+
+    def test_match_fn_delete_neutron_fip(self):
+        row = self.ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_FIP_EXT_ID_KEY: 'fip-uuid-123'},
+                   'external_ip': '1.2.3.4'})
+        self.assertTrue(self.event.match_fn(self.event.ROW_DELETE, row))
+
+    def test_match_fn_delete_non_neutron_nat_skipped(self):
+        row = self.ovsdb_row(
+            attrs={'external_ids': {},
+                   'external_ip': '1.2.3.4'})
+        self.assertFalse(self.event.match_fn(self.event.ROW_DELETE, row))

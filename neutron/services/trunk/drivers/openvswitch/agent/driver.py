@@ -36,7 +36,7 @@ class OVSTrunkSkeleton(agent.TrunkSkeleton):
     """
 
     def __init__(self, ovsdb_handler):
-        super(OVSTrunkSkeleton, self).__init__()
+        super().__init__()
         self.ovsdb_handler = ovsdb_handler
         registry.unsubscribe(self.handle_trunks, resources.TRUNK)
 
@@ -62,7 +62,7 @@ class OVSTrunkSkeleton(agent.TrunkSkeleton):
                 LOG.debug("Event %s for subports: %s", event_type, subports)
                 if event_type == events.CREATED:
                     status = self.ovsdb_handler.wire_subports_for_trunk(
-                            ctx, trunk_id, subports)
+                        ctx, trunk_id, subports)
                 elif event_type == events.DELETED:
                     subport_ids = [subport.port_id for subport in subports]
                     status = self.ovsdb_handler.unwire_subports_for_trunk(
@@ -93,16 +93,16 @@ class OVSTrunkSkeleton(agent.TrunkSkeleton):
 
 def init_handler(resource, event, trigger, payload=None):
     """Handler for agent init event."""
-    # Set up agent-side RPC for receiving trunk events; we may want to
-    # make this setup conditional based on server-side capabilities.
     global TRUNK_SKELETON
 
-    manager = trunk_manager.TrunkManager(trigger.int_br)
-    handler = ovsdb_handler.OVSDBHandler(manager)
-    TRUNK_SKELETON = OVSTrunkSkeleton(handler)
+    if cfg.CONF.OVS.trunk_enabled:
+        LOG.info("Registering Trunk extension")
+        manager = trunk_manager.TrunkManager(trigger.int_br)
+        handler = ovsdb_handler.OVSDBHandler(manager)
+        TRUNK_SKELETON = OVSTrunkSkeleton(handler)
 
 
 def unregister():
     """Cleanup fanout queues"""
-    global TRUNK_SKELETON
-    TRUNK_SKELETON.unregister()
+    if TRUNK_SKELETON:
+        TRUNK_SKELETON.unregister()

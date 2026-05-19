@@ -34,8 +34,7 @@ TABLES = ['networkrbacs', 'qospolicyrbacs', 'securitygrouprbacs',
           'addressscoperbacs', 'subnetpoolrbacs', 'addressgrouprbacs']
 DROPPED_UNIQUE_CONSTRAINTS = [
     'uniq_networkrbacs0tenant_target0object_id0action',
-    'qospolicyrbacs_target_tenant_object_id_action_key',  # PSQL
-    'target_tenant',  # MySQL, name provided by mistake
+    'target_tenant',  # name provided by mistake
     'uniq_securitygrouprbacs0target_tenant0object_id0action',
     'uniq_address_scopes_rbacs0target_tenant0object_id0action',
     'uniq_subnetpools_rbacs0target_tenant0object_id0action',
@@ -46,8 +45,8 @@ def get_inspector():
     global _INSPECTOR
     if _INSPECTOR:
         return _INSPECTOR
-    else:
-        _INSPECTOR = sa.inspect(op.get_bind())
+
+    _INSPECTOR = sa.inspect(op.get_bind())
 
     return _INSPECTOR
 
@@ -99,7 +98,7 @@ def recreate_index(table):
     for idx in (idx for idx in indexes if idx['name'] == index_name):
         old_name = idx['name']
         new_name = old_name.replace('target_tenant', 'target_project')
-        op.drop_index(op.f(old_name), table)
+        op.drop_index(index_name=op.f(old_name), table_name=table)
         op.create_index(new_name, table, ['target_project'])
 
 

@@ -16,9 +16,9 @@ import errno
 from unittest import mock
 
 import pyroute2
+from pyroute2 import iproute
 from pyroute2 import netlink
 from pyroute2.netlink import exceptions as netlink_exceptions
-from pyroute2.netlink.rtnl import ifinfmsg
 
 from neutron.privileged.agent.linux import ip_lib as priv_lib
 from neutron.tests import base
@@ -28,7 +28,8 @@ class IpLibTestCase(base.BaseTestCase):
 
     def _test_run_iproute_link(self, namespace=None):
         ip_obj = "NetNS" if namespace else "IPRoute"
-        with mock.patch.object(pyroute2, ip_obj) as ip_mock_cls:
+        _mod = pyroute2 if namespace else iproute
+        with mock.patch.object(_mod, ip_obj) as ip_mock_cls:
             ip_mock = ip_mock_cls()
             ip_mock.__enter__().link_lookup.return_value = [2]
             priv_lib._run_iproute_link("test_cmd", "eth0", namespace,
@@ -46,7 +47,7 @@ class IpLibTestCase(base.BaseTestCase):
         self._test_run_iproute_link(namespace="testns")
 
     def test_run_iproute_link_interface_not_exists(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             ip_mock = iproute_mock()
             ret_values = [
                 [],    # No interface found.
@@ -68,29 +69,29 @@ class IpLibTestCase(base.BaseTestCase):
                          priv_lib.get_link_id('device', 'namespace'))
 
     def test_run_iproute_link_interface_removed_during_call(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             ip_mock = iproute_mock()
             ip_mock.__enter__().link_lookup.return_value = [2]
-            ip_mock.__enter__().link.side_effect = pyroute2.NetlinkError(
-                code=errno.ENODEV)
+            ip_mock.__enter__().link.side_effect = (
+                netlink_exceptions.NetlinkError(code=errno.ENODEV))
             self.assertRaises(
                 priv_lib.NetworkInterfaceNotFound,
                 priv_lib._run_iproute_link,
                 "test_cmd", "eth0", None, test_param="test_value")
 
     def test_run_iproute_link_op_not_supported(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             ip_mock = iproute_mock()
             ip_mock.__enter__().link_lookup.return_value = [2]
-            ip_mock.__enter__().link.side_effect = pyroute2.NetlinkError(
-                code=errno.EOPNOTSUPP)
+            ip_mock.__enter__().link.side_effect = (
+                netlink_exceptions.NetlinkError(code=errno.EOPNOTSUPP))
             self.assertRaises(
                 priv_lib.InterfaceOperationNotSupported,
                 priv_lib._run_iproute_link,
                 "test_cmd", "eth0", None, test_param="test_value")
 
     def test_run_iproute_link_namespace_not_exists(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             iproute_mock.side_effect = OSError(
                 errno.ENOENT, "Test no netns exception")
             self.assertRaises(
@@ -99,7 +100,7 @@ class IpLibTestCase(base.BaseTestCase):
                 "test_cmd", "eth0", None, test_param="test_value")
 
     def test_run_iproute_link_error(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             iproute_mock.side_effect = OSError(
                 errno.EINVAL, "Test invalid argument exception")
             try:
@@ -111,7 +112,8 @@ class IpLibTestCase(base.BaseTestCase):
 
     def _test_run_iproute_neigh(self, namespace=None):
         ip_obj = "NetNS" if namespace else "IPRoute"
-        with mock.patch.object(pyroute2, ip_obj) as ip_mock_cls:
+        _mod = pyroute2 if namespace else iproute
+        with mock.patch.object(_mod, ip_obj) as ip_mock_cls:
             ip_mock = ip_mock_cls()
             ip_mock.__enter__().link_lookup.return_value = [2]
             priv_lib._run_iproute_neigh("test_cmd", "eth0", namespace,
@@ -129,7 +131,7 @@ class IpLibTestCase(base.BaseTestCase):
         self._test_run_iproute_neigh(namespace="testns")
 
     def test_run_iproute_neigh_interface_not_exists(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             ip_mock = iproute_mock()
             ip_mock.__enter__().link_lookup.return_value = []
             self.assertRaises(
@@ -138,18 +140,18 @@ class IpLibTestCase(base.BaseTestCase):
                 "test_cmd", "eth0", None, test_param="test_value")
 
     def test_run_iproute_neigh_interface_removed_during_call(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             ip_mock = iproute_mock()
             ip_mock.__enter__().link_lookup.return_value = [2]
-            ip_mock.__enter__().neigh.side_effect = pyroute2.NetlinkError(
-                code=errno.ENODEV)
+            ip_mock.__enter__().neigh.side_effect = (
+                netlink_exceptions.NetlinkError(code=errno.ENODEV))
             self.assertRaises(
                 priv_lib.NetworkInterfaceNotFound,
                 priv_lib._run_iproute_neigh,
                 "test_cmd", "eth0", None, test_param="test_value")
 
     def test_run_iproute_neigh_namespace_not_exists(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             iproute_mock.side_effect = OSError(
                 errno.ENOENT, "Test no netns exception")
             self.assertRaises(
@@ -157,8 +159,19 @@ class IpLibTestCase(base.BaseTestCase):
                 priv_lib._run_iproute_neigh,
                 "test_cmd", "eth0", None, test_param="test_value")
 
+    def test_run_iproute_neigh_no_entry(self):
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
+            iproute_mock.side_effect = netlink_exceptions.NetlinkError(
+                code=errno.ENOENT)
+            try:
+                priv_lib._run_iproute_neigh(
+                    "test_cmd", "eth0", None, test_param="test_value")
+                self.fail("NetlinkError exception not raised")
+            except netlink_exceptions.NetlinkError as e:
+                self.assertEqual(errno.ENOENT, e.code)
+
     def test_run_iproute_neigh_error(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             iproute_mock.side_effect = OSError(
                 errno.EINVAL, "Test invalid argument exception")
             try:
@@ -170,7 +183,8 @@ class IpLibTestCase(base.BaseTestCase):
 
     def _test_run_iproute_addr(self, namespace=None):
         ip_obj = "NetNS" if namespace else "IPRoute"
-        with mock.patch.object(pyroute2, ip_obj) as ip_mock_cls:
+        _mod = pyroute2 if namespace else iproute
+        with mock.patch.object(_mod, ip_obj) as ip_mock_cls:
             ip_mock = ip_mock_cls()
             ip_mock.__enter__().link_lookup.return_value = [2]
             priv_lib._run_iproute_addr("test_cmd", "eth0", namespace,
@@ -188,7 +202,7 @@ class IpLibTestCase(base.BaseTestCase):
         self._test_run_iproute_addr(namespace="testns")
 
     def test_run_iproute_addr_interface_not_exists(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             ip_mock = iproute_mock()
             ip_mock.__enter__().link_lookup.return_value = []
             self.assertRaises(
@@ -197,18 +211,18 @@ class IpLibTestCase(base.BaseTestCase):
                 "test_cmd", "eth0", None, test_param="test_value")
 
     def test_run_iproute_addr_interface_removed_during_call(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             ip_mock = iproute_mock()
             ip_mock.__enter__().link_lookup.return_value = [2]
-            ip_mock.__enter__().addr.side_effect = pyroute2.NetlinkError(
-                code=errno.ENODEV)
+            ip_mock.__enter__().addr.side_effect = (
+                netlink_exceptions.NetlinkError(code=errno.ENODEV))
             self.assertRaises(
                 priv_lib.NetworkInterfaceNotFound,
                 priv_lib._run_iproute_addr,
                 "test_cmd", "eth0", None, test_param="test_value")
 
     def test_run_iproute_addr_namespace_not_exists(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             iproute_mock.side_effect = OSError(
                 errno.ENOENT, "Test no netns exception")
             self.assertRaises(
@@ -217,7 +231,7 @@ class IpLibTestCase(base.BaseTestCase):
                 "test_cmd", "eth0", None, test_param="test_value")
 
     def test_run_iproute_addr_error(self):
-        with mock.patch.object(pyroute2, "IPRoute") as iproute_mock:
+        with mock.patch.object(iproute, "IPRoute") as iproute_mock:
             iproute_mock.side_effect = OSError(
                 errno.EINVAL, "Test invalid argument exception")
             try:
@@ -270,21 +284,3 @@ class IpLibTestCase(base.BaseTestCase):
                 [mock.call('get', 'device', namespace='namespace', ext_mask=1),
                  mock.call('get', 'device', namespace='namespace', ext_mask=1)]
             )
-
-
-class MakeSerializableTestCase(base.BaseTestCase):
-
-    NLA_DATA1 = ifinfmsg.ifinfbase.state(data=b'54321')
-    NLA_DATA2 = ifinfmsg.ifinfbase.state(data=b'abcdef')
-    INPUT_1 = {'key1': 'value1', b'key2': b'value2', 'key3': ('a', 2),
-               'key4': [1, 2, 'c'],
-               b'key5': netlink.nla_slot('nla_name1', NLA_DATA1),
-               'key6': netlink.nla_slot(b'nla_name2', NLA_DATA2)}
-    OUTPUT_1 = {'key1': 'value1', 'key2': 'value2', 'key3': ('a', 2),
-                'key4': [1, 2, 'c'],
-                'key5': ['nla_name1', '54321'],
-                'key6': ['nla_name2', 'abcdef']}
-
-    def test_make_serializable(self):
-        self.assertEqual(self.OUTPUT_1,
-                         priv_lib.make_serializable(self.INPUT_1))

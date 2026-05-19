@@ -16,7 +16,6 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from oslo_utils import uuidutils
 
-from neutron.common import utils as common_utils
 from neutron.tests.common.exclusive_resources import ip_network
 from neutron.tests.fullstack import base
 from neutron.tests.fullstack.resources import environment
@@ -32,10 +31,6 @@ class TestPortsRebind(base.BaseFullStackTestCase):
         ('Open vSwitch Agent', {
             'l2_agent_type': constants.AGENT_TYPE_OVS,
             'l2_mechdriver_name': 'openvswitch',
-        }),
-        ('Linux Bridge Agent', {
-            'l2_agent_type': constants.AGENT_TYPE_LINUXBRIDGE,
-            'l2_mechdriver_name': 'linuxbridge',
         })]
 
     def setUp(self):
@@ -48,7 +43,7 @@ class TestPortsRebind(base.BaseFullStackTestCase):
                 agent_down_time=10),
             host_descriptions)
 
-        super(TestPortsRebind, self).setUp(env)
+        super().setUp(env)
 
         self.l2_agent_process = self.environment.hosts[0].l2_agent
         self.l2_agent = self.safe_client.client.list_agents(
@@ -60,7 +55,7 @@ class TestPortsRebind(base.BaseFullStackTestCase):
             self.tenant_id, self.network['id'], '20.0.0.0/24')
 
     def _ensure_port_bound(self, port_id):
-        port = None
+        port = {}
 
         def port_bound():
             nonlocal port
@@ -70,7 +65,7 @@ class TestPortsRebind(base.BaseFullStackTestCase):
                     [portbindings.VIF_TYPE_UNBOUND,
                      portbindings.VIF_TYPE_BINDING_FAILED])
 
-        common_utils.wait_until_true(port_bound)
+        base.wait_until_true(port_bound)
         bound_drivers = {'0': self.l2_mechdriver_name}
         self.assertEqual(bound_drivers,
                          port[portbindings.VIF_DETAILS][
@@ -83,7 +78,7 @@ class TestPortsRebind(base.BaseFullStackTestCase):
             return (port[portbindings.VIF_TYPE] ==
                     portbindings.VIF_TYPE_BINDING_FAILED)
 
-        common_utils.wait_until_true(port_binding_failed)
+        base.wait_until_true(port_binding_failed)
 
 
 class TestVMPortRebind(TestPortsRebind):
@@ -147,7 +142,7 @@ class TestRouterPortRebind(TestPortsRebind):
     use_l3_agent = True
 
     def setUp(self):
-        super(TestRouterPortRebind, self).setUp()
+        super().setUp()
 
         self.tenant_id = uuidutils.generate_uuid()
         self.ext_net = self.safe_client.create_network(
@@ -169,9 +164,6 @@ class TestRouterPortRebind(TestPortsRebind):
         4. Turn on L2 agent
         5. Router's port created in p.3 should be now bound properly
         """
-
-        if self.l2_agent_type == constants.AGENT_TYPE_LINUXBRIDGE:
-            self.skipTest("Bug 1798085")
 
         gw_port = self.safe_client.client.list_ports(
             device_id=self.router['id'],

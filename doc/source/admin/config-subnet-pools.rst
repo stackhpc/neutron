@@ -1,7 +1,7 @@
 .. _config-subnet-pools:
 
 ============
-Subnet pools
+Subnet Pools
 ============
 
 Subnet pools have been made available since the Kilo release. It is a simple
@@ -103,8 +103,8 @@ address family can be marked default.
     $ openstack subnet pool set --default 74348864-f8bf-4fc0-ab03-81229d189467
 
 If there is a default, it can be requested by passing
-``--use-default-subnetpool`` instead of
-``--subnet-pool SUBNETPOOL``.
+``--use-default-subnet-pool`` instead of
+``--subnet-pool SUBNETPOOL`` when creating a subnet.
 
 Demo
 ----

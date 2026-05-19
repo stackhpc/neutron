@@ -27,14 +27,14 @@ SUBNET_NAME = 'subnet_name'
 SUPPORTED_FILTERS = {
     NETWORK_ID: mod.Network.id,
     NETWORK_NAME: mod.Network.name,
-    'tenant_id': mod.Network.tenant_id,
+    'tenant_id': mod.Network.project_id,
     'project_id': mod.Network.project_id,
     'ip_version': mod.Subnet.ip_version,
 }
 SUPPORTED_FILTER_KEYS = set(SUPPORTED_FILTERS.keys())
 
 
-class IpAvailabilityMixin(object):
+class IpAvailabilityMixin:
     """Mixin class to query for IP availability."""
 
     # Columns common to all queries
@@ -48,7 +48,7 @@ class IpAvailabilityMixin(object):
     # Columns for the network/subnet and used_ip counts
     network_used_ips_columns = list(common_columns)
     network_used_ips_columns.append(mod.Network.name.label(NETWORK_NAME))
-    network_used_ips_columns.append(mod.Network.tenant_id)
+    network_used_ips_columns.append(mod.Network.project_id)
     network_used_ips_columns.append(mod.Subnet.name.label(SUBNET_NAME))
     # Aggregate query computed column
     network_used_ips_computed_columns = [
@@ -110,8 +110,8 @@ class IpAvailabilityMixin(object):
         query = query.outerjoin(mod.Subnet,
                                 mod.Network.id == mod.Subnet.network_id)
         query = query.outerjoin(
-                mod.IPAllocationPool,
-                mod.Subnet.id == mod.IPAllocationPool.subnet_id)
+            mod.IPAllocationPool,
+            mod.Subnet.id == mod.IPAllocationPool.subnet_id)
         return cls._adjust_query_for_filters(query, filters)
 
     @classmethod
@@ -130,13 +130,13 @@ class IpAvailabilityMixin(object):
             # Add IPAllocationPool data
             if row.last_ip:
                 pool_total = netaddr.IPRange(
-                        netaddr.IPAddress(row.first_ip),
-                        netaddr.IPAddress(row.last_ip)).size
+                    netaddr.IPAddress(row.first_ip),
+                    netaddr.IPAddress(row.last_ip)).size
                 cur_total = subnet_totals_dict.get(row.subnet_id, 0)
                 subnet_totals_dict[row.subnet_id] = cur_total + pool_total
             else:
                 subnet_totals_dict[row.subnet_id] = netaddr.IPNetwork(
-                        row.cidr, version=row.ip_version).size
+                    row.cidr, version=row.ip_version).size
 
         return subnet_totals_dict
 
@@ -158,8 +158,7 @@ class IpAvailabilityMixin(object):
         else:
             network = {NETWORK_ID: db_row.network_id,
                        NETWORK_NAME: db_row.network_name,
-                       'tenant_id': db_row.tenant_id,
-                       'project_id': db_row.tenant_id,
+                       'project_id': db_row.project_id,
                        'subnet_ip_availability': [],
                        'used_ips': 0, 'total_ips': 0}
             result_dict[db_row.network_id] = network

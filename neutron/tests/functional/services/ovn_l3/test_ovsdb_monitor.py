@@ -1,0 +1,250 @@
+# Copyright 2025 Red Hat, Inc.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+from unittest import mock
+
+from neutron_lib.api.definitions import external_net
+from neutron_lib.plugins import constants as plugin_constants
+from neutron_lib.plugins import directory
+
+from neutron.api import wsgi
+from neutron.common.ovn import utils as ovn_utils
+from neutron.common import utils as n_utils
+from neutron.services.bgp import constants as bgp_constants
+from neutron.tests.functional import base
+from neutron.tests.unit.api import test_extensions
+from neutron.tests.unit.extensions import test_l3
+
+
+class TestLogicalRouterPortEvent(
+        base.TestOVNFunctionalBase,
+        test_l3.L3NatTestCaseMixin):
+
+    def setUp(self, **kwargs):
+        super().setUp(**kwargs)
+        self.chassis = self.add_fake_chassis('ovs-host1')
+        self.l3_plugin = directory.get_plugin(plugin_constants.L3)
+        self.l3_plugin._post_fork_initialize(
+            mock.ANY, mock.ANY, wsgi.WorkerService)
+        self.ext_api = test_extensions.setup_extensions_middleware(
+            test_l3.L3TestExtensionManager())
+        kwargs = {'arg_list': (external_net.EXTERNAL,),
+                  external_net.EXTERNAL: True}
+        self.net_ext = self._make_network(
+            self.fmt, 'net_ext', True, as_admin=True, **kwargs)
+        self.subnet = self._make_subnet(self.fmt, self.net_ext, '20.0.10.1',
+                                        '20.0.10.0/24')
+        self.router = self._make_router(self.fmt, self._project_id)
+        self.router_id = self.router['router']['id']
+        self.net_ext_id = self.net_ext['network']['id']
+        self.subnet_id = self.subnet['subnet']['id']
+
+    def test_add_and_delete_gw_network(self):
+        def is_called():
+            try:
+                mock_update_router.assert_called_once_with(
+                    mock.ANY, self.router_id)
+                return True
+            except AssertionError:
+                return False
+
+        with mock.patch.object(
+                self.l3_plugin._ovn_client,
+                'update_router_ha_chassis_group') as mock_update_router:
+            self._add_external_gateway_to_router(self.router_id,
+                                                 self.net_ext_id)
+            n_utils.wait_until_true(is_called, timeout=10)
+            mock_update_router.reset_mock()
+            self._remove_external_gateway_from_router(
+                self.router_id, self.net_ext_id, external_gw_info={})
+            n_utils.wait_until_true(is_called, timeout=10)
+
+    def test_add_private_network(self):
+        def is_called():
+            try:
+                mock_link.assert_called_once_with(
+                    mock.ANY, self.net_ext_id, self.router_id)
+                return True
+            except AssertionError:
+                return False
+
+        with mock.patch.object(
+                self.l3_plugin._ovn_client,
+                'link_network_ha_chassis_group') as mock_link:
+            self._router_interface_action(
+                'add', self.router_id, self.subnet_id, None)
+            n_utils.wait_until_true(is_called, timeout=10)
+
+    def test_delete_private_network(self):
+        def is_called():
+            try:
+                mock_unlink.assert_called_once_with(self.net_ext_id)
+                return True
+            except AssertionError:
+                return False
+
+        with mock.patch.object(
+                self.l3_plugin._ovn_client,
+                'link_network_ha_chassis_group'), \
+                mock.patch.object(
+                    self.l3_plugin._ovn_client,
+                    'unlink_network_ha_chassis_group') as mock_unlink:
+            self._router_interface_action(
+                'add', self.router_id, self.subnet_id, None)
+            self._router_interface_action(
+                'remove', self.router_id, self.subnet_id, None)
+            n_utils.wait_until_true(is_called, timeout=10)
+
+    def test_delete_router(self):
+        # The ``Logical_Router`` deletion triggers the
+        # ``LogicalRouterPortEvent`` event, but nothing is executed/called.
+        def is_called():
+            try:
+                mock_update_router.assert_called_once_with(
+                    mock.ANY, self.router_id)
+                return True
+            except AssertionError:
+                return False
+
+        with mock.patch.object(
+                self.l3_plugin._ovn_client,
+                'update_router_ha_chassis_group') as mock_update_router:
+            self._add_external_gateway_to_router(self.router_id,
+                                                 self.net_ext_id)
+            n_utils.wait_until_true(is_called, timeout=10)
+            mock_update_router.reset_mock()
+            req = self.new_delete_request('routers', self.router_id)
+            req.get_response(self.api)
+            self.assertRaises(n_utils.WaitTimeout, n_utils.wait_until_true,
+                              is_called, timeout=5)
+
+    def test_add_lrp_not_in_the_neutron_db(self):
+        def mock_link_called():
+            try:
+                mock_link.assert_called_once_with(
+                    mock.ANY, self.net_ext_id, self.router_id)
+                return True
+            except AssertionError:
+                return False
+
+        def mock_update_router_called():
+            try:
+                mock_update_router.assert_called_once_with(
+                    mock.ANY, self.router_id)
+                return True
+            except AssertionError:
+                return False
+
+        ovn_client = self.l3_plugin._ovn_client
+        with mock.patch.object(
+                ovn_client, 'link_network_ha_chassis_group') as mock_link,\
+                mock.patch.object(ovn_client,
+                'update_router_ha_chassis_group') as mock_update_router:
+            ext_ids = {bgp_constants.LRP_NETWORK_NAME_EXT_ID_KEY: 'br-bgp1'}
+            self.nb_api.lrp_add(
+                ovn_utils.ovn_name(self.router_id), 'ovn-port-bgp',
+                mac='02:00:00:00:00:00', networks=['192.168.100.2/30'],
+                external_ids=ext_ids).execute(check_error=True)
+            self.assertRaises(n_utils.WaitTimeout, n_utils.wait_until_true,
+                              mock_link_called, timeout=5)
+            self.assertRaises(n_utils.WaitTimeout, n_utils.wait_until_true,
+                              mock_update_router_called, timeout=2)
+
+    def test_remove_lrp_not_in_the_neutron_db(self):
+        def mock_unlink_called():
+            try:
+                mock_unlink.assert_called_once_with(
+                    mock.ANY, self.net_ext_id, self.router_id)
+                return True
+            except AssertionError:
+                return False
+
+        def mock_update_router_called():
+            try:
+                mock_update_router.assert_called_once_with(
+                    mock.ANY, self.router_id)
+                return True
+            except AssertionError:
+                return False
+
+        ovn_client = self.l3_plugin._ovn_client
+        with mock.patch.object(
+                ovn_client, 'unlink_network_ha_chassis_group') as mock_unlink,\
+                mock.patch.object(ovn_client,
+                'update_router_ha_chassis_group') as mock_update_router:
+            ext_ids = {bgp_constants.LRP_NETWORK_NAME_EXT_ID_KEY: 'br-bgp1'}
+            self.nb_api.lrp_add(
+                ovn_utils.ovn_name(self.router_id), 'ovn-port-bgp',
+                mac='02:00:00:00:00:00', networks=['192.168.100.2/30'],
+                external_ids=ext_ids).execute(check_error=True)
+            self.nb_api.lrp_del('ovn-port-bgp').execute(check_error=True)
+            self.assertRaises(n_utils.WaitTimeout, n_utils.wait_until_true,
+                              mock_unlink_called, timeout=5)
+            self.assertRaises(n_utils.WaitTimeout, n_utils.wait_until_true,
+                              mock_update_router_called, timeout=2)
+
+
+class TestRouterHAChassisGroupEvent(
+        base.TestOVNFunctionalBase,
+        test_l3.L3NatTestCaseMixin):
+
+    def setUp(self, **kwargs):
+        super().setUp(**kwargs)
+        self.chassis = self.add_fake_chassis('ovs-host1')
+        self.l3_plugin = directory.get_plugin(plugin_constants.L3)
+        self.l3_plugin._post_fork_initialize(
+            mock.ANY, mock.ANY, wsgi.WorkerService)
+        self.ext_api = test_extensions.setup_extensions_middleware(
+            test_l3.L3TestExtensionManager())
+        kwargs = {'arg_list': (external_net.EXTERNAL,),
+                  external_net.EXTERNAL: True}
+        self.net_ext = self._make_network(
+            self.fmt, 'net_ext', True, as_admin=True, **kwargs)
+        self.subnet = self._make_subnet(self.fmt, self.net_ext, '20.0.10.1',
+                                        '20.0.10.0/24')
+        self.router = self._make_router(self.fmt, self._project_id)
+        self.router_id = self.router['router']['id']
+        self.net_ext_id = self.net_ext['network']['id']
+        self.subnet_id = self.subnet['subnet']['id']
+
+    def test_add_and_remove_ha_chassis(self):
+        def is_called():
+            try:
+                mock_update_router.assert_called_once_with(
+                    mock.ANY, self.router_id)
+                return True
+            except AssertionError:
+                return False
+
+        ch_list = []
+        for idx in range(5):
+            ch_list.append(self.add_fake_chassis(f'host-{idx}'))
+        self._add_external_gateway_to_router(self.router_id, self.net_ext_id)
+        hcg_name = ovn_utils.ovn_name(self.router_id)
+        with mock.patch.object(
+                self.l3_plugin._ovn_client,
+                'update_router_ha_chassis_group') as mock_update_router:
+            for idx, ch_name in enumerate(ch_list):
+                self.l3_plugin._nb_ovn.ha_chassis_group_add_chassis(
+                    hcg_name, ch_name,
+                    priority=idx + 1).execute(check_error=True)
+                n_utils.wait_until_true(is_called, timeout=10)
+                mock_update_router.reset_mock()
+
+            for ch_name in ch_list:
+                self.l3_plugin._nb_ovn.ha_chassis_group_del_chassis(
+                    hcg_name, ch_name,
+                    if_exists=True).execute(check_error=True)
+                n_utils.wait_until_true(is_called, timeout=10)
+                mock_update_router.reset_mock()

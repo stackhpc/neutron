@@ -25,7 +25,7 @@ from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron.agent.common import utils as agent_utils
-from neutron.db.network_dhcp_agent_binding import models as ndab_model
+from neutron.common import _constants as n_const
 from neutron.objects import agent as agent_obj
 from neutron.objects import network
 from neutron.scheduler import base_resource_filter
@@ -34,7 +34,7 @@ from neutron.scheduler import base_scheduler
 LOG = logging.getLogger(__name__)
 
 
-class AutoScheduler(object):
+class AutoScheduler:
 
     def auto_schedule_networks(self, plugin, context, host):
         """Schedule non-hosted networks to the DHCP agent on the specified
@@ -79,9 +79,10 @@ class AutoScheduler(object):
                     if is_routed_network:
                         if len(segments_on_network & segments_on_host) == 0:
                             continue
-                    else:
-                        if len(agents) >= agents_per_network:
-                            continue
+                    # The following two checks apply to both routed and
+                    # non-routed networks
+                    if len(agents) >= agents_per_network:
+                        continue
                     if any(dhcp_agent.id == agent.id for agent in agents):
                         continue
                     net = plugin.get_network(context, net_id)
@@ -99,8 +100,8 @@ class AutoScheduler(object):
             self.resource_filter.bind(
                 context, [agent], net_id,
                 force_scheduling=is_routed_network)
-            debug_data.append('(%s, %s, %s)' % (agent['agent_type'],
-                                                agent['host'], net_id))
+            debug_data.append('({}, {}, {})'.format(agent['agent_type'],
+                                                    agent['host'], net_id))
         LOG.debug('Resources bound (agent type, host, resource id): %s',
                   ', '.join(debug_data))
         return True
@@ -109,13 +110,13 @@ class AutoScheduler(object):
 class ChanceScheduler(base_scheduler.BaseChanceScheduler, AutoScheduler):
 
     def __init__(self):
-        super(ChanceScheduler, self).__init__(DhcpFilter())
+        super().__init__(DhcpFilter())
 
 
 class WeightScheduler(base_scheduler.BaseWeightScheduler, AutoScheduler):
 
     def __init__(self):
-        super(WeightScheduler, self).__init__(DhcpFilter())
+        super().__init__(DhcpFilter())
 
 
 class AZAwareWeightScheduler(WeightScheduler):
@@ -144,7 +145,7 @@ class AZAwareWeightScheduler(WeightScheduler):
         # resource_hostable_agents should be a list with agents in the order of
         # their weight.
         resource_hostable_agents = (
-            super(AZAwareWeightScheduler, self).select(
+            super().select(
                 plugin, context, resource_hostable_agents,
                 resource_hosted_agents, len(resource_hostable_agents)))
         for agent in resource_hostable_agents:
@@ -195,7 +196,7 @@ class DhcpFilter(base_resource_filter.BaseResourceFilter):
         bindings = network.NetworkDhcpAgentBinding.get_objects(
             context, network_id=network_id)
         return base_scheduler.get_vacant_binding_index(
-            num_agents, bindings, ndab_model.LOWEST_BINDING_INDEX,
+            num_agents, bindings, n_const.LOWEST_AGENT_BINDING_INDEX,
             force_scheduling=force_scheduling)
 
     def bind(self, context, agents, network_id, force_scheduling=False):
@@ -205,7 +206,7 @@ class DhcpFilter(base_resource_filter.BaseResourceFilter):
         for agent in agents:
             binding_index = self.get_vacant_network_dhcp_agent_binding_index(
                 context, network_id, force_scheduling)
-            if binding_index < ndab_model.LOWEST_BINDING_INDEX:
+            if binding_index < n_const.LOWEST_AGENT_BINDING_INDEX:
                 LOG.debug('Unable to find a vacant binding_index for '
                           'network %(network_id)s and agent %(agent_id)s',
                           {'network_id': network_id,
@@ -217,9 +218,9 @@ class DhcpFilter(base_resource_filter.BaseResourceFilter):
             agent_id = agent.id
             try:
                 network.NetworkDhcpAgentBinding(
-                     context, dhcp_agent_id=agent_id,
-                     network_id=network_id,
-                     binding_index=binding_index).create()
+                    context, dhcp_agent_id=agent_id,
+                    network_id=network_id,
+                    binding_index=binding_index).create()
             except exceptions.NeutronDbObjectDuplicateEntry:
                 # it's totally ok, someone just did our job!
                 bound_agents.remove(agent)
@@ -230,7 +231,7 @@ class DhcpFilter(base_resource_filter.BaseResourceFilter):
                       {'network_id': network_id,
                        'agent_id': agent_id,
                        'binding_index': binding_index})
-        super(DhcpFilter, self).bind(context, bound_agents, network_id)
+        super().bind(context, bound_agents, network_id)
 
     def filter_agents(self, plugin, context, network):
         """Return the agents that can host the network.
@@ -243,7 +244,7 @@ class DhcpFilter(base_resource_filter.BaseResourceFilter):
         hosted_agents: A list of agents which already hosts the network.
         """
         agents_dict = self._get_network_hostable_dhcp_agents(
-                                    plugin, context, network)
+            plugin, context, network)
         if not agents_dict['hostable_agents'] or agents_dict['n_agents'] <= 0:
             return {'n_agents': 0, 'hostable_agents': [],
                     'hosted_agents': agents_dict['hosted_agents']}

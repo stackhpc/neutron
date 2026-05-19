@@ -59,7 +59,7 @@ class FakePlugin(base_plugin.NeutronDbPluginV2, agents_db.AgentDbMixin):
 
 class TestAgentsDbBase(testlib_api.SqlTestCase):
     def setUp(self):
-        super(TestAgentsDbBase, self).setUp()
+        super().setUp()
         self.context = context.get_admin_context()
         self.plugin = FakePlugin()
 
@@ -98,7 +98,7 @@ class TestAgentsDbBase(testlib_api.SqlTestCase):
 
 class TestAgentsDbMixin(TestAgentsDbBase):
     def setUp(self):
-        super(TestAgentsDbMixin, self).setUp()
+        super().setUp()
 
         self.agent_status = dict(AGENT_STATUS)
 
@@ -286,7 +286,7 @@ class TestAgentsDbGetAgents(TestAgentsDbBase):
         # ensure that the first scenario will execute with nosetests
         if not hasattr(self, 'agents'):
             self.__dict__.update(self.scenarios[0][1])
-        super(TestAgentsDbGetAgents, self).setUp()
+        super().setUp()
 
     def test_get_agents(self):
         hosts = ['host-%s' % i for i in range(self.agents)]
@@ -302,8 +302,7 @@ class TestAgentsDbGetAgents(TestAgentsDbBase):
                 if self.agents_alive else None)
             self.assertEqual(self.expected_agents, len(returned_agents))
             if self.agents_alive:
-                alive = (self.agents_alive == 'True' or
-                         self.agents_alive == 'true')
+                alive = self.agents_alive in ('True', 'true')
                 for agent in returned_agents:
                     self.assertEqual(alive, agent['alive'])
 
@@ -311,7 +310,7 @@ class TestAgentsDbGetAgents(TestAgentsDbBase):
 class TestAgentExtRpcCallback(TestAgentsDbBase):
 
     def setUp(self):
-        super(TestAgentExtRpcCallback, self).setUp()
+        super().setUp()
         self.callback = agents_db.AgentExtRpcCallback(self.plugin)
         self.callback.server_versions_rpc = mock.Mock()
         self.versions_rpc = self.callback.server_versions_rpc
@@ -382,3 +381,26 @@ class TestAgentExtRpcCallback(TestAgentsDbBase):
                 agent_objs[0].heartbeat_timestamp - datetime.timedelta(
                     hours=1))
             agent_objs[0].update()
+
+    def test_has_alive_neutron_server(self):
+        alive = self.callback.has_alive_neutron_server(self.context)
+        self.assertTrue(alive)
+
+    def test_delete_agent(self):
+        with mock.patch.object(agent_obj, 'Agent',
+                               autospec=True) as mock_agent:
+            fake_agent = mock.Mock()
+            mock_agent.get_object.return_value = fake_agent
+            kwargs = {'host': 'test-host',
+                      'agent_type': 'test-agent-type'}
+            self.callback.delete_agent(self.context, **kwargs)
+            mock_agent.get_object.assert_called_once_with(
+                self.context, **kwargs)
+            fake_agent.delete.assert_called_once()
+
+    def test_get_agents(self):
+        with mock.patch.object(agent_obj.Agent, 'get_objects') as mock_get:
+            host = 'test-host'
+            self.callback.get_agents(self.context, host=host,
+                                     is_active=False)
+            mock_get.assert_called_once_with(self.context, host=host)

@@ -15,59 +15,52 @@
 
 from keystoneauth1 import loading
 from oslo_config import cfg
+from oslo_config import types
 
 from neutron._i18n import _
 
+
+class ZonePrefixIPv4(types.Integer):
+    def __init__(self):
+        super().__init__(
+            min=8, max=24, type_name='IPv4 zone prefix')
+
+    def __call__(self, value):
+        value = super().__call__(value)
+        if value % 8 != 0:
+            raise ValueError(_('Should be multiple of 8'))
+        return value
+
+
+class ZonePrefixIPv6(types.Integer):
+    def __init__(self):
+        super().__init__(
+            min=4, max=124, type_name='IPv6 zone prefix')
+
+    def __call__(self, value):
+        value = super().__call__(value)
+        if value % 4 != 0:
+            raise ValueError(_('Should be multiple of 4'))
+        return value
+
+
 designate_opts = [
-    cfg.StrOpt('url',
+    cfg.URIOpt('url',
+               schemes=['http', 'https'],
                help=_('URL for connecting to designate')),
-    cfg.StrOpt('admin_username',
-               deprecated_for_removal=True,
-               deprecated_since='Xena',
-               deprecated_reason=("This option will be completely replaced by "
-                                  "keystoneauth parameters."),
-               help=_('Username for connecting to designate in admin '
-                      'context')),
-    cfg.StrOpt('admin_password',
-               deprecated_for_removal=True,
-               deprecated_since='Xena',
-               deprecated_reason=("This option will be completely replaced by "
-                                  "keystoneauth parameters."),
-               help=_('Password for connecting to designate in admin '
-                      'context'),
-               secret=True),
-    cfg.StrOpt('admin_tenant_id',
-               deprecated_for_removal=True,
-               deprecated_since='Xena',
-               deprecated_reason=("This option will be completely replaced by "
-                                  "keystoneauth parameters."),
-               help=_('Tenant id for connecting to designate in admin '
-                      'context')),
-    cfg.StrOpt('admin_tenant_name',
-               deprecated_for_removal=True,
-               deprecated_since='Xena',
-               deprecated_reason=("This option will be completely replaced by "
-                                  "keystoneauth parameters."),
-               help=_('Tenant name for connecting to designate in admin '
-                      'context')),
-    cfg.StrOpt('admin_auth_url',
-               deprecated_for_removal=True,
-               deprecated_since='Xena',
-               deprecated_reason=("This option will be completely replaced by "
-                                  "keystoneauth parameters."),
-               help=_('Authorization URL for connecting to designate in admin '
-                      'context')),
     cfg.BoolOpt('allow_reverse_dns_lookup', default=True,
                 help=_('Allow the creation of PTR records')),
-    cfg.IntOpt(
+    cfg.Opt(
         'ipv4_ptr_zone_prefix_size', default=24,
-        help=_('Number of bits in an ipv4 PTR zone that will be considered '
+        type=ZonePrefixIPv4(),
+        help=_('Number of bits in an IPv4 PTR zone that will be considered '
                'network prefix. It has to align to byte boundary. Minimum '
                'value is 8. Maximum value is 24. As a consequence, range '
                'of values is 8, 16 and 24')),
-    cfg.IntOpt(
+    cfg.Opt(
         'ipv6_ptr_zone_prefix_size', default=120,
-        help=_('Number of bits in an ipv6 PTR zone that will be considered '
+        type=ZonePrefixIPv6(),
+        help=_('Number of bits in an IPv6 PTR zone that will be considered '
                'network prefix. It has to align to nyble boundary. Minimum '
                'value is 4. Maximum value is 124. As a consequence, range '
                'of values is 4, 8, 12, 16,..., 124')),

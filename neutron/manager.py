@@ -14,9 +14,11 @@
 #    under the License.
 
 from collections import defaultdict
+import inspect
 
 from neutron_lib.plugins import constants as lib_const
 from neutron_lib.plugins import directory
+from neutron_lib.services import base as service_base
 from neutron_lib.utils import runtime
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -35,7 +37,8 @@ LOG = logging.getLogger(__name__)
 CORE_PLUGINS_NAMESPACE = 'neutron.core_plugins'
 
 
-class ManagerMeta(profiler.TracedMeta, type(periodic_task.PeriodicTasks)):
+class ManagerMeta(profiler.TracedMeta,
+                  type(periodic_task.PeriodicTasks)):  # type:ignore[misc]
     pass
 
 
@@ -50,7 +53,7 @@ class Manager(periodic_task.PeriodicTasks, metaclass=ManagerMeta):
             host = cfg.CONF.host
         self.host = host
         conf = getattr(self, "conf", cfg.CONF)
-        super(Manager, self).__init__(conf)
+        super().__init__(conf)
 
     def periodic_tasks(self, context, raise_on_error=False):
         self.run_periodic_tasks(context, raise_on_error=raise_on_error)
@@ -89,7 +92,7 @@ def validate_pre_plugin_load():
         return msg
 
 
-class NeutronManager(object, metaclass=profiler.TracedMeta):
+class NeutronManager(metaclass=profiler.TracedMeta):
     """Neutron's Manager class.
 
     Neutron's Manager class is responsible for parsing a config file and
@@ -126,7 +129,6 @@ class NeutronManager(object, metaclass=profiler.TracedMeta):
         plugin = self._get_plugin_instance(CORE_PLUGINS_NAMESPACE,
                                            plugin_provider)
         directory.add_plugin(lib_const.CORE, plugin)
-
         # load services from the core plugin first
         self._load_services_from_core_plugin(plugin)
         self._load_service_plugins()
@@ -180,8 +182,7 @@ class NeutronManager(object, metaclass=profiler.TracedMeta):
         core_plugin = directory.get_plugin()
         if core_plugin.has_native_datastore():
             return constants.DEFAULT_SERVICE_PLUGINS.keys()
-        else:
-            return []
+        return []
 
     def _load_service_plugins(self):
         """Loads service plugins.
@@ -199,6 +200,15 @@ class NeutronManager(object, metaclass=profiler.TracedMeta):
             LOG.info("Loading Plugin: %s", provider)
             plugin_class = self._get_plugin_class(
                 'neutron.service_plugins', provider)
+            if (inspect.isclass(plugin_class) and
+                    not issubclass(plugin_class,
+                                   service_base.ServicePluginBase)):
+                klass = plugin_class.__class__
+                LOG.warning(
+                    'Plugin %s is not a subclass of ``ServicePluginBase``, '
+                    'please report a bug in Launchpad '
+                    'https://bugs.launchpad.net/neutron.',
+                    klass.__module__ + '.' + klass.__name__)
             required_plugins = getattr(
                 plugin_class, "required_service_plugins", [])
             for req_plugin in required_plugins:
@@ -273,16 +283,6 @@ class NeutronManager(object, metaclass=profiler.TracedMeta):
         return res_ctrl_mappings.get(
             resource,
             res_ctrl_mappings.get(resource.replace('-', '_')))
-
-    # TODO(blogan): This isn't used by anything else other than tests and
-    # probably should be removed
-    @classmethod
-    def get_service_plugin_by_path_prefix(cls, path_prefix):
-        service_plugins = directory.get_unique_plugins()
-        for service_plugin in service_plugins:
-            plugin_path_prefix = getattr(service_plugin, 'path_prefix', None)
-            if plugin_path_prefix and plugin_path_prefix == path_prefix:
-                return service_plugin
 
     @classmethod
     def add_resource_for_path_prefix(cls, resource, path_prefix):

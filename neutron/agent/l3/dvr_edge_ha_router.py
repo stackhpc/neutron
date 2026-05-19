@@ -31,8 +31,7 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
     """
 
     def __init__(self, host, *args, **kwargs):
-        super(DvrEdgeHaRouter, self).__init__(host,
-                                              *args, **kwargs)
+        super().__init__(host, *args, **kwargs)
         self.enable_snat = None
 
     @property
@@ -79,22 +78,19 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
 
     def add_centralized_floatingip(self, fip, fip_cidr):
         interface_name = self.get_snat_external_device_interface_name(
-                self.get_ex_gw_port())
+            self.get_ex_gw_port())
         self._add_vip(fip_cidr, interface_name)
 
         self.set_ha_port()
         if (self.is_router_primary() and self.ha_port and
                 self.ha_port['status'] == constants.PORT_STATUS_ACTIVE):
-            return super(DvrEdgeHaRouter, self).add_centralized_floatingip(
-                fip, fip_cidr)
-        else:
-            return constants.FLOATINGIP_STATUS_ACTIVE
+            return super().add_centralized_floatingip(fip, fip_cidr)
+        return constants.FLOATINGIP_STATUS_ACTIVE
 
     def remove_centralized_floatingip(self, fip_cidr):
         self._remove_vip(fip_cidr)
         if self.is_router_primary():
-            super(DvrEdgeHaRouter, self).remove_centralized_floatingip(
-                fip_cidr)
+            super().remove_centralized_floatingip(fip_cidr)
 
     def get_centralized_fip_cidr_set(self):
         ex_gw_port = self.get_ex_gw_port()
@@ -105,8 +101,7 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
         return set(self._get_cidrs_from_keepalived(interface_name))
 
     def external_gateway_added(self, ex_gw_port, interface_name):
-        super(DvrEdgeHaRouter, self).external_gateway_added(
-            ex_gw_port, interface_name)
+        super().external_gateway_added(ex_gw_port, interface_name)
         for port in self.get_snat_interfaces():
             snat_interface_name = self._get_snat_int_device_name(port['id'])
             self._disable_ipv6_addressing_on_interface(snat_interface_name)
@@ -124,8 +119,7 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
                                namespace=self.ha_namespace,
                                prefix=constants.SNAT_INT_DEV_PREFIX)
             self._clear_vips(snat_interface)
-        super(DvrEdgeHaRouter, self)._external_gateway_removed(
-            ex_gw_port, interface_name)
+        super()._external_gateway_removed(ex_gw_port, interface_name)
         self._clear_vips(interface_name)
 
     def external_gateway_updated(self, ex_gw_port, interface_name):
@@ -140,7 +134,7 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
         return self.agent_conf.agent_mode == constants.L3_AGENT_MODE_DVR_SNAT
 
     def _dvr_internal_network_removed(self, port):
-        super(DvrEdgeHaRouter, self)._dvr_internal_network_removed(port)
+        super()._dvr_internal_network_removed(port)
         sn_port = self.get_snat_port_for_internal_port(port, self.snat_ports)
         if not sn_port:
             return
@@ -154,3 +148,7 @@ class DvrEdgeHaRouter(dvr_edge_router.DvrEdgeRouter,
                          namespace=self.snat_namespace.name,
                          prefix=constants.SNAT_INT_DEV_PREFIX,
                          mtu=port.get('mtu'))
+
+    def _should_update_snat_routing_table(self):
+        # NOTE: keepalived is responsible for routes updating
+        return False

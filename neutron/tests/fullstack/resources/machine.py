@@ -23,9 +23,10 @@ from neutron_lib import constants
 
 from neutron.agent.common import async_process
 from neutron.agent.linux import ip_lib
-from neutron.common import utils
 from neutron.tests.common import machine_fixtures
 from neutron.tests.common import net_helpers
+from neutron.tests.fullstack import base as fullstack_base
+
 
 FULLSTACK_DHCLIENT_SCRIPT = 'fullstack-dhclient-script'
 LOG = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ class FakeFullstackMachine(machine_fixtures.FakeMachineBase):
     def __init__(self, host, network_id, tenant_id, safe_client,
                  neutron_port=None, bridge_name=None, use_dhcp=False,
                  use_dhcp6=False):
-        super(FakeFullstackMachine, self).__init__()
+        super().__init__()
         self.host = host
         self.tenant_id = tenant_id
         self.network_id = network_id
@@ -76,7 +77,7 @@ class FakeFullstackMachine(machine_fixtures.FakeMachineBase):
         self.use_dhcp6 = use_dhcp6
 
     def _setUp(self):
-        super(FakeFullstackMachine, self)._setUp()
+        super()._setUp()
 
         self.bridge = self._get_bridge()
 
@@ -104,21 +105,18 @@ class FakeFullstackMachine(machine_fixtures.FakeMachineBase):
                 self.neutron_port['id'],
                 {'port': {pbs.HOST_ID: self.host.hostname}})
             self.addCleanup(self.safe_client.client.update_port,
-                self.neutron_port['id'],
-                {'port': {pbs.HOST_ID: ''}})
+                            self.neutron_port['id'],
+                            {'port': {pbs.HOST_ID: ''}})
 
     def _get_bridge(self):
         if self.bridge_name is None:
-            return self.host.get_bridge(self.network_id)
+            return self.host.get_bridge()
         agent_type = self.host.host_desc.l2_agent_type
-        if agent_type == constants.AGENT_TYPE_OVS:
-            new_bridge = self.useFixture(
-                net_helpers.OVSTrunkBridgeFixture(self.bridge_name)).bridge
-        else:
+        if agent_type != constants.AGENT_TYPE_OVS:
             raise NotImplementedError(
                 "Support for %s agent is not implemented." % agent_type)
-
-        return new_bridge
+        return self.useFixture(
+            net_helpers.OVSTrunkBridgeFixture(self.bridge_name)).bridge
 
     def _configure_ipaddress(self, port_id, fixed_ip):
         subnet_id = fixed_ip['subnet_id']
@@ -135,7 +133,7 @@ class FakeFullstackMachine(machine_fixtures.FakeMachineBase):
         else:
             self._ip = fixed_ip['ip_address']
             prefixlen = netaddr.IPNetwork(subnet['subnet']['cidr']).prefixlen
-            self._ip_cidr = '%s/%s' % (self._ip, prefixlen)
+            self._ip_cidr = f'{self._ip}/{prefixlen}'
             self.gateway_ip = subnet['subnet']['gateway_ip']
 
             if self.use_dhcp:
@@ -159,8 +157,8 @@ class FakeFullstackMachine(machine_fixtures.FakeMachineBase):
     def _start_async_dhclient(self, port_id, version=constants.IP_VERSION_4):
         cmd = ["dhclient", '-%s' % version,
                '-lf',
-               '%s/%s.lease' % (self.host.neutron_config.temp_dir,
-                                port_id),
+               '{}/{}.lease'.format(self.host.neutron_config.temp_dir,
+                                    port_id),
                '-sf', self.NO_RESOLV_CONF_DHCLIENT_SCRIPT_PATH,
                '--no-pid', '-d', self.port.name]
         self.dhclient_async = async_process.AsyncProcess(
@@ -208,13 +206,13 @@ class FakeFullstackMachine(machine_fixtures.FakeMachineBase):
         return gateway_info.get('via') == self.gateway_ip
 
     def block_until_boot(self):
-        utils.wait_until_true(
+        fullstack_base.wait_until_true(
             lambda: (self.safe_client.client.show_port(self.neutron_port['id'])
                      ['port']['status'] == 'ACTIVE'),
             sleep=3)
 
     def block_until_dhcp_config_done(self):
-        utils.wait_until_true(
+        fullstack_base.wait_until_true(
             lambda: self.ip_configured() and self.gateway_configured(),
             exception=machine_fixtures.FakeMachineException(
                 "Address %s or gateway %s not configured properly on "
@@ -233,18 +231,13 @@ class FakeFullstackMachine(machine_fixtures.FakeMachineBase):
             self.safe_client.client.update_port(self.neutron_port['id'],
                                                 {'port': {pbs.HOST_ID: ''}})
         # All associated vlan interfaces are deleted too
-        # If VM is connected to Linuxbridge it hasn't got "delete_port" method
-        # and it is not necessary to delete tap port connected to this bridge.
-        # It is veth pair and will be removed together with VM namespace
-        if hasattr(self.bridge, "delete_port"):
-            self.bridge.delete_port(self.port.name)
-
+        self.bridge.delete_port(self.port.name)
         ip_lib.delete_network_namespace(self.namespace)
 
 
 class FakeFullstackTrunkMachine(FakeFullstackMachine):
     def __init__(self, trunk, *args, **kwargs):
-        super(FakeFullstackTrunkMachine, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.trunk = trunk
 
     def add_vlan_interface(self, mac_address, ip_address, segmentation_id):

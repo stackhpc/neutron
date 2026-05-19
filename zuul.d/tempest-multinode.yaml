@@ -1,6 +1,41 @@
+- nodeset:
+    name: neutron-three-node-noble
+    nodes:
+      - name: controller
+        label: ubuntu-noble
+      - name: compute1
+        label: ubuntu-noble
+      - name: compute2
+        label: ubuntu-noble
+    groups:
+      # Node where tests are executed and test results collected
+      - name: tempest
+        nodes:
+          - controller
+      # Nodes running the compute service
+      - name: compute
+        nodes:
+          - compute1
+          - compute2
+      # Nodes that are not the controller
+      - name: subnode
+        nodes:
+          - compute1
+          - compute2
+      # Switch node for multinode networking setup
+      - name: switch
+        nodes:
+          - controller
+      # Peer nodes for multinode networking setup
+      - name: peers
+        nodes:
+          - compute1
+          - compute2
+
 - job:
     name: neutron-ovs-tempest-dvr-ha-multinode-full
     parent: tempest-multinode-full-py3
+    nodeset: neutron-three-node-noble
     timeout: 10800
     roles:
       - zuul: openstack/neutron-tempest-plugin
@@ -9,6 +44,9 @@
       - openstack/tempest
     pre-run: playbooks/dvr-multinode-scenario-pre-run.yaml
     irrelevant-files: &openvswitch-irrelevant-files
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^releasenotes/.*$
@@ -20,37 +58,50 @@
       - ^neutron/tests/.*$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
       - ^neutron/agent/ovn/.*$
-      - ^neutron/agent/windows/.*$
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
       - ^neutron/plugins/ml2/drivers/ovn/.*$
+      - ^neutron/scheduler/l3_ovn_scheduler.py
       - ^neutron/services/ovn_l3/.*$
       - ^neutron/services/logapi/drivers/ovn/.*$
       - ^neutron/services/portforwarding/drivers/ovn/.*$
-      - ^neutron/services/qos/drivers/linuxbridge/.*$
       - ^neutron/services/qos/drivers/ovn/.*$
-      - ^neutron/services/trunk/drivers/linuxbridge/.*$
       - ^neutron/services/trunk/drivers/ovn/.*$
       - ^neutron/cmd/ovn/.*$
       - ^neutron/common/ovn/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
       - ^vagrant/.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
     vars:
       tox_envlist: integrated-network
       devstack_localrc:
-        CIRROS_VERSION: 0.5.1
-        DEFAULT_IMAGE_NAME: cirros-0.5.1-x86_64-uec
-        DEFAULT_IMAGE_FILE_NAME: cirros-0.5.1-x86_64-uec.tar.gz
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
         Q_ML2_TENANT_NETWORK_TYPE: vxlan
-        Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch,linuxbridge
+        Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
         Q_AGENT: openvswitch
+        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_services:
         br-ex-tcpdump: true
         br-int-flows: true
+        # Nova services
+        # NOTE(slaweq): this node is going to be only control plane and
+        # networker node with "dvr_snat" L3 agent mode. Other nodes in that job
+        # are compute nodes with L3 agent in "dvr" mode
+        n-cpu: false
         # Neutron services
         q-agt: true
         q-dhcp: true
@@ -83,9 +134,6 @@
             DEFAULT:
               router_distributed: True
               l3_ha: True
-          # NOTE(slaweq): We can get rid of this hardcoded absolute path when
-          # devstack-tempest job will be switched to use lib/neutron instead of
-          # lib/neutron-legacy
           "/$NEUTRON_CORE_PLUGIN_CONF":
             ml2:
               mechanism_drivers: openvswitch,l2population
@@ -112,7 +160,7 @@
           neutron: https://opendev.org/openstack/neutron.git
         devstack_localrc:
           Q_ML2_TENANT_NETWORK_TYPE: vxlan
-          Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch,linuxbridge
+          Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
           Q_AGENT: openvswitch
         devstack_services:
           q-agt: true
@@ -141,9 +189,6 @@
             $NEUTRON_CONF:
               DEFAULT:
                 router_distributed: True
-            # NOTE(slaweq): We can get rid of this hardcoded absolute path when
-            # devstack-tempest job will be switched to use lib/neutron instead of
-            # lib/neutron-legacy
             "/$NEUTRON_CORE_PLUGIN_CONF":
               agent:
                 enable_distributed_routing: True
@@ -156,7 +201,7 @@
                 resource_provider_bandwidths: br-ex:1000000:1000000
             $NEUTRON_L3_CONF:
               DEFAULT:
-                agent_mode: dvr_snat
+                agent_mode: dvr
               agent:
                 availability_zone: nova
                 debug_iptables_rules: True
@@ -169,12 +214,14 @@
     vars:
       tox_envlist: integrated-network
       devstack_localrc:
-        CIRROS_VERSION: 0.5.1
-        DEFAULT_IMAGE_NAME: cirros-0.5.1-x86_64-uec
-        DEFAULT_IMAGE_FILE_NAME: cirros-0.5.1-x86_64-uec.tar.gz
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
         Q_ML2_TENANT_NETWORK_TYPE: vxlan
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
         Q_AGENT: openvswitch
+        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
       devstack_services:
@@ -225,7 +272,7 @@
       subnode:
         devstack_localrc:
           Q_ML2_TENANT_NETWORK_TYPE: vxlan
-          Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch,linuxbridge
+          Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
           Q_AGENT: openvswitch
         devstack_services:
           q-agt: true
@@ -257,12 +304,14 @@
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
       devstack_localrc:
-        CIRROS_VERSION: 0.5.1
-        DEFAULT_IMAGE_NAME: cirros-0.5.1-x86_64-uec
-        DEFAULT_IMAGE_FILE_NAME: cirros-0.5.1-x86_64-uec.tar.gz
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
         Q_ML2_TENANT_NETWORK_TYPE: vxlan
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
         Q_AGENT: openvswitch
+        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_services:
         br-ex-tcpdump: true
         br-int-flows: true
@@ -295,11 +344,15 @@
           $NEUTRON_L3_CONF:
             agent:
               debug_iptables_rules: True
+        test-config:
+          $TEMPEST_CONFIG:
+            scenario:
+              dhcp_client: dhcpcd
     group-vars:
       subnode:
         devstack_localrc:
           Q_ML2_TENANT_NETWORK_TYPE: vxlan
-          Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch,linuxbridge
+          Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
           Q_AGENT: openvswitch
         devstack_services:
           q-agt: true
@@ -328,6 +381,9 @@
       - openstack/neutron-tempest-plugin
       - openstack/tempest
     irrelevant-files: &ovn-irrelevant-files
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^releasenotes/.*$
@@ -339,29 +395,34 @@
       - ^neutron/tests/.*$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
       - ^neutron/agent/dhcp/.*$
       - ^neutron/agent/l2/.*$
       - ^neutron/agent/l3/.*$
       - ^neutron/agent/metadata/.*$
-      - ^neutron/agent/windows/.*$
       - ^neutron/agent/dhcp_agent.py
       - ^neutron/agent/l3_agent.py
       - ^neutron/agent/metadata_agent.py
       - ^neutron/agent/resource_cache.py
       - ^neutron/agent/rpc.py
       - ^neutron/agent/securitygroup_rpc.py
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/openvswitch/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
-      - ^neutron/services/qos/drivers/linuxbridge/.*$
       - ^neutron/services/qos/drivers/openvswitch/.*$
-      - ^neutron/services/trunk/drivers/linuxbridge/.*$
       - ^neutron/services/trunk/drivers/openvswitch/.*$
       - ^neutron/scheduler/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
     roles:
       - zuul: zuul/zuul-jobs
       - zuul: openstack/neutron-tempest-plugin
@@ -372,15 +433,20 @@
           $TEMPEST_CONFIG:
             neutron_plugin_options:
               is_igmp_snooping_enabled: True
+            scenario:
+              dhcp_client: dhcpcd
         post-config:
           "/$NEUTRON_CORE_PLUGIN_CONF":
             ovn:
               enable_distributed_floating_ip: True
+              ovs_create_tap: True
       devstack_localrc:
-        CIRROS_VERSION: 0.5.1
-        DEFAULT_IMAGE_NAME: cirros-0.5.1-x86_64-uec
-        DEFAULT_IMAGE_FILE_NAME: cirros-0.5.1-x86_64-uec.tar.gz
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
         Q_AGENT: ovn
+        OVN_AGENT_EXTENSIONS: 'metadata'
         ML2_L3_PLUGIN: ovn-router,trunk
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
         Q_ML2_TENANT_NETWORK_TYPE: geneve
@@ -392,6 +458,7 @@
         BUILD_TIMEOUT: 784
         ENABLE_TLS: True
         OVN_IGMP_SNOOPING_ENABLE: True
+        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron
         neutron-tempest-plugin: https://opendev.org/openstack/neutron-tempest-plugin
@@ -405,7 +472,8 @@
         etcd: false
         br-ex-tcpdump: true
         br-int-flows: true
-        q-ovn-metadata-agent: true
+        q-ovn-metadata-agent: false
+        q-ovn-agent: true
         ovn-controller: true
         ovn-northd: true
         ovs-vswitchd: true
@@ -452,7 +520,8 @@
           q-l3: false
           q-meta: false
           q-metering: false
-          q-ovn-metadata-agent: true
+          q-ovn-metadata-agent: false
+          q-ovn-agent: true
           tls-proxy: true
           dstat: true
           # Cinder services
@@ -460,13 +529,13 @@
           c-vol: false
         devstack_localrc:
           Q_AGENT: ovn
+          OVN_AGENT_EXTENSIONS: 'metadata'
           Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
           Q_ML2_TENANT_NETWORK_TYPE: geneve
           Q_USE_PROVIDERNET_FOR_PUBLIC: true
           PHYSICAL_NETWORK: public
           ENABLE_CHASSIS_AS_GW: false
           OVN_DBS_LOG_LEVEL: dbg
-          USE_PYTHON3: True
           ENABLE_TLS: True
 
 - job:
@@ -477,9 +546,9 @@
       tempest_test_regex: ""
 
 - job:
-    # TODO(slaweq): propose job with ovs-release and move -master one to
-    # experimental queue
+    # TODO(slaweq): move -master one to experimental queue
     name: neutron-ovn-tempest-full-multinode-ovs-master
+    branches: ^master$
     parent: neutron-ovn-multinode-base
     run: playbooks/multinode-devstack-custom.yaml
     vars:
@@ -521,10 +590,26 @@
       devstack_localrc:
         OVN_BUILD_FROM_SOURCE: True
         OVN_BRANCH: main
-        OVS_BRANCH: master
+        OVS_BRANCH: main
     group-vars:
       subnode:
         devstack_localrc:
           OVN_BUILD_FROM_SOURCE: True
           OVN_BRANCH: main
-          OVS_BRANCH: master
+          OVS_BRANCH: main
+
+- job:
+    name: neutron-ovn-tempest-full-multinode-ovs-lts
+    branches: ^master$
+    parent: neutron-ovn-tempest-full-multinode-ovs-master
+    vars:
+      devstack_localrc:
+        OVN_BUILD_FROM_SOURCE: True
+        OVN_BRANCH: branch-24.03
+        OVS_BRANCH: branch-3.3
+    group-vars:
+      subnode:
+        devstack_localrc:
+          OVN_BUILD_FROM_SOURCE: True
+          OVN_BRANCH: branch-24.03
+          OVS_BRANCH: branch-3.3

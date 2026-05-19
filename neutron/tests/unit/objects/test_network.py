@@ -12,7 +12,12 @@
 
 from unittest import mock
 
+from neutron_lib.api.definitions import availability_zone as az_def
+
 from neutron.db import rbac_db_models
+from neutron_lib import constants as lib_constants
+from oslo_utils import uuidutils
+
 from neutron.objects import base as obj_base
 from neutron.objects import network
 from neutron.objects.qos import binding
@@ -27,6 +32,7 @@ class NetworkRBACDbObjectTestCase(test_rbac.TestRBACObjectMixin,
                                   testlib_api.SqlTestCase):
 
     _test_class = network.NetworkRBAC
+    _parent_class = network.Network
 
     def setUp(self):
         self._mock_get_valid_actions = mock.patch.object(
@@ -34,7 +40,7 @@ class NetworkRBACDbObjectTestCase(test_rbac.TestRBACObjectMixin,
             return_value=(rbac_db_models.ACCESS_EXTERNAL,
                           rbac_db_models.ACCESS_SHARED))
         self.mock_get_valid_actions = self._mock_get_valid_actions.start()
-        super(NetworkRBACDbObjectTestCase, self).setUp()
+        super().setUp()
         for obj in self.db_objs:
             net_obj = network.Network(self.context, id=obj['object_id'])
             net_obj.create()
@@ -43,12 +49,12 @@ class NetworkRBACDbObjectTestCase(test_rbac.TestRBACObjectMixin,
         self.objs[0].create()
         return self.objs[0]
 
-    def test_object_version_degradation_1_1_to_1_0_no_id_no_project_id(self):
-        network_rbac_obj = self._create_test_network_rbac()
-        network_rbac_obj = network_rbac_obj.obj_to_primitive('1.0')
-        self.assertNotIn('project_id',
-                         network_rbac_obj['versioned_object.data'])
-        self.assertNotIn('id', network_rbac_obj['versioned_object.data'])
+    def _create_random_parent_object(self):
+        objclass_fields = self.get_random_db_fields(self._parent_class)
+        objclass_fields.pop(az_def.AZ_HINTS)
+        _obj = self._parent_class(self.context, **objclass_fields)
+        _obj.create()
+        return _obj
 
 
 class NetworkRBACIfaceOjectTestCase(test_rbac.TestRBACObjectMixin,
@@ -62,7 +68,7 @@ class NetworkRBACIfaceOjectTestCase(test_rbac.TestRBACObjectMixin,
             return_value=(rbac_db_models.ACCESS_EXTERNAL,
                           rbac_db_models.ACCESS_SHARED))
         self.mock_get_valid_actions = self._mock_get_valid_actions.start()
-        super(NetworkRBACIfaceOjectTestCase, self).setUp()
+        super().setUp()
 
 
 class NetworkDhcpAgentBindingObjectIfaceTestCase(
@@ -77,7 +83,7 @@ class NetworkDhcpAgentBindingDbObjectTestCase(
     _test_class = network.NetworkDhcpAgentBinding
 
     def setUp(self):
-        super(NetworkDhcpAgentBindingDbObjectTestCase, self).setUp()
+        super().setUp()
         self._network = self._create_test_network()
 
         index = iter(range(1, len(self.objs) + 2))
@@ -97,7 +103,7 @@ class NetworkPortSecurityDbObjTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = network.NetworkPortSecurity
 
     def setUp(self):
-        super(NetworkPortSecurityDbObjTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields({'id': lambda: self._create_test_network_id()})
 
 
@@ -105,7 +111,7 @@ class NetworkSegmentIfaceObjTestCase(obj_test_base.BaseObjectIfaceTestCase):
     _test_class = network.NetworkSegment
 
     def setUp(self):
-        super(NetworkSegmentIfaceObjTestCase, self).setUp()
+        super().setUp()
         # TODO(ihrachys): we should not need to duplicate that in every single
         # place, instead we should move the default pager into the base class
         # attribute and pull it from there for testing matters. Leaving it for
@@ -120,9 +126,82 @@ class NetworkSegmentDbObjTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = network.NetworkSegment
 
     def setUp(self):
-        super(NetworkSegmentDbObjTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'network_id': lambda: self._create_test_network_id()})
+
+    _seg_index = 0
+
+    def _create_segment(self, network_type, physical_network, segmentation_id,
+                        network_id=None):
+        NetworkSegmentDbObjTestCase._seg_index += 1
+        seg = network.NetworkSegment(
+            self.context,
+            id=uuidutils.generate_uuid(),
+            network_id=network_id or self._create_test_network_id(),
+            network_type=network_type,
+            physical_network=physical_network,
+            segmentation_id=segmentation_id,
+            segment_index=self._seg_index)
+        seg.create()
+        return seg
+
+    def test_count_segments(self):
+        net_id = self._create_test_network_id()
+        self._create_segment(lib_constants.TYPE_VLAN, 'physnet1', 100,
+                             network_id=net_id)
+        self._create_segment(lib_constants.TYPE_VLAN, 'physnet1', 200,
+                             network_id=net_id)
+        self._create_segment(lib_constants.TYPE_VLAN, 'physnet2', 50,
+                             network_id=net_id)
+        self._create_segment(lib_constants.TYPE_VLAN, 'physnet2', 150,
+                             network_id=net_id)
+        self._create_segment(lib_constants.TYPE_VLAN, 'physnet2', 300,
+                             network_id=net_id)
+        self._create_segment(lib_constants.TYPE_VXLAN, None, 5000,
+                             network_id=net_id)
+
+        _count = network.NetworkSegment.count_segments
+        # Match network_type and physical_network
+        self.assertEqual(
+            2, _count(self.context, lib_constants.TYPE_VLAN, 'physnet1'))
+        self.assertEqual(
+            3, _count(self.context, lib_constants.TYPE_VLAN, 'physnet2'))
+        # Wrong network_type
+        self.assertEqual(
+            0, _count(self.context, lib_constants.TYPE_GRE, 'physnet1'))
+        # Wrong physical_network
+        self.assertEqual(
+            0, _count(self.context, lib_constants.TYPE_VLAN, 'no-such'))
+        # Tunnel type with physical_network=None
+        self.assertEqual(
+            1, _count(self.context, lib_constants.TYPE_VXLAN, None))
+        # Mismatch: VXLAN does not have physnet1
+        self.assertEqual(
+            0, _count(self.context, lib_constants.TYPE_VXLAN, 'physnet1'))
+
+        # segment_range filtering on physnet2 (segments: 50, 150, 300)
+        self.assertEqual(
+            3, _count(self.context, lib_constants.TYPE_VLAN, 'physnet2',
+                      segment_range={'minimum': 1, 'maximum': 400}))
+        self.assertEqual(
+            1, _count(self.context, lib_constants.TYPE_VLAN, 'physnet2',
+                      segment_range={'minimum': 100, 'maximum': 200}))
+        self.assertEqual(
+            0, _count(self.context, lib_constants.TYPE_VLAN, 'physnet2',
+                      segment_range={'minimum': 51, 'maximum': 149}))
+        # Inclusive boundaries
+        self.assertEqual(
+            2, _count(self.context, lib_constants.TYPE_VLAN, 'physnet2',
+                      segment_range={'minimum': 50, 'maximum': 150}))
+        # No range returns all
+        self.assertEqual(
+            3, _count(self.context, lib_constants.TYPE_VLAN, 'physnet2',
+                      segment_range=None))
+        # Range that excludes physnet1 segments (100, 200)
+        self.assertEqual(
+            0, _count(self.context, lib_constants.TYPE_VLAN, 'physnet1',
+                      segment_range={'minimum': 250, 'maximum': 400}))
 
     def test_hosts(self):
         hosts = ['host1', 'host2']
@@ -150,7 +229,7 @@ class NetworkObjectIfaceTestCase(test_rbac.RBACBaseObjectIfaceTestCase):
     _test_class = network.Network
 
     def setUp(self):
-        super(NetworkObjectIfaceTestCase, self).setUp()
+        super().setUp()
         self.pager_map[network.NetworkSegment.obj_name()] = (
             obj_base.Pager(
                 sorts=[('network_id', True), ('segment_index', True)]))
@@ -250,6 +329,11 @@ class NetworkDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
         obj = network.Network.get_object(self.context, id=obj.id)
         self.assertEqual('bar.com', obj.dns_domain)
 
+    def test_v1_2_to_v1_1_drops_qinq_attribute(self):
+        network_obj = self._make_object(self.obj_fields[0])
+        network_v1_1 = network_obj.obj_to_primitive(target_version='1.1')
+        self.assertNotIn('qinq', network_v1_1['versioned_object.data'])
+
 
 class SegmentHostMappingIfaceObjectTestCase(
         obj_test_base.BaseObjectIfaceTestCase):
@@ -263,7 +347,7 @@ class SegmentHostMappingDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = network.SegmentHostMapping
 
     def setUp(self):
-        super(SegmentHostMappingDbObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'segment_id': lambda: self._create_test_segment_id()})
 
@@ -280,7 +364,7 @@ class NetworkDNSDomainDbObjectTestcase(obj_test_base.BaseDbObjectTestCase,
     _test_class = network.NetworkDNSDomain
 
     def setUp(self):
-        super(NetworkDNSDomainDbObjectTestcase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'network_id': lambda: self._create_test_network_id()})
 
@@ -297,6 +381,6 @@ class ExternalNetworkDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = network.ExternalNetwork
 
     def setUp(self):
-        super(ExternalNetworkDbObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'network_id': lambda: self._create_test_network_id()})

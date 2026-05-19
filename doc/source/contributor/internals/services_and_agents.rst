@@ -21,7 +21,7 @@
       (Avoid deeper levels because they do not render well.)
 
 
-Services and agents
+Services and Agents
 ===================
 
 A usual Neutron setup consists of multiple services and agents running on one
@@ -31,8 +31,8 @@ services. Among those of special interest:
 
 #. neutron-server that provides API endpoints and serves as a single point of
    access to the database. It usually runs on nodes called Controllers.
-#. Layer2 agent that can utilize Open vSwitch, Linuxbridge or other vendor
-   specific technology to provide network segmentation and isolation for project
+#. Layer2 agent that can utilize Open vSwitch or other vendor specific
+   technology to provide network segmentation and isolation for project
    networks. The L2 agent should run on every node where it is deemed
    responsible for wiring and securing virtual interfaces (usually both Compute
    and Network nodes).
@@ -53,28 +53,6 @@ under neutron/cmd/... path.
 Note: some existing vendor/plugin agents still maintain their entry points in
 other locations. Developers responsible for those agents are welcome to apply
 the guideline above.
-
-
-Interacting with Eventlet
--------------------------
-
-Neutron extensively utilizes the eventlet library to provide asynchronous
-concurrency model to its services. To utilize it correctly, the following
-should be kept in mind.
-
-If a service utilizes the eventlet library, then it should not call
-eventlet.monkey_patch() directly but instead maintain its entry point main()
-function under neutron/cmd/eventlet/... If that is the case, the standard
-Python library will be automatically patched for the service on entry point
-import (monkey patching is done inside `python package file
-<http://opendev.org/openstack/neutron/src/neutron/cmd/eventlet/__init__.py>`_).
-
-Note: an entry point 'main()' function may just be an indirection to a real
-callable located elsewhere, as is done for reference services such as DHCP, L3
-and the neutron-server.
-
-For more info on the rationale behind the code tree setup, see `the
-corresponding cross-project spec <https://review.opendev.org/154642>`_.
 
 
 Connecting to the Database

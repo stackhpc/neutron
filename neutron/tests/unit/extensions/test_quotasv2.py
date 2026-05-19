@@ -29,6 +29,7 @@ from neutron.api import extensions
 from neutron.api.v2 import router
 from neutron.common import config
 from neutron.conf import quota as qconf
+from neutron.db.quota import api as quota_api
 from neutron.db.quota import driver
 from neutron.db.quota import driver_nolock
 from neutron.db.quota import driver_null
@@ -47,7 +48,7 @@ _get_path = test_base._get_path
 class QuotaExtensionTestCase(testlib_api.WebTestCase):
 
     def setUp(self):
-        super(QuotaExtensionTestCase, self).setUp()
+        super().setUp()
         # Ensure existing ExtensionManager is not used
         extensions.PluginAwareExtensionManager._instance = None
 
@@ -90,7 +91,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
     def setUp(self):
         cfg.CONF.set_override(
             'quota_driver', qconf.QUOTA_DB_DRIVER, group='QUOTAS')
-        super(QuotaExtensionDbTestCase, self).setUp()
+        super().setUp()
 
     def test_quotas_loaded_right(self):
         res = self.api.get(_get_path('quotas', fmt=self.fmt))
@@ -120,8 +121,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_show_default_quotas_with_admin(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=True)
         res = self.api.get(_get_path('quotas', id=project_id,
                                      action=DEFAULT_QUOTAS_ACTION,
                                      fmt=self.fmt),
@@ -137,8 +137,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_show_default_quotas_with_owner_project(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=False)}
+        env = test_base._get_neutron_env(project_id, as_admin=False)
         res = self.api.get(_get_path('quotas', id=project_id,
                                      action=DEFAULT_QUOTAS_ACTION,
                                      fmt=self.fmt),
@@ -154,8 +153,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_show_default_quotas_without_admin_forbidden_returns_403(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=False)}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=False)
         res = self.api.get(_get_path('quotas', id=project_id,
                                      action=DEFAULT_QUOTAS_ACTION,
                                      fmt=self.fmt),
@@ -164,8 +162,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_show_quotas_with_admin(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=True)
         res = self.api.get(_get_path('quotas', id=project_id, fmt=self.fmt),
                            extra_environ=env)
         self.assertEqual(200, res.status_int)
@@ -179,16 +176,14 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_show_quotas_without_admin_forbidden_returns_403(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=False)}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=False)
         res = self.api.get(_get_path('quotas', id=project_id, fmt=self.fmt),
                            extra_environ=env, expect_errors=True)
         self.assertEqual(403, res.status_int)
 
     def test_show_quotas_with_owner_project(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=False)}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
         res = self.api.get(_get_path('quotas', id=project_id, fmt=self.fmt),
                            extra_environ=env)
         self.assertEqual(200, res.status_int)
@@ -202,8 +197,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_list_quotas_with_admin(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
         res = self.api.get(_get_path('quotas', fmt=self.fmt),
                            extra_environ=env)
         self.assertEqual(200, res.status_int)
@@ -212,16 +206,14 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_list_quotas_without_admin_forbidden_returns_403(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=False)}
+        env = test_base._get_neutron_env(project_id, as_admin=False)
         res = self.api.get(_get_path('quotas', fmt=self.fmt),
                            extra_environ=env, expect_errors=True)
         self.assertEqual(403, res.status_int)
 
     def test_update_quotas_without_admin_forbidden_returns_403(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=False)}
+        env = test_base._get_neutron_env(project_id, as_admin=False)
         quotas = {'quota': {'network': 100}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
@@ -230,8 +222,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_update_quotas_with_non_integer_returns_400(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
         quotas = {'quota': {'network': 'abc'}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
@@ -240,8 +231,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_update_quotas_with_negative_integer_returns_400(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
         quotas = {'quota': {'network': -2}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
@@ -250,8 +240,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_update_quotas_with_out_of_range_integer_returns_400(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
         quotas = {'quota': {'network': constants.DB_INTEGER_MAX_VALUE + 1}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
@@ -260,9 +249,8 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_update_quotas_to_unlimited(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=True)}
-        quotas = {'quota': {'network': -1}}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
+        quotas = {'quota': {'network': quota_api.UNLIMITED_QUOTA}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
                            expect_errors=False)
@@ -270,8 +258,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_update_quotas_exceeding_current_limit(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
         quotas = {'quota': {'network': 120}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
@@ -280,8 +267,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_update_quotas_with_non_support_resource_returns_400(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
         quotas = {'quota': {'abc': 100}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
@@ -290,8 +276,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_update_quotas_with_admin(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=True)
         quotas = {'quota': {'network': 100}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env)
@@ -306,9 +291,8 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_update_attributes(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=True)}
-        quotas = {'quota': {'extra1': 100}}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=True)
+        quotas = {'quota': {'extra1': 100, 'force': True}}
         res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env)
         self.assertEqual(200, res.status_int)
@@ -319,27 +303,27 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
         self.assertEqual(100, quota['quota']['extra1'])
 
     @mock.patch.object(driver_nolock.DbQuotaNoLockDriver, 'get_resource_usage')
-    def test_update_quotas_check_limit(self, mock_get_resource_usage):
-        tenant_id = 'tenant_id1'
-        env = {'neutron.context': context.Context('', tenant_id,
-                                                  is_admin=True)}
-        quotas = {'quota': {'network': 100, 'check_limit': False}}
-        res = self.api.put(_get_path('quotas', id=tenant_id, fmt=self.fmt),
+    def test_update_quotas_force(self, mock_get_resource_usage):
+        project_id = 'project_id1'
+        env = test_base._get_neutron_env(project_id, as_admin=True)
+        # force=True; no resource usage check
+        quotas = {'quota': {'network': 100, 'force': True}}
+        res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
                            expect_errors=False)
         self.assertEqual(200, res.status_int)
 
-        quotas = {'quota': {'network': 50, 'check_limit': True}}
+        # force=False; before the quota is set, there is a resource usage check
+        quotas = {'quota': {'network': 50}}  # force=False by default
         mock_get_resource_usage.return_value = 51
-        res = self.api.put(_get_path('quotas', id=tenant_id, fmt=self.fmt),
+        res = self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
                            self.serialize(quotas), extra_environ=env,
                            expect_errors=True)
         self.assertEqual(400, res.status_int)
 
     def test_delete_quotas_with_admin(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=True)
         # Create a quota to ensure we have something to delete
         quotas = {'quota': {'network': 100}}
         self.api.put(_get_path('quotas', id=project_id, fmt=self.fmt),
@@ -350,16 +334,14 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_delete_quotas_without_admin_forbidden_returns_403(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=False)}
+        env = test_base._get_neutron_env(project_id, as_admin=False)
         res = self.api.delete(_get_path('quotas', id=project_id, fmt=self.fmt),
                               extra_environ=env, expect_errors=True)
         self.assertEqual(403, res.status_int)
 
     def test_delete_quota_with_unknown_project_returns_404(self):
         project_id = 'idnotexist'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=True)
         res = self.api.delete(_get_path('quotas', id=project_id, fmt=self.fmt),
                               extra_environ=env, expect_errors=True)
         self.assertEqual(exc.HTTPNotFound.code, res.status_int)
@@ -373,8 +355,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
 
     def test_quotas_limit_check(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id, as_admin=True)
         quotas = {'quota': {'network': 5}}
         res = self.api.put(_get_path('quotas', id=project_id,
                                      fmt=self.fmt),
@@ -416,7 +397,7 @@ class QuotaExtensionDbTestCase(QuotaExtensionTestCase):
     def test_quotas_get_project_from_empty_request_context_returns_400(self):
         env = {'neutron.context': context.Context('', '',
                                                   is_admin=True)}
-        res = self.api.get(_get_path('quotas/tenant', fmt=self.fmt),
+        res = self.api.get(_get_path('quotas/project', fmt=self.fmt),
                            extra_environ=env, expect_errors=True)
         self.assertEqual(400, res.status_int)
 
@@ -445,7 +426,7 @@ class QuotaExtensionCfgTestCase(QuotaExtensionTestCase):
     def setUp(self):
         cfg.CONF.set_override(
             'quota_driver', qconf.QUOTA_DB_DRIVER, group='QUOTAS')
-        super(QuotaExtensionCfgTestCase, self).setUp()
+        super().setUp()
 
     def test_quotas_default_values(self):
         self._test_quota_default_values(
@@ -465,8 +446,7 @@ class QuotaExtensionCfgTestCase(QuotaExtensionTestCase):
 
     def test_show_quotas_with_admin(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id + '2',
-                                                  is_admin=True)}
+        env = test_base._get_neutron_env(project_id + '2', as_admin=True)
         res = self.api.get(_get_path('quotas', id=project_id, fmt=self.fmt),
                            extra_environ=env)
         self.assertEqual(200, res.status_int)
@@ -489,8 +469,7 @@ class QuotaExtensionCfgTestCase(QuotaExtensionTestCase):
 
     def test_delete_quotas_forbidden(self):
         project_id = 'project_id1'
-        env = {'neutron.context': context.Context('', project_id,
-                                                  is_admin=False)}
+        env = test_base._get_neutron_env(project_id, as_admin=False)
         res = self.api.delete(_get_path('quotas', id=project_id, fmt=self.fmt),
                               extra_environ=env, expect_errors=True)
         self.assertEqual(403, res.status_int)
@@ -519,8 +498,8 @@ class TestDbQuotaDriver(base.BaseTestCase):
 
             self.assertEqual(quotas, foo_quotas)
             get_project_quotas.assert_called_once_with(ctx,
-                                                      default_quotas,
-                                                      target_project)
+                                                       default_quotas,
+                                                       target_project)
 
 
 class TestQuotaDriverLoad(base.BaseTestCase):

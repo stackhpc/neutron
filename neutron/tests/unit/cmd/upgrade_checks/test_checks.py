@@ -18,13 +18,15 @@ from oslo_config import cfg
 from oslo_upgradecheck.upgradecheck import Code
 
 from neutron.cmd.upgrade_checks import checks
+from neutron.common.ovn import exceptions as ovn_exc
+from neutron.common.ovn import utils as ovn_utils
 from neutron.tests import base
 
 
 class TestChecks(base.BaseTestCase):
 
     def setUp(self):
-        super(TestChecks, self).setUp()
+        super().setUp()
         self.checks = checks.CoreChecks()
 
     def test_get_checks_list(self):
@@ -54,60 +56,6 @@ class TestChecks(base.BaseTestCase):
         result = checks.CoreChecks.worker_count_check(mock.Mock())
         self.assertEqual(Code.WARNING, result.code)
 
-    def test_external_network_bridge_check_good(self):
-        agents = [
-            {'host': 'Host A', 'configurations': '{}'},
-            {'host': 'Host B',
-             'configurations': '{"external_network_bridge": ""}'}
-        ]
-        with mock.patch.object(checks, "get_l3_agents", return_value=agents):
-            result = checks.CoreChecks.external_network_bridge_check(
-                mock.Mock())
-            self.assertEqual(Code.SUCCESS, result.code)
-
-    def test_external_network_bridge_check_bad(self):
-        agents = [
-            {'host': 'Host A', 'configurations': '{}'},
-            {'host': 'Host B',
-             'configurations': '{"external_network_bridge": "br-ex"}'},
-            {'host': 'Host C',
-             'configurations': '{"external_network_bridge": ""}'}
-        ]
-        with mock.patch.object(checks, "get_l3_agents", return_value=agents):
-            result = checks.CoreChecks.external_network_bridge_check(
-                mock.Mock())
-            self.assertEqual(Code.WARNING, result.code)
-            self.assertIn('Host B', result.details)
-            self.assertNotIn('Host A', result.details)
-            self.assertNotIn('Host C', result.details)
-
-    def test_gateway_external_network_check_good(self):
-        agents = [
-            {'host': 'Host A', 'configurations': '{}'},
-            {'host': 'Host B',
-             'configurations': '{"gateway_external_network_id": ""}'}
-        ]
-        with mock.patch.object(checks, "get_l3_agents", return_value=agents):
-            result = checks.CoreChecks.gateway_external_network_check(
-                mock.Mock())
-            self.assertEqual(Code.SUCCESS, result.code)
-
-    def test_gateway_external_network_check_bad(self):
-        agents = [
-            {'host': 'Host A', 'configurations': '{}'},
-            {'host': 'Host B',
-             'configurations': '{"gateway_external_network_id": "net-uuid"}'},
-            {'host': 'Host C',
-             'configurations': '{"gateway_external_network_id": ""}'}
-        ]
-        with mock.patch.object(checks, "get_l3_agents", return_value=agents):
-            result = checks.CoreChecks.gateway_external_network_check(
-                mock.Mock())
-            self.assertEqual(Code.WARNING, result.code)
-            self.assertIn('Host B', result.details)
-            self.assertNotIn('Host A', result.details)
-            self.assertNotIn('Host C', result.details)
-
     def test_network_mtu_check_good(self):
         networks = [
             {'id': 'net-uuid-a', 'mtu': 1500},
@@ -129,36 +77,6 @@ class TestChecks(base.BaseTestCase):
             self.assertEqual(Code.WARNING, result.code)
             self.assertIn('net-uuid-a', result.details)
             self.assertNotIn('net-uuid-b', result.details)
-
-    def test_ovn_db_revision_check_no_networking_ovn_installed(self):
-        with mock.patch.object(checks, "table_exists", return_value=False),\
-                mock.patch.object(
-                    checks, "get_ovn_db_revisions") as get_ovn_db_revisions:
-            result = checks.CoreChecks.ovn_db_revision_check(mock.Mock())
-            self.assertEqual(Code.SUCCESS, result.code)
-            get_ovn_db_revisions.assert_not_called()
-
-    def test_ovn_db_revision_check_networking_ovn_latest_revision(self):
-        revisions = [
-            checks.LAST_NETWORKING_OVN_EXPAND_HEAD,
-            checks.LAST_NETWORKING_OVN_CONTRACT_HEAD]
-        with mock.patch.object(checks, "table_exists", return_value=True),\
-                mock.patch.object(
-                    checks, "get_ovn_db_revisions",
-                    return_value=revisions) as get_ovn_db_revisions:
-            result = checks.CoreChecks.ovn_db_revision_check(mock.Mock())
-            self.assertEqual(Code.SUCCESS, result.code)
-            get_ovn_db_revisions.assert_called_once_with()
-
-    def test_ovn_db_revision_check_networking_ovn_not_latest_revision(self):
-        revisions = ["some_older_revision"]
-        with mock.patch.object(checks, "table_exists", return_value=True),\
-                mock.patch.object(
-                    checks, "get_ovn_db_revisions",
-                    return_value=revisions) as get_ovn_db_revisions:
-            result = checks.CoreChecks.ovn_db_revision_check(mock.Mock())
-            self.assertEqual(Code.FAILURE, result.code)
-            get_ovn_db_revisions.assert_called_once_with()
 
     def test_nic_switch_agent_min_kernel_check_no_nic_switch_agents(self):
         with mock.patch.object(checks, "get_nic_switch_agents",
@@ -214,8 +132,8 @@ class TestChecks(base.BaseTestCase):
 
     def test_port_binding_profile_sanity(self):
         new_format = {"allocation":
-            {"397aec7a-1f69-11ec-9f1a-7b14e597e275":
-                "41d7391e-1f69-11ec-a899-8f9d6d950f8d"}}
+                      {"397aec7a-1f69-11ec-9f1a-7b14e597e275":
+                       "41d7391e-1f69-11ec-a899-8f9d6d950f8d"}}
         old_format = {"allocation": "41d7391e-1f69-11ec-a899-8f9d6d950f8d"}
         cases = (([new_format], Code.SUCCESS),
                  ([old_format], Code.FAILURE))
@@ -278,3 +196,111 @@ class TestChecks(base.BaseTestCase):
                           opt_value='bar\nbar')]
             result = checks.CoreChecks.extra_dhcp_options_check(mock.ANY)
             self.assertEqual(Code.WARNING, result.code)
+
+    @mock.patch.object(checks, 'get_duplicated_ha_networks_per_project')
+    def test_duplicated_ha_network_per_project_check_success(self,
+                                                             mock_ha_nets):
+        mock_ha_nets.return_value = []
+        result = checks.CoreChecks.duplicated_ha_network_per_project_check(
+            mock.ANY)
+        self.assertEqual(Code.SUCCESS, result.code)
+
+    @mock.patch.object(checks, 'get_duplicated_ha_networks_per_project')
+    def test_duplicated_ha_network_per_project_check_warning(self,
+                                                             mock_ha_nets):
+        mock_ha_nets.return_value = [
+            {'project_id': 'project1', 'network_id': 'net1'},
+            {'project_id': 'project1', 'network_id': 'net2'},
+        ]
+        result = checks.CoreChecks.duplicated_ha_network_per_project_check(
+            mock.ANY)
+        self.assertEqual(Code.WARNING, result.code)
+
+    @mock.patch.object(checks, 'get_ovn_client')
+    def test_ovn_for_bm_provisioning_over_ipv6_check_native_dhcp_disabled(
+            self, mock_get_ovn_client):
+
+        cfg.CONF.set_override(
+            'disable_ovn_dhcp_for_baremetal_ports', True, group='ovn')
+
+        result = checks.CoreChecks.ovn_for_bm_provisioning_over_ipv6_check(
+            mock.ANY)
+        self.assertEqual(Code.SUCCESS, result.code)
+        mock_get_ovn_client.assert_not_called()
+
+    @mock.patch.object(checks, 'get_ovn_client')
+    def test_ovn_for_bm_provisioning_over_ipv6_check_success(
+            self, mock_get_ovn_client):
+
+        ovn_client_mock = mock.Mock(is_ipxe_over_ipv6_supported=True)
+        mock_get_ovn_client.return_value = ovn_client_mock
+        cfg.CONF.set_override(
+            'disable_ovn_dhcp_for_baremetal_ports', False, group='ovn')
+
+        result = checks.CoreChecks.ovn_for_bm_provisioning_over_ipv6_check(
+            mock.ANY)
+        self.assertEqual(Code.SUCCESS, result.code)
+        mock_get_ovn_client.assert_called_once_with()
+
+    @mock.patch.object(checks, 'get_ovn_client')
+    def test_ovn_for_bm_provisioning_over_ipv6_check_failed_to_get_ovn_client(
+            self, mock_get_ovn_client):
+
+        mock_get_ovn_client.side_effect = RuntimeError
+        cfg.CONF.set_override(
+            'disable_ovn_dhcp_for_baremetal_ports', False, group='ovn')
+
+        result = checks.CoreChecks.ovn_for_bm_provisioning_over_ipv6_check(
+            mock.ANY)
+        self.assertEqual(Code.WARNING, result.code)
+        mock_get_ovn_client.assert_called_once_with()
+
+    def test_ovn_port_forwarding_configuration_check_no_ovn_l3_router(self):
+        cfg.CONF.set_override("service_plugins", 'router,some-other-plugin')
+        with mock.patch.object(
+                ovn_utils,
+                'validate_port_forwarding_configuration') as validate_mock:
+            result = checks.CoreChecks.ovn_port_forwarding_configuration_check(
+                mock.ANY)
+            self.assertEqual(Code.SUCCESS, result.code)
+            validate_mock.assert_not_called()
+
+    def test_ovn_port_forwarding_configuration_check_ovn_l3_success(self):
+        cfg.CONF.set_override("service_plugins", 'ovn-router')
+        with mock.patch.object(
+                ovn_utils,
+                'validate_port_forwarding_configuration') as validate_mock:
+            result = checks.CoreChecks.ovn_port_forwarding_configuration_check(
+                mock.ANY)
+            self.assertEqual(Code.SUCCESS, result.code)
+            validate_mock.assert_called_once_with()
+
+    def test_ovn_port_forwarding_configuration_check_ovn_l3_failure(self):
+        cfg.CONF.set_override("service_plugins", 'ovn-router')
+        with mock.patch.object(
+                ovn_utils,
+                'validate_port_forwarding_configuration',
+                side_effect=ovn_exc.InvalidPortForwardingConfiguration
+        ) as validate_mock:
+            result = checks.CoreChecks.ovn_port_forwarding_configuration_check(
+                mock.ANY)
+            self.assertEqual(Code.WARNING, result.code)
+            validate_mock.assert_called_once_with()
+
+    def test_tags_over_limit_check_success(self):
+        with mock.patch.object(
+            checks, 'is_tags_limit_reached_for_any_resource',
+            return_value=False
+        ) as is_tags_limit_reached_for_any_resource:
+            result = checks.CoreChecks.tags_over_limit_check(mock.ANY)
+            self.assertEqual(Code.SUCCESS, result.code)
+            is_tags_limit_reached_for_any_resource.assert_called_once_with()
+
+    def test_tags_over_limit_check_failure(self):
+        with mock.patch.object(
+            checks, 'is_tags_limit_reached_for_any_resource',
+            return_value=True
+        ) as is_tags_limit_reached_for_any_resource:
+            result = checks.CoreChecks.tags_over_limit_check(mock.ANY)
+            self.assertEqual(Code.WARNING, result.code)
+            is_tags_limit_reached_for_any_resource.assert_called_once_with()

@@ -13,14 +13,18 @@
 #    under the License.
 
 import os.path
+import shutil
+import tempfile
 from unittest import mock
 
 from neutron_lib import fixture as lib_fixtures
 from oslo_config import cfg
 from oslo_utils import fileutils
+from oslo_utils import uuidutils
 import psutil
 
 from neutron.agent.linux import external_process as ep
+from neutron.agent.linux import ip_lib
 from neutron.common import utils as common_utils
 from neutron.tests import base
 
@@ -29,18 +33,24 @@ TEST_UUID = 'test-uuid'
 TEST_SERVICE = 'testsvc'
 TEST_PID = 1234
 TEST_CMDLINE = 'python foo --router_id=%s'
+SCRIPT = """#!/bin/bash
+output_file=$1
+if [ -z "${PROCESS_TAG}" ] ; then
+    echo "Variable PROCESS_TAG not set" > $output_file
+else
+    echo "Variable PROCESS_TAG set: $PROCESS_TAG" > $output_file
+fi
+"""
+DEFAULT_ENVVAR = ep.PROCESS_TAG + '=' + ep.DEFAULT_SERVICE_NAME
 
 
 class BaseTestProcessMonitor(base.BaseTestCase):
 
     def setUp(self):
-        super(BaseTestProcessMonitor, self).setUp()
+        super().setUp()
         self.log_patch = mock.patch("neutron.agent.linux.external_process."
                                     "LOG.error")
         self.error_log = self.log_patch.start()
-
-        self.spawn_patch = mock.patch("eventlet.spawn")
-        self.eventlent_spawn = self.spawn_patch.start()
 
         # create a default process monitor
         self.create_child_process_monitor('respawn')
@@ -105,13 +115,15 @@ class TestProcessMonitor(BaseTestProcessMonitor):
 
 class TestProcessManager(base.BaseTestCase):
     def setUp(self):
-        super(TestProcessManager, self).setUp()
+        super().setUp()
         self.execute_p = mock.patch('neutron.agent.common.utils.execute')
         self.execute = self.execute_p.start()
         self.delete_if_exists = mock.patch(
-            'oslo_utils.fileutils.delete_if_exists').start()
+            'neutron.agent.linux.utils.delete_if_exists').start()
         self.ensure_dir = mock.patch.object(
             fileutils, 'ensure_tree').start()
+        self.error_log = mock.patch("neutron.agent.linux.external_process."
+                                    "LOG.error").start()
 
         self.conf = mock.Mock()
         self.conf.external_pids = '/var/path'
@@ -124,7 +136,8 @@ class TestProcessManager(base.BaseTestCase):
 
     def test_enable_no_namespace(self):
         callback = mock.Mock()
-        callback.return_value = ['the', 'cmd']
+        cmd = ['the', 'cmd']
+        callback.return_value = cmd
 
         with mock.patch.object(ep.ProcessManager, 'get_pid_file_name') as name:
             name.return_value = 'pidfile'
@@ -134,7 +147,8 @@ class TestProcessManager(base.BaseTestCase):
                 manager = ep.ProcessManager(self.conf, 'uuid')
                 manager.enable(callback)
                 callback.assert_called_once_with('pidfile')
-                self.execute.assert_called_once_with(['the', 'cmd'],
+                cmd = ['env', DEFAULT_ENVVAR + '-uuid'] + cmd
+                self.execute.assert_called_once_with(cmd,
                                                      check_exit_code=True,
                                                      extra_ok_codes=None,
                                                      run_as_root=False,
@@ -154,10 +168,13 @@ class TestProcessManager(base.BaseTestCase):
                 with mock.patch.object(ep, 'ip_lib') as ip_lib:
                     manager.enable(callback)
                     callback.assert_called_once_with('pidfile')
+                    self.delete_if_exists.assert_called_once_with(
+                        'pidfile', run_as_root=True)
+                    env = {ep.PROCESS_TAG: ep.DEFAULT_SERVICE_NAME + '-uuid'}
                     ip_lib.assert_has_calls([
                         mock.call.IPWrapper(namespace='ns'),
                         mock.call.IPWrapper().netns.execute(
-                            ['the', 'cmd'], addl_env=None, run_as_root=True)])
+                            ['the', 'cmd'], addl_env=env, run_as_root=True)])
 
     def test_enable_with_namespace_process_active(self):
         callback = mock.Mock()
@@ -189,11 +206,34 @@ class TestProcessManager(base.BaseTestCase):
             except common_utils.WaitTimeout:
                 self.fail('ProcessManager.enable() raised WaitTimeout')
 
+    def test_enable_delete_pid_file_raises(self):
+        callback = mock.Mock()
+        cmd = ['the', 'cmd']
+        callback.return_value = cmd
+        self.delete_if_exists.side_effect = OSError
+
+        with mock.patch.object(ep.ProcessManager, 'get_pid_file_name') as name:
+            name.return_value = 'pidfile'
+            with mock.patch.object(ep.ProcessManager, 'active') as active:
+                active.__get__ = mock.Mock(return_value=False)
+
+                manager = ep.ProcessManager(self.conf, 'uuid')
+                manager.enable(callback)
+                callback.assert_called_once_with('pidfile')
+                cmd = ['env', DEFAULT_ENVVAR + '-uuid'] + cmd
+                self.execute.assert_called_once_with(cmd,
+                                                     check_exit_code=True,
+                                                     extra_ok_codes=None,
+                                                     run_as_root=False,
+                                                     log_fail_as_error=True,
+                                                     privsep_exec=False)
+                self.error_log.assert_called_once()
+
     def test_reload_cfg_without_custom_reload_callback(self):
         with mock.patch.object(ep.ProcessManager, 'disable') as disable:
             manager = ep.ProcessManager(self.conf, 'uuid', namespace='ns')
             manager.reload_cfg()
-            disable.assert_called_once_with('HUP')
+            disable.assert_called_once_with('HUP', delete_pid_file=False)
 
     def test_reload_cfg_with_custom_reload_callback(self):
         reload_callback = mock.sentinel.callback
@@ -202,7 +242,8 @@ class TestProcessManager(base.BaseTestCase):
                 self.conf, 'uuid', namespace='ns',
                 custom_reload_callback=reload_callback)
             manager.reload_cfg()
-            disable.assert_called_once_with(get_stop_command=reload_callback)
+            disable.assert_called_once_with(get_stop_command=reload_callback,
+                                            delete_pid_file=False)
 
     def test_disable_get_stop_command(self):
         cmd = ['the', 'cmd']
@@ -216,6 +257,7 @@ class TestProcessManager(base.BaseTestCase):
                     custom_reload_callback=reload_callback)
                 manager.disable(
                     get_stop_command=manager.custom_reload_callback)
+                cmd = ['env', DEFAULT_ENVVAR + '-uuid'] + cmd
                 self.assertIn(cmd, self.execute.call_args[0])
 
     def test_disable_no_namespace(self):
@@ -225,10 +267,13 @@ class TestProcessManager(base.BaseTestCase):
                 active.__get__ = mock.Mock(return_value=True)
                 manager = ep.ProcessManager(self.conf, 'uuid')
 
-                with mock.patch.object(ep, 'utils') as utils:
+                with mock.patch.object(ip_lib.IpNetnsCommand, 'execute') as \
+                        mock_execute:
                     manager.disable()
-                    utils.assert_has_calls([
+                    env = {ep.PROCESS_TAG: ep.DEFAULT_SERVICE_NAME + '-uuid'}
+                    mock_execute.assert_has_calls([
                         mock.call.execute(['kill', '-9', 4],
+                                          addl_env=env,
                                           run_as_root=False,
                                           privsep_exec=True)])
 
@@ -240,12 +285,14 @@ class TestProcessManager(base.BaseTestCase):
 
                 manager = ep.ProcessManager(self.conf, 'uuid', namespace='ns')
 
-                with mock.patch.object(ep, 'utils') as utils:
+                with mock.patch.object(ip_lib.IpNetnsCommand, 'execute') as \
+                        mock_execute:
                     manager.disable()
-                    utils.assert_has_calls([
-                        mock.call.execute(['kill', '-9', 4],
-                                          run_as_root=True,
-                                          privsep_exec=True)])
+                    env = {ep.PROCESS_TAG: ep.DEFAULT_SERVICE_NAME + '-uuid'}
+                    mock_execute.assert_has_calls([
+                        mock.call.execute(
+                            ['kill', '-9', 4], addl_env=env, run_as_root=True,
+                            privsep_exec=True)])
 
     def test_disable_not_active(self):
         with mock.patch.object(ep.ProcessManager, 'pid') as pid:
@@ -280,16 +327,18 @@ class TestProcessManager(base.BaseTestCase):
             pid.__get__ = mock.Mock(return_value=4)
             with mock.patch.object(ep.ProcessManager, 'active') as active:
                 active.__get__ = mock.Mock(return_value=True)
+                service_name = 'test-service'
                 manager = ep.ProcessManager(
                     self.conf, 'uuid', namespace=namespace,
-                    service='test-service')
-                with mock.patch.object(ep, 'utils') as utils, \
-                        mock.patch.object(os.path, 'isfile',
-                                          return_value=kill_script_exists):
+                    service=service_name)
+                with mock.patch.object(ip_lib.IpNetnsCommand, 'execute') as \
+                        execute_mock, mock.patch.object(
+                        os.path, 'isfile', return_value=kill_script_exists):
                     manager.disable()
-                    utils.execute.assert_called_with(
-                        expected_cmd, run_as_root=bool(namespace),
-                        privsep_exec=True)
+                    addl_env = {ep.PROCESS_TAG: service_name + '-uuid'}
+                    execute_mock.assert_called_with(
+                        expected_cmd, addl_env=addl_env,
+                        run_as_root=bool(namespace), privsep_exec=True)
 
     def test_disable_custom_kill_script_no_namespace(self):
         self._test_disable_custom_kill_script(
@@ -369,3 +418,65 @@ class TestProcessManager(base.BaseTestCase):
                 manager = ep.ProcessManager(self.conf, 'uuid')
                 self.assertIsNone(manager.cmdline)
         proc.assert_called_once_with(4)
+
+
+class TestProcessManagerScript(TestProcessManager):
+    def setUp(self):
+        super().setUp()
+        self.env_path = tempfile.mkdtemp(prefix="pm_env_", dir="/tmp/")
+        os.chmod(self.env_path, 0o755)
+        self.addCleanup(self._clean_env_path)
+
+    def _create_env_var_testing_environment(self, script_content, _create_cmd):
+        with tempfile.NamedTemporaryFile('w+', dir=self.env_path,
+                                         delete=False) as script:
+            script.write(script_content)
+        output = tempfile.NamedTemporaryFile('w+', dir=self.env_path,
+                                             delete=False)
+        os.chmod(script.name, 0o777)
+        service_name = 'my_new_service'
+        uuid = uuidutils.generate_uuid()
+        pm = ep.ProcessManager(self.conf, uuid, service=service_name,
+                               default_cmd_callback=_create_cmd)
+        return script, output, service_name, uuid, pm
+
+    def _clean_env_path(self):
+        shutil.rmtree(self.env_path, ignore_errors=True)
+
+    def test_enable_check_process_id_env_var(self):
+        def _create_cmd(*args):
+            return [script.name, output.name]
+
+        self.execute_p.stop()
+        script, output, service_name, uuid, pm = (
+            self._create_env_var_testing_environment(SCRIPT, _create_cmd))
+        with mock.patch.object(ep.ProcessManager, 'active') as active:
+            active.__get__ = mock.Mock(return_value=False)
+            pm.enable()
+
+        with open(output.name) as f:
+            ret_value = f.readline().strip()
+        expected_value = ('Variable PROCESS_TAG set: %s-%s' %
+                          (service_name, uuid))
+        self.assertEqual(expected_value, ret_value)
+
+    def test_disable_check_process_id_env_var(self):
+        def _create_cmd(*args):
+            return [script.name, output.name]
+
+        self.execute_p.stop()
+        script, output, service_name, uuid, pm = (
+            self._create_env_var_testing_environment(SCRIPT, _create_cmd))
+        with mock.patch.object(ep.ProcessManager, 'active') as active, \
+                mock.patch.object(pm, 'get_kill_cmd') as mock_kill_cmd:
+            active.__get__ = mock.Mock(return_value=True)
+            # NOTE(ralonsoh): the script we are using for testing does not
+            # expect to receive the SIG number as the first argument.
+            mock_kill_cmd.return_value = [script.name, output.name]
+            pm.disable(sig='15')
+
+        with open(output.name) as f:
+            ret_value = f.readline().strip()
+        expected_value = ('Variable PROCESS_TAG set: %s-%s' %
+                          (service_name, uuid))
+        self.assertEqual(expected_value, ret_value)

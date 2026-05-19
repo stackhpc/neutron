@@ -16,8 +16,10 @@
 
 import collections
 import itertools
+import signal
 import socket
 import sys
+import threading
 import time
 
 from neutron_lib.agent import topics
@@ -29,7 +31,6 @@ from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
-from oslo_service import loopingcall
 from osprofiler import profiler
 import pyroute2
 
@@ -37,9 +38,7 @@ from neutron._i18n import _
 from neutron.agent.common import utils
 from neutron.agent.l2 import l2_agent_extensions_manager as ext_manager
 from neutron.agent import rpc as agent_rpc
-from neutron.agent import securitygroups_rpc as agent_sg_rpc
 from neutron.api.rpc.callbacks import resources
-from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import config as common_config
 from neutron.common import profiler as setup_profiler
 from neutron.common import utils as n_utils
@@ -55,7 +54,7 @@ from neutron.privileged.agent.linux import ip_lib as priv_ip_lib
 LOG = logging.getLogger(__name__)
 
 
-class SriovNicSwitchRpcCallbacks(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
+class SriovNicSwitchRpcCallbacks:
 
     # Set RPC API version to 1.0 by default.
     # history
@@ -65,14 +64,16 @@ class SriovNicSwitchRpcCallbacks(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
     #       (works with NoopFirewallDriver)
     #   1.4 Added support for network_update
     #   1.5 Added support for binding_activate and binding_deactivate
+    #   1.6 Removed Security Group RPC; the SR-IOV agent no longer receives
+    #       security group events. That must be reverted if a firewall is
+    #       implemented.
 
-    target = oslo_messaging.Target(version='1.5')
+    target = oslo_messaging.Target(version='1.6')
 
-    def __init__(self, context, agent, sg_agent):
-        super(SriovNicSwitchRpcCallbacks, self).__init__()
+    def __init__(self, context, agent):
+        super().__init__()
         self.context = context
         self.agent = agent
-        self.sg_agent = sg_agent
 
     def port_update(self, context, **kwargs):
         LOG.debug("port_update received")
@@ -112,17 +113,39 @@ class SriovNicSwitchRpcCallbacks(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
     def binding_activate(self, context, **kwargs):
         if kwargs.get('host') != self.agent.conf.host:
             return
-        LOG.debug("binding activate for port %s", kwargs.get('port_id'))
-        device_details = self.agent.get_device_details_from_port_id(
-            kwargs.get('port_id'))
-        mac = device_details.get('mac_address')
-        binding_profile = device_details.get('profile')
-        if binding_profile:
-            pci_slot = binding_profile.get('pci_slot')
-            self.agent.activated_bindings.add((mac, pci_slot))
+
+        port_id = kwargs.get('port_id')
+
+        def _is_port_id_in_network(network_port, port_id):
+            for network_id, ports in network_port.items():
+                for port in ports:
+                    if port['port_id'] == port_id:
+                        return True
+            return False
+
+        is_port_id_sriov = _is_port_id_in_network(
+            self.agent.network_ports, port_id
+        )
+
+        if is_port_id_sriov:
+            LOG.debug("binding activate for port %s", port_id)
+            device_details = self.agent.get_device_details_from_port_id(
+                port_id)
+            mac = device_details.get('mac_address')
+            binding_profile = device_details.get('profile')
+            if binding_profile:
+                pci_slot = binding_profile.get('pci_slot')
+                self.agent.activated_bindings.add((mac, pci_slot))
+            else:
+                LOG.warning(
+                    "binding_profile not found for port %s.",
+                    port_id
+                )
         else:
-            LOG.warning("binding_profile not found for port %s.",
-                        kwargs.get('port_id'))
+            LOG.warning(
+                "This port is not SRIOV, skip binding for port %s.",
+                port_id
+            )
 
     def binding_deactivate(self, context, **kwargs):
         if kwargs.get('host') != self.agent.conf.host:
@@ -132,7 +155,7 @@ class SriovNicSwitchRpcCallbacks(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
 
 
 @profiler.trace_cls("rpc")
-class SriovNicSwitchAgent(object):
+class SriovNicSwitchAgent:
     def __init__(self, physical_devices_mappings, exclude_devices,
                  polling_interval, rp_bandwidths, rp_inventory_defaults,
                  rp_hypervisors):
@@ -153,9 +176,6 @@ class SriovNicSwitchAgent(object):
 
         self.context = context.get_admin_context_without_session()
         self.plugin_rpc = agent_rpc.PluginApi(topics.PLUGIN)
-        self.sg_plugin_rpc = sg_rpc.SecurityGroupServerRpcApi(topics.PLUGIN)
-        self.sg_agent = agent_sg_rpc.SecurityGroupAgentRpc(
-            self.context, self.sg_plugin_rpc)
         self._setup_rpc()
         self.ext_manager = self._create_agent_extension_manager(
             self.connection)
@@ -177,6 +197,23 @@ class SriovNicSwitchAgent(object):
             'resource_versions': resources.LOCAL_RESOURCE_VERSIONS,
             'start_flag': True}
 
+        self.heartbeat = {}
+        self.daemon_loop_event = threading.Event()
+        report_interval = cfg.CONF.AGENT.report_interval
+        if report_interval:
+            report_event = threading.Event()
+
+            def report_worker():
+                while not report_event.is_set():
+                    start_time = time.time()
+                    self._report_state()
+                    exec_time = time.time() - start_time
+                    report_event.wait(max(0, report_interval - exec_time))
+
+            self.heartbeat['thread'] = threading.Thread(target=report_worker)
+            self.heartbeat['event'] = report_event
+            self.heartbeat['thread'].start()
+
         # The initialization is complete; we can start receiving messages
         self.connection.consume_in_threads()
         # Initialize iteration counter
@@ -190,24 +227,18 @@ class SriovNicSwitchAgent(object):
         self.state_rpc = agent_rpc.PluginReportStateAPI(topics.REPORTS)
         # RPC network init
         # Handle updates from service
-        self.endpoints = [SriovNicSwitchRpcCallbacks(self.context, self,
-                                                     self.sg_agent)]
+        self.endpoints = [SriovNicSwitchRpcCallbacks(self.context, self),
+                          ]
         # Define the listening consumers for the agent
         consumers = [[topics.PORT, topics.UPDATE],
                      [topics.NETWORK, topics.UPDATE],
-                     [topics.SECURITY_GROUP, topics.UPDATE],
                      [topics.PORT_BINDING, topics.DEACTIVATE],
-                     [topics.PORT_BINDING, topics.ACTIVATE]]
+                     [topics.PORT_BINDING, topics.ACTIVATE],
+                     ]
         self.connection = agent_rpc.create_consumers(self.endpoints,
                                                      self.topic,
                                                      consumers,
                                                      start_listening=False)
-
-        report_interval = cfg.CONF.AGENT.report_interval
-        if report_interval:
-            heartbeat = loopingcall.FixedIntervalLoopingCall(
-                self._report_state)
-            heartbeat.start(interval=report_interval)
 
     def _report_state(self):
         try:
@@ -258,10 +289,6 @@ class SriovNicSwitchAgent(object):
         resync_a = False
         resync_b = False
 
-        self.sg_agent.prepare_devices_filter(device_info.get('added'))
-
-        if device_info.get('updated'):
-            self.sg_agent.refresh_firewall()
         # Updated devices are processed the same as new ones, as their
         # admin_state_up may have changed. The set union prevents duplicating
         # work when a device is new and updated in the same polling iteration.
@@ -435,13 +462,26 @@ class SriovNicSwitchAgent(object):
                                                   self.agent_id,
                                                   host=cfg.CONF.host)
 
+    def _handle_sigterm(self, signum, frame):
+        if self.heartbeat:
+            LOG.info("SIGTERM received, stopping SRIOV agent reporting.")
+            self.heartbeat['event'].set()
+            self.daemon_loop_event.set()
+            self.heartbeat['thread'].join()
+
     def daemon_loop(self):
         sync = True
         devices = set()
 
         LOG.info("SRIOV NIC Agent RPC Daemon Started!")
 
-        while True:
+        # Note(lajoskatona): The signal handling can be revisited once
+        # oslo_service give support for threads, and the daemon_loop
+        # like structures can be replaced by oslo.service native
+        # method
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
+
+        while not self.daemon_loop_event.is_set():
             start = time.time()
             LOG.debug("Agent rpc_loop - iteration:%d started",
                       self.iter_num)
@@ -483,7 +523,7 @@ class SriovNicSwitchAgent(object):
             # sleep till end of polling interval
             elapsed = (time.time() - start)
             if (elapsed < self.polling_interval):
-                time.sleep(self.polling_interval - elapsed)
+                self.daemon_loop_event.wait(self.polling_interval - elapsed)
             else:
                 LOG.debug("Loop iteration exceeded interval "
                           "(%(polling_interval)s vs. %(elapsed)s)!",
@@ -492,7 +532,7 @@ class SriovNicSwitchAgent(object):
             self.iter_num = self.iter_num + 1
 
 
-class SriovNicAgentConfigParser(object):
+class SriovNicAgentConfigParser:
     def __init__(self):
         self.device_mappings = {}
         self.exclude_devices = {}
@@ -541,6 +581,7 @@ def main():
     common_config.init(sys.argv[1:])
 
     common_config.setup_logging()
+    common_config.setup_gmr()
     agent_config.setup_privsep()
     service_conf.register_service_opts(service_conf.RPC_EXTRA_OPTS, cfg.CONF)
 

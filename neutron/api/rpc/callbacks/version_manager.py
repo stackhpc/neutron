@@ -12,6 +12,7 @@
 
 import collections
 import copy
+from dataclasses import dataclass
 import pprint
 import time
 
@@ -39,12 +40,16 @@ def _import_agents_db():
     return importutils.import_module('neutron.db.agents_db')
 
 
-AgentConsumer = collections.namedtuple('AgentConsumer', ['agent_type',
-                                                         'host'])
-AgentConsumer.__repr__ = lambda self: '%s@%s' % self
+@dataclass(frozen=True)
+class AgentConsumer:
+    agent_type: str
+    host: str
+
+    def __repr__(self):
+        return f'{self.agent_type}@{self.host}'
 
 
-class ResourceConsumerTracker(object):
+class ResourceConsumerTracker:
     """Class passed down to collect consumer's resource versions.
 
     This class is responsible for fetching the local versions of
@@ -167,9 +172,12 @@ class ResourceConsumerTracker(object):
 
     def report(self):
         """Output debug information about the consumer versions."""
-        format = lambda versions: pprint.pformat(dict(versions), indent=4)
-        debug_dict = {'pushed_versions': format(self._versions),
-                      'consumer_versions': format(self._versions_by_consumer)}
+
+        def _format(versions):
+            return pprint.pformat(dict(versions), indent=4)
+
+        debug_dict = {'pushed_versions': _format(self._versions),
+                      'consumer_versions': _format(self._versions_by_consumer)}
         if self.last_report != debug_dict:
             self.last_report = debug_dict
             LOG.debug('Tracked resource versions report:\n'
@@ -191,7 +199,7 @@ class ResourceConsumerTracker(object):
         self._versions = versions
 
 
-class CachedResourceConsumerTracker(object):
+class CachedResourceConsumerTracker:
     """This class takes care of the caching logic of versions."""
 
     def __init__(self):

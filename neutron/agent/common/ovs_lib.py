@@ -16,8 +16,8 @@
 import collections
 import functools
 import itertools
-import random
 import re
+import secrets
 import time
 import uuid
 
@@ -29,10 +29,10 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import uuidutils
+from ovsdbapp.backend.ovs_idl import command as ovs_cmd
 from ovsdbapp.backend.ovs_idl import idlutils
 from ovsdbapp import exceptions as ovs_exceptions
 
-import debtcollector
 import tenacity
 
 from neutron._i18n import _
@@ -78,9 +78,6 @@ CTRL_RATE_LIMIT_MIN = 100
 CTRL_BURST_LIMIT_MIN = 25
 OVS_MAX_RATE = 2 ** 35 - 1
 
-# TODO(slaweq): move this to neutron_lib.constants
-TYPE_GRE_IP6 = 'ip6gre'
-
 ActionFlowTuple = collections.namedtuple('ActionFlowTuple',
                                          ['action', 'flow', 'flow_group_id'])
 
@@ -118,11 +115,11 @@ def _ovsdb_retry(fn):
 def get_gre_tunnel_port_type(remote_ip, local_ip):
     if (common_utils.get_ip_version(remote_ip) == p_const.IP_VERSION_6 or
             common_utils.get_ip_version(local_ip) == p_const.IP_VERSION_6):
-        return TYPE_GRE_IP6
+        return p_const.TYPE_GRE_IP6
     return p_const.TYPE_GRE
 
 
-class VifPort(object):
+class VifPort:
     def __init__(self, port_name, ofport, vif_id, vif_mac, switch):
         self.port_name = port_name
         self.ofport = ofport
@@ -138,7 +135,7 @@ class VifPort(object):
                     self.switch.br_name)
 
 
-class BaseOVS(object):
+class BaseOVS:
 
     def __init__(self):
         self.ovsdb = impl_idl.api_factory()
@@ -223,8 +220,8 @@ class BaseOVS(object):
     @property
     def is_hw_offload_enabled(self):
         if self._hw_offload is None:
-            self._hw_offload = self.config.get('other_config',
-                                   {}).get('hw-offload', '').lower() == 'true'
+            self._hw_offload = self.config.get('other_config', {}).get(
+                'hw-offload', '').lower() == 'true'
         return self._hw_offload
 
 
@@ -251,7 +248,7 @@ def version_from_protocol(protocol):
 class OVSBridge(BaseOVS):
     def __init__(self, br_name,
                  datapath_type=ovs_constants.OVS_DATAPATH_SYSTEM):
-        super(OVSBridge, self).__init__()
+        super().__init__()
         self.br_name = br_name
         self.datapath_type = datapath_type
         self._default_cookie = generate_random_cookie()
@@ -335,8 +332,14 @@ class OVSBridge(BaseOVS):
 
     def set_igmp_snooping_state(self, state):
         state = bool(state)
+        # NOTE(lucasagomes): The mcast-snooping-disable-flood-unregistered
+        # has the opposite value of the config in Neutron. That's because
+        # IGMP Neutron configs are more value consistent using True to
+        # enable a feature and False to disable it.
+        flood_value = ('false' if
+                       cfg.CONF.OVS.igmp_flood_unregistered else 'true')
         other_config = {
-            'mcast-snooping-disable-flood-unregistered': 'false'}
+            'mcast-snooping-disable-flood-unregistered': flood_value}
         with self.ovsdb.transaction() as txn:
             txn.add(
                 self.ovsdb.db_set('Bridge', self.br_name,
@@ -345,11 +348,10 @@ class OVSBridge(BaseOVS):
                 self.ovsdb.db_set('Bridge', self.br_name,
                                   ('other_config', other_config)))
 
-    def set_igmp_snooping_flood(self, port_name, state):
-        state = str(state)
+    def set_igmp_snooping_flood(self, port_name):
         other_config = {
-            'mcast-snooping-flood-reports': state,
-            'mcast-snooping-flood': state}
+            'mcast-snooping-flood-reports': ovs_conf.get_igmp_flood_reports(),
+            'mcast-snooping-flood': ovs_conf.get_igmp_flood()}
         self.ovsdb.db_set(
             'Port', port_name,
             ('other_config', other_config)).execute(
@@ -435,8 +437,6 @@ class OVSBridge(BaseOVS):
         self.ovsdb.del_port(port_name, self.br_name).execute()
 
     def run_ofctl(self, cmd, args, process_input=None):
-        debtcollector.deprecate("Use of run_ofctl is "
-            "deprecated", removal_version='V')
         full_args = ["ovs-ofctl", cmd,
                      "-O", self._highest_protocol_needed,
                      self.br_name] + args
@@ -651,7 +651,7 @@ class OVSBridge(BaseOVS):
             options['csum'] = str(tunnel_csum).lower()
         if tos:
             options['tos'] = str(tos)
-        if tunnel_type == TYPE_GRE_IP6:
+        if tunnel_type == p_const.TYPE_GRE_IP6:
             # NOTE(slaweq) According to the OVS documentation L3 GRE tunnels
             # over IPv6 are not supported.
             options['packet_type'] = 'legacy_l2'
@@ -667,6 +667,10 @@ class OVSBridge(BaseOVS):
     def get_iface_name_list(self):
         # get the interface name list for this bridge
         return self.ovsdb.list_ifaces(self.br_name).execute(check_error=True)
+
+    def get_iface_ofports_by_types(self, *types):
+        return _GetBridgeInterfacesOfportsByTypesCommand(
+            self.ovsdb, self.br_name, *types).execute(check_error=True)
 
     def get_port_name_list(self):
         # get the port name list for this bridge
@@ -817,9 +821,8 @@ class OVSBridge(BaseOVS):
         address = ip_lib.IPDevice(self.br_name).link.address
         if address:
             return address
-        else:
-            msg = _('Unable to determine mac address for %s') % self.br_name
-            raise Exception(msg)
+        msg = _('Unable to determine mac address for %s') % self.br_name
+        raise Exception(msg)
 
     def set_controllers_inactivity_probe(self, interval):
         """Set bridge controllers inactivity probe interval.
@@ -1170,7 +1173,7 @@ class OVSBridge(BaseOVS):
         queues = self.ovsdb.db_list(
             'Queue',
             columns=['_uuid', 'external_ids', 'other_config']).execute(
-            check_error=True)
+                check_error=True)
         if port:
             queues = [queue for queue in queues
                       if queue['external_ids'].get('port') == str(port)]
@@ -1265,7 +1268,7 @@ class OVSBridge(BaseOVS):
                                           if_exists=True) or []
         if port_type is None:
             return ports
-        elif not isinstance(port_type, list):
+        if not isinstance(port_type, list):
             port_type = [port_type]
         return [port['name'] for port in ports if port['type'] in port_type]
 
@@ -1318,7 +1321,7 @@ class OVSBridge(BaseOVS):
         self.destroy()
 
 
-class DeferredOVSBridge(object):
+class DeferredOVSBridge:
     '''Deferred OVSBridge.
 
     This class wraps add_flow, mod_flow and delete_flows calls to an OVSBridge
@@ -1347,7 +1350,7 @@ class DeferredOVSBridge(object):
         self.full_ordered = full_ordered
         self.order = order
         if not self.full_ordered:
-            self.weights = dict((y, x) for x, y in enumerate(self.order))
+            self.weights = {y: x for x, y in enumerate(self.order)}
         self.action_flow_tuples = []
         self.use_bundle = use_bundle
 
@@ -1395,6 +1398,20 @@ class DeferredOVSBridge(object):
                           self.br.br_name)
 
 
+class _GetBridgeInterfacesOfportsByTypesCommand(ovs_cmd.ReadOnlyCommand):
+    def __init__(self, api, bridge_name, *types):
+        super().__init__(api)
+        self.bridge_name = bridge_name
+        self.types = types
+
+    def run_idl(self, txn):
+        br = idlutils.row_by_value(
+            self.api.idl, 'Bridge', 'name', self.bridge_name)
+        self.result = [
+            i.ofport[0] for p in br.ports if p.name != self.bridge_name
+            for i in p.interfaces if i.type in self.types and i.ofport]
+
+
 def _build_flow_expr_str(flow_dict, cmd, strict):
     flow_expr_arr = []
     actions = None
@@ -1423,7 +1440,7 @@ def _build_flow_expr_str(flow_dict, cmd, strict):
         if key == 'proto':
             flow_expr_arr.append(value)
         else:
-            flow_expr_arr.append("%s=%s" % (key, str(value)))
+            flow_expr_arr.append(f"{key}={str(value)}")
 
     if actions:
         flow_expr_arr.append(actions)
@@ -1433,15 +1450,14 @@ def _build_flow_expr_str(flow_dict, cmd, strict):
 
 def generate_random_cookie():
     # The OpenFlow spec forbids use of -1
-    return random.randrange(UINT64_BITMASK)
+    return secrets.SystemRandom().randrange(UINT64_BITMASK)
 
 
 def check_cookie_mask(cookie):
     cookie = str(cookie)
     if '/' not in cookie:
-        return cookie + '/-1'
-    else:
-        return cookie
+        cookie += '/-1'
+    return cookie
 
 
 def is_a_flow_line(line):

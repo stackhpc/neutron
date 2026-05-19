@@ -15,9 +15,9 @@
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib.api.validators import availability_zone as az_validator
 from neutron_lib import constants
+from neutron_lib.db import api as db_api
 from neutron_lib.objects import common_types
 from oslo_utils import versionutils
-from oslo_versionedobjects import exception
 from oslo_versionedobjects import fields as obj_fields
 
 from neutron.db.models import dns as dns_models
@@ -45,13 +45,6 @@ class NetworkRBAC(rbac.RBACBaseObject):
     VERSION = '1.3'
 
     db_model = rbac_db_models.NetworkRBAC
-
-    def obj_make_compatible(self, primitive, target_version):
-        _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 1):
-            standard_fields = ['id', 'project_id']
-            for f in standard_fields:
-                primitive.pop(f, None)
 
 
 @base.NeutronObjectRegistry.register
@@ -115,14 +108,14 @@ class NetworkSegment(base.NeutronDbObject):
             hosts = self.hosts
             if hosts is None:
                 hosts = []
-            super(NetworkSegment, self).create()
+            super().create()
             if 'hosts' in fields:
                 self._attach_hosts(hosts)
 
     def update(self):
         fields = self.obj_get_changes()
         with self.db_context_writer(self.obj_context):
-            super(NetworkSegment, self).update()
+            super().update()
             if 'hosts' in fields:
                 self._attach_hosts(fields['hosts'])
 
@@ -140,7 +133,7 @@ class NetworkSegment(base.NeutronDbObject):
     def obj_load_attr(self, attrname):
         if attrname == 'hosts':
             return self._load_hosts()
-        super(NetworkSegment, self).obj_load_attr(attrname)
+        super().obj_load_attr(attrname)
 
     def _load_hosts(self, db_obj=None):
         if db_obj:
@@ -153,7 +146,7 @@ class NetworkSegment(base.NeutronDbObject):
         self.obj_reset_changes(['hosts'])
 
     def from_db_object(self, db_obj):
-        super(NetworkSegment, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
         self._load_hosts(db_obj)
 
     @classmethod
@@ -165,8 +158,22 @@ class NetworkSegment(base.NeutronDbObject):
             _pager.sorts = [
                 (field, True) for field in ('network_id', 'segment_index')
             ]
-        return super(NetworkSegment, cls).get_objects(context, _pager,
-                                                      **kwargs)
+        return super().get_objects(context, _pager,
+                                   **kwargs)
+
+    @classmethod
+    @db_api.CONTEXT_READER
+    def count_segments(cls, context, network_type,
+                       physical_network, segment_range=None):
+        segments = context.session.query(cls.db_model).filter(
+            cls.db_model.network_type == network_type,
+            cls.db_model.physical_network == physical_network)
+        if segment_range:
+            segments = segments.filter(
+                cls.db_model.segmentation_id.between(
+                    segment_range['minimum'],
+                    segment_range['maximum']))
+        return segments.count()
 
 
 @base.NeutronObjectRegistry.register
@@ -200,7 +207,8 @@ class ExternalNetwork(base.NeutronDbObject):
 class Network(rbac_db.NeutronRbacObject):
     # Version 1.0: Initial version
     # Version 1.1: Changed 'mtu' to be not nullable
-    VERSION = '1.1'
+    # Version 1.2: Added 'qinq' field
+    VERSION = '1.2'
 
     rbac_db_cls = NetworkRBAC
     db_model = models_v2.Network
@@ -212,6 +220,7 @@ class Network(rbac_db.NeutronRbacObject):
         'status': obj_fields.StringField(nullable=True),
         'admin_state_up': obj_fields.BooleanField(nullable=True),
         'vlan_transparent': obj_fields.BooleanField(nullable=True),
+        'qinq': obj_fields.BooleanField(nullable=True),
         # TODO(ihrachys): consider converting to a field of stricter type
         'availability_zone_hints': obj_fields.ListOfStringsField(
             nullable=True),
@@ -252,7 +261,7 @@ class Network(rbac_db.NeutronRbacObject):
         with self.db_context_writer(self.obj_context):
             dns_domain = self.dns_domain
             qos_policy_id = self.qos_policy_id
-            super(Network, self).create()
+            super().create()
             if 'dns_domain' in fields:
                 self._set_dns_domain(dns_domain)
             if 'qos_policy_id' in fields:
@@ -261,7 +270,7 @@ class Network(rbac_db.NeutronRbacObject):
     def update(self):
         fields = self.obj_get_changes()
         with self.db_context_writer(self.obj_context):
-            super(Network, self).update()
+            super().update()
             if 'dns_domain' in fields:
                 self._set_dns_domain(fields['dns_domain'])
             if 'qos_policy_id' in fields:
@@ -288,7 +297,7 @@ class Network(rbac_db.NeutronRbacObject):
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        result = super(Network, cls).modify_fields_from_db(db_obj)
+        result = super().modify_fields_from_db(db_obj)
         if az_def.AZ_HINTS in result:
             result[az_def.AZ_HINTS] = (
                 az_validator.convert_az_string_to_list(
@@ -297,7 +306,7 @@ class Network(rbac_db.NeutronRbacObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(Network, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if az_def.AZ_HINTS in result:
             result[az_def.AZ_HINTS] = (
                 az_validator.convert_az_list_to_string(
@@ -305,7 +314,7 @@ class Network(rbac_db.NeutronRbacObject):
         return result
 
     def from_db_object(self, *objs):
-        super(Network, self).from_db_object(*objs)
+        super().from_db_object(*objs)
         for db_obj in objs:
             # extract domain name
             if db_obj.get('dns_domain'):
@@ -332,11 +341,8 @@ class Network(rbac_db.NeutronRbacObject):
 
     def obj_make_compatible(self, primitive, target_version):
         _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version >= (1, 1):
-            if primitive['mtu'] is None:
-                # mtu will not be nullable after
-                raise exception.IncompatibleObjectVersion(
-                    objver=target_version, objname=self.__class__.__name__)
+        if _target_version < (1, 2):
+            primitive.pop('qinq', None)
 
 
 @base.NeutronObjectRegistry.register
@@ -376,4 +382,4 @@ class NetworkDNSDomain(base.NeutronDbObject):
                 id=port_id).one_or_none()
         if net_dns is None:
             return None
-        return super(NetworkDNSDomain, cls)._load_object(context, net_dns)
+        return super()._load_object(context, net_dns)

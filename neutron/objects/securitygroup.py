@@ -43,7 +43,8 @@ class SecurityGroup(rbac_db.NeutronRbacObject):
     # Version 1.3: Added support for remote_address_group_id in rules
     # Version 1.4: Added support for normalized_cidr in rules
     # Version 1.5: Make the shared field nullable
-    VERSION = '1.5'
+    # Version 1.6: Added "belongs_to_default_sg" field in rules
+    VERSION = '1.6'
 
     # required by RbacNeutronMetaclass
     rbac_db_cls = SecurityGroupRBAC
@@ -69,13 +70,13 @@ class SecurityGroup(rbac_db.NeutronRbacObject):
 
     extra_filter_names = {'is_default'}
 
-    lazy_fields = set(['rules'])
+    lazy_fields = {'rules'}
 
     def create(self):
         # save is_default before super() resets it to False
         is_default = self.is_default
         with self.db_context_writer(self.obj_context):
-            super(SecurityGroup, self).create()
+            super().create()
             if is_default:
                 default_group = DefaultSecurityGroup(
                     self.obj_context,
@@ -86,7 +87,7 @@ class SecurityGroup(rbac_db.NeutronRbacObject):
                 self.obj_reset_changes(['is_default'])
 
     def from_db_object(self, db_obj):
-        super(SecurityGroup, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
         if self._load_synthetic_fields:
             setattr(self, 'is_default',
                     bool(db_obj.get('default_security_group')))
@@ -94,44 +95,43 @@ class SecurityGroup(rbac_db.NeutronRbacObject):
 
     @classmethod
     def get_sg_by_id(cls, context, sg_id):
-        return super(SecurityGroup, cls).get_object(context, id=sg_id)
+        return super().get_object(context, id=sg_id)
 
     def obj_make_compatible(self, primitive, target_version):
         _target_version = versionutils.convert_version_to_tuple(target_version)
 
-        def filter_remote_address_group_id_from_rules(rules):
+        def _filter_rules(rules, version):
             sg_rule = SecurityGroupRule()
             for rule in rules:
-                sg_rule.obj_make_compatible(
-                    rule['versioned_object.data'], '1.0')
-                rule['versioned_object.version'] = '1.0'
-
-        def filter_normalized_cidr_from_rules(rules):
-            sg_rule = SecurityGroupRule()
-            for rule in rules:
-                rule_version = versionutils.convert_version_to_tuple(
+                r_version = versionutils.convert_version_to_tuple(
                     rule['versioned_object.version'])
-                if rule_version > (1, 1):
+                if r_version > versionutils.convert_version_to_tuple(version):
                     sg_rule.obj_make_compatible(
-                        rule['versioned_object.data'], '1.1')
-                    rule['versioned_object.version'] = '1.1'
+                        rule['versioned_object.data'], version)
+                    rule['versioned_object.version'] = version
 
-        if _target_version < (1, 1):
-            primitive.pop('shared')
-        if _target_version < (1, 2):
-            primitive.pop('stateful')
         if _target_version < (1, 3):
             if 'rules' in primitive:
-                filter_remote_address_group_id_from_rules(primitive['rules'])
+                _filter_rules(primitive['rules'], '1.0')
         if _target_version < (1, 4):
             if 'rules' in primitive:
-                filter_normalized_cidr_from_rules(primitive['rules'])
+                _filter_rules(primitive['rules'], '1.1')
+        if _target_version < (1, 6):
+            if 'rules' in primitive:
+                _filter_rules(primitive['rules'], '1.2')
 
     @classmethod
     def get_bound_project_ids(cls, context, obj_id):
         port_objs = ports.Port.get_objects(context,
                                            security_group_ids=[obj_id])
         return {port.project_id for port in port_objs}
+
+    @classmethod
+    @db_api.CONTEXT_READER
+    def get_sgs_stateful_flag(cls, context, sg_ids):
+        query = context.session.query(cls.db_model.id, cls.db_model.stateful)
+        query = query.filter(cls.db_model.id.in_(sg_ids))
+        return dict(query.all())
 
 
 @base.NeutronObjectRegistry.register
@@ -156,7 +156,8 @@ class SecurityGroupRule(base.NeutronDbObject):
     # Version 1.0: Initial version
     # Version 1.1: Add remote address group support
     # Version 1.2: Added normalized cidr column
-    VERSION = '1.2'
+    # Version 1.3: Added belongs_to_default_sg column
+    VERSION = '1.3'
 
     db_model = sg_models.SecurityGroupRule
 
@@ -173,27 +174,32 @@ class SecurityGroupRule(base.NeutronDbObject):
         'remote_ip_prefix': common_types.IPNetworkField(nullable=True),
         'remote_address_group_id': common_types.UUIDField(nullable=True),
         'normalized_cidr': common_types.IPNetworkField(nullable=True),
+        'belongs_to_default_sg': obj_fields.BooleanField(default=False),
     }
 
-    synthetic_fields = ['normalized_cidr']
+    synthetic_fields = ['normalized_cidr',
+                        'belongs_to_default_sg',
+                        ]
 
     foreign_keys = {'SecurityGroup': {'security_group_id': 'id'}}
 
-    fields_no_update = ['project_id', 'security_group_id', 'remote_group_id',
-                        'remote_address_group_id']
+    fields_no_update = ['project_id',
+                        'security_group_id',
+                        'remote_group_id',
+                        'remote_address_group_id',
+                        'belongs_to_default_sg',
+                        ]
 
     def obj_make_compatible(self, primitive, target_version):
         _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 1):
-            primitive.pop('remote_address_group_id', None)
-        if _target_version < (1, 2):
-            primitive.pop('normalized_cidr', None)
+        if _target_version < (1, 3):
+            primitive.pop('belongs_to_default_sg', None)
 
     # TODO(sayalilunkad): get rid of it once we switch the db model to using
     # custom types.
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(SecurityGroupRule, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         remote_ip_prefix = result.get('remote_ip_prefix')
         if remote_ip_prefix:
             result['remote_ip_prefix'] = cls.filter_to_str(remote_ip_prefix)
@@ -213,19 +219,23 @@ class SecurityGroupRule(base.NeutronDbObject):
         self.obj_reset_changes(['normalized_cidr'])
 
     def from_db_object(self, db_obj):
-        super(SecurityGroupRule, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
         self._load_normalized_cidr(db_obj)
+        if self._load_synthetic_fields:
+            setattr(self, 'belongs_to_default_sg',
+                    bool(db_obj.get('default_security_group')))
+            self.obj_reset_changes(['belongs_to_default_sg'])
 
     def obj_load_attr(self, attrname):
         if attrname == 'normalized_cidr':
             return self._load_normalized_cidr()
-        super(SecurityGroupRule, self).obj_load_attr(attrname)
+        super().obj_load_attr(attrname)
 
     # TODO(sayalilunkad): get rid of it once we switch the db model to using
     # custom types.
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        fields = super(SecurityGroupRule, cls).modify_fields_from_db(db_obj)
+        fields = super().modify_fields_from_db(db_obj)
         if 'remote_ip_prefix' in fields:
             fields['remote_ip_prefix'] = (
                 net_utils.AuthenticIPNetwork(fields['remote_ip_prefix']))

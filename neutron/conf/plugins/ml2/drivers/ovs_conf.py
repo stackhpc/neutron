@@ -18,6 +18,7 @@ from oslo_config import cfg
 
 from neutron._i18n import _
 from neutron.conf.agent import common
+from neutron.conf.agent.metadata import config as meta_conf
 
 
 DEFAULT_BRIDGE_MAPPINGS = []
@@ -25,7 +26,6 @@ DEFAULT_TUNNEL_TYPES = []
 
 ovs_opts = [
     cfg.StrOpt('integration_bridge', default='br-int',
-               deprecated_name='ovs_integration_bridge',
                help=_("Integration bridge to use. "
                       "Do not change this parameter unless you have a good "
                       "reason to. This is the name of the OVS integration "
@@ -149,11 +149,11 @@ ovs_opts = [
                        "https://docs.openstack.org/api-ref/placement/"
                        "#update-resource-provider-inventories")),
     cfg.StrOpt('datapath_type', default=ovs_constants.OVS_DATAPATH_SYSTEM,
-               choices=[ovs_constants.OVS_DATAPATH_SYSTEM,
-                        ovs_constants.OVS_DATAPATH_NETDEV],
-               help=_("OVS datapath to use. 'system' is the default value and "
-                      "corresponds to the kernel datapath. To enable the "
-                      "userspace datapath set this value to 'netdev'.")),
+               choices=[(ovs_constants.OVS_DATAPATH_SYSTEM,
+                         "Kernel datapath"),
+                        (ovs_constants.OVS_DATAPATH_NETDEV,
+                         "Userspace datapath")],
+               help=_("OVS datapath to use.")),
     cfg.StrOpt('vhostuser_socket_dir',
                default=ovs_constants.VHOST_USER_SOCKET_DIR,
                help=_("OVS vhost-user socket directory.")),
@@ -180,28 +180,32 @@ ovs_opts = [
                        'If disabled, the flows will be processed in batches '
                        'of ``_constants.AGENT_RES_PROCESSING_STEP`` number of '
                        'OpenFlow rules.')),
+    cfg.BoolOpt('qos_meter_bandwidth', default=False,
+                help="Whether to enable the Openvswitch meter bandwidth "
+                     "limit features which will add meter kbps rules "
+                     "and apply them to the OpenFlow flow table "
+                     "BANDWIDTH_RATE_LIMIT for VM ports."),
+    cfg.BoolOpt('trunk_enabled', default=True,
+                help=_('Enable agent side trunk extension. If you do not '
+                       'need the trunk extension, you can safely set '
+                       'config option to False, it will avoid the agent '
+                       'to declare some queues.')),
 ]
 
 agent_opts = [
     cfg.BoolOpt('minimize_polling',
                 default=True,
-                help=_("Minimize polling by monitoring ovsdb for interface "
+                help=_("Minimize polling by monitoring OVSDB for interface "
                        "changes.")),
     cfg.IntOpt('ovsdb_monitor_respawn_interval',
                default=ovs_constants.DEFAULT_OVSDBMON_RESPAWN,
                help=_("The number of seconds to wait before respawning the "
-                      "ovsdb monitor after losing communication with it.")),
+                      "OVSDB monitor after losing communication with it.")),
     cfg.ListOpt('tunnel_types', default=DEFAULT_TUNNEL_TYPES,
                 help=_("Network types supported by the agent "
                        "(gre, vxlan and/or geneve).")),
     cfg.PortOpt('vxlan_udp_port', default=n_const.VXLAN_UDP_PORT,
                 help=_("The UDP port to use for VXLAN tunnels.")),
-    cfg.IntOpt('veth_mtu', default=9000,
-               deprecated_for_removal=True,
-               deprecated_since="Yoga",
-               deprecated_reason="This parameter has had no effect since "
-                                 "the Wallaby release.",
-               help=_("MTU size of veth interfaces")),
     cfg.BoolOpt('l2_population', default=False,
                 help=_("Use ML2 l2population mechanism driver to learn "
                        "remote MAC and IPs and improve tunnel scalability.")),
@@ -216,7 +220,7 @@ agent_opts = [
                        "in the agent, regardless of the setting in the config "
                        "file.")),
     cfg.BoolOpt('dont_fragment', default=True,
-                help=_("Set or un-set the don't fragment (DF) bit on "
+                help=_("Set or un-set the do not fragment (DF) bit on "
                        "outgoing IP packet carrying GRE/VXLAN tunnel.")),
     cfg.BoolOpt('enable_distributed_routing', default=False,
                 help=_("Make the l2 agent run in DVR mode.")),
@@ -228,12 +232,16 @@ agent_opts = [
                        "outgoing IP packet carrying GRE/VXLAN tunnel.")),
     cfg.BoolOpt('baremetal_smartnic', default=False,
                 help=_("Enable the agent to process Smart NIC ports.")),
+    # TODO(liuyulong): consider adding a new configuration
+    # item to control ingress behavior.
     cfg.BoolOpt('explicitly_egress_direct', default=False,
                 help=_("When set to True, the accepted egress unicast "
                        "traffic will not use action NORMAL. The accepted "
                        "egress packets will be taken care of in the final "
                        "egress tables direct output flows for unicast "
-                       "traffic.")),
+                       "traffic. This will aslo change the pipleline for "
+                       "ingress traffic to ports without security, the final "
+                       "output action will be hit in table 94. ")),
 ]
 
 dhcp_opts = [
@@ -245,12 +253,35 @@ dhcp_opts = [
 
 local_ip_opts = [
     cfg.BoolOpt('static_nat', default=False,
-                help=_("When set to True, the Local IP openvswitch agent "
+                help=_("When set to True, the Local IP Openvswitch agent "
                        "extension will use static NAT rules instead of using "
                        "conntrack. This allows to use feature in OVS offload "
                        "and DPDK scenarios at the cost of number and "
-                       "complexity of flows. This also allows to use feature "
-                       "together with ovs firewall.")),
+                       "complexity of flows. This also allows using this "
+                       "feature together with the OVS firewall.")),
+]
+
+
+metadata_opts = [
+    cfg.StrOpt('provider_cidr', default='240.0.0.0/16',
+               help=_("Local metadata CIDR for VMs metadata traffic, "
+                      "will be used as the IP range to generate the "
+                      "VM's metadata IP.")),
+    cfg.IntOpt('provider_vlan_id', default=1,
+               help=_("The metadata tap device local vlan ID. This is only "
+                      "available on the metadata bridge device.")),
+    cfg.StrOpt('provider_base_mac', default="fa:16:ee:00:00:00",
+               help=_("The base MAC address Neutron Openvswitch agent "
+                      "will use for metadata traffic.")),
+    cfg.IntOpt('host_proxy_listen_port', default=80,
+               help=_("Host haproxy listen port for metadata path. This "
+                      "is transparent for metadata traffic, VMs still try to "
+                      "access 169.254.169.254:80 for metadata. But in "
+                      "the metadata datapath flow pipeline, the destination "
+                      "TCP port 80 will be changed to the value of "
+                      "`host_proxy_listen_port` which the host haproxy "
+                      "will listen on. For return traffic, the TCP source "
+                      "port will be changed back to 80.")),
 ]
 
 
@@ -260,6 +291,8 @@ def register_ovs_agent_opts(cfg=cfg.CONF):
     cfg.register_opts(dhcp_opts, "DHCP")
     cfg.register_opts(common.DHCP_PROTOCOL_OPTS, "DHCP")
     cfg.register_opts(local_ip_opts, "LOCAL_IP")
+    cfg.register_opts(meta_conf.METADATA_PROXY_HANDLER_OPTS, "METADATA")
+    cfg.register_opts(metadata_opts, "METADATA")
 
 
 def register_ovs_opts(cfg=cfg.CONF):

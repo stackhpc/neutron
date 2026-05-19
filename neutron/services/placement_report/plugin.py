@@ -38,11 +38,6 @@ class PlacementReportPlugin(service_base.ServicePluginBase):
 
     supported_extension_aliases = []
 
-    # A service plugin without claiming support for filter validation would
-    # disable filter validation for all other plugins, so we report support
-    # although this plugin doesn't have filters.
-    __filter_validation_support = True
-
     @classmethod
     def get_plugin_type(cls):
         return PLUGIN_TYPE
@@ -171,7 +166,7 @@ class PlacementReportPlugin(service_base.ServicePluginBase):
 
             for deferred in deferred_batch:
                 try:
-                    LOG.debug('placement client: {}'.format(deferred))
+                    LOG.debug('placement client: %s', deferred)
                     deferred.execute()
                 except Exception as e:
                     errors = True
@@ -248,7 +243,7 @@ class PlacementReportPlugin(service_base.ServicePluginBase):
                 agent['agent_type'], agent['host'])
 
 
-class PlacementReporterAgents(object):
+class PlacementReporterAgents:
 
     # Yep, this is meant to depend on ML2.
     def __init__(self, ml2_plugin):

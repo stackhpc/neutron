@@ -26,7 +26,7 @@ from neutron.tests.unit import fake_resources as fakes
 class TestACLs(base.BaseTestCase):
 
     def setUp(self):
-        super(TestACLs, self).setUp()
+        super().setUp()
         self.driver = mock.Mock()
         self.driver.nb_ovn = fakes.FakeOvsdbNbOvnIdl()
         self.plugin = fakes.FakePlugin()
@@ -60,7 +60,8 @@ class TestACLs(base.BaseTestCase):
                         'lport': self.fake_port['id'],
                         'lswitch': 'neutron-network_id1',
                         'match': 'outport == "fake_port_id1" && ip',
-                        'priority': 1001}
+                        'priority': 1001,
+                        'meter': []}
         acl_from_lport = {'action': 'drop', 'direction': 'from-lport',
                           'external_ids': {'neutron:lport':
                                            self.fake_port['id']},
@@ -68,7 +69,8 @@ class TestACLs(base.BaseTestCase):
                           'lport': self.fake_port['id'],
                           'lswitch': 'neutron-network_id1',
                           'match': 'inport == "fake_port_id1" && ip',
-                          'priority': 1001}
+                          'priority': 1001,
+                          'meter': []}
         for acl in acls:
             if 'to-lport' in acl.values():
                 self.assertEqual(acl_to_lport, acl)
@@ -261,12 +263,14 @@ class TestACLs(base.BaseTestCase):
         sg_rule['remote_ip_prefix'] = remote_ip_prefix
         sg_rule['normalized_cidr'] = normalized_cidr
         match = ovn_acl.acl_remote_ip_prefix(sg_rule, ip_version)
-        expected_match = ' && %s.src == %s' % (ip_version, remote_ip_prefix)
+        expected_match = ' && {}.src == {}'.format(
+            ip_version, remote_ip_prefix)
         self.assertEqual(expected_match, match)
 
         sg_rule['direction'] = 'egress'
         match = ovn_acl.acl_remote_ip_prefix(sg_rule, ip_version)
-        expected_match = ' && %s.dst == %s' % (ip_version, remote_ip_prefix)
+        expected_match = ' && {}.dst == {}'.format(
+            ip_version, remote_ip_prefix)
         self.assertEqual(expected_match, match)
 
     def test_acl_remote_ip_prefix_not_normalized(self):
@@ -279,8 +283,8 @@ class TestACLs(base.BaseTestCase):
         }).info()
 
         match = ovn_acl.acl_remote_ip_prefix(sg_rule, ip_version)
-        expected_match = ' && %s.src == %s' % (ip_version,
-                                               normalized_ip_prefix)
+        expected_match = ' && {}.src == {}'.format(ip_version,
+                                                   normalized_ip_prefix)
         self.assertEqual(expected_match, match)
 
     def test_acl_remote_group_id(self):

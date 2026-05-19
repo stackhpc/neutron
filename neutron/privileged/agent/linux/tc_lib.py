@@ -17,11 +17,11 @@ import socket
 
 from neutron_lib import constants as n_constants
 import pyroute2
-from pyroute2 import protocols \
-    as pyroute2_protocols  # pylint: disable=no-name-in-module
+from pyroute2 import protocols as pyroute2_protocols
 
 from neutron._i18n import _
 from neutron import privileged
+from neutron.privileged.agent import linux as priv_linux
 from neutron.privileged.agent.linux import ip_lib
 
 
@@ -35,8 +35,8 @@ class TrafficControlClassNotFound(RuntimeError):
 
     def __init__(self, message=None, classid=None, namespace=None):
         message = message or self.message % {
-                'classid': classid, 'namespace': namespace}
-        super(TrafficControlClassNotFound, self).__init__(message)
+            'classid': classid, 'namespace': namespace}
+        super().__init__(message)
 
 
 @privileged.default.entrypoint
@@ -58,7 +58,7 @@ def list_tc_qdiscs(device, namespace=None):
     index = ip_lib.get_link_id(device, namespace)
     try:
         with ip_lib.get_iproute(namespace) as ip:
-            return ip_lib.make_serializable(ip.get_qdiscs(index=index))
+            return priv_linux.make_serializable(ip.get_qdiscs(index=index))
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise ip_lib.NetworkNamespaceNotFound(netns_name=namespace)
@@ -87,7 +87,7 @@ def delete_tc_qdisc(device, parent=None, kind=None, namespace=None,
         # code (22, 'Invalid argument') if kind='ingress' and the qdisc does
         # not exist. This behaviour must be refactored in pyroute2.
         if ((e.code == errno.ENOENT or
-                (e.code == errno.EINVAL and kind == 'ingress')) and
+             (e.code == errno.EINVAL and kind == 'ingress')) and
                 raise_qdisc_not_found is False):
             # NOTE(ralonsoh): return error code for testing purposes
             return e.code
@@ -119,7 +119,7 @@ def list_tc_policy_classes(device, namespace=None):
     try:
         index = ip_lib.get_link_id(device, namespace)
         with ip_lib.get_iproute(namespace) as ip:
-            return ip_lib.make_serializable(ip.get_classes(index=index))
+            return priv_linux.make_serializable(ip.get_classes(index=index))
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise ip_lib.NetworkNamespaceNotFound(netns_name=namespace)
@@ -196,7 +196,7 @@ def list_tc_filters(device, parent, namespace=None, **kwargs):
     try:
         index = ip_lib.get_link_id(device, namespace)
         with ip_lib.get_iproute(namespace) as ip:
-            return ip_lib.make_serializable(
+            return priv_linux.make_serializable(
                 ip.get_filters(index=index, parent=parent, **kwargs))
     except OSError as e:
         if e.errno == errno.ENOENT:

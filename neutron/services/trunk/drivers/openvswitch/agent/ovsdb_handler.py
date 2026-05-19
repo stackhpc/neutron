@@ -14,9 +14,8 @@
 #    under the License.
 
 import functools
-import time
 
-import eventlet
+import futurist
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
@@ -43,9 +42,12 @@ from neutron.services.trunk.rpc import agent
 LOG = logging.getLogger(__name__)
 
 DEFAULT_WAIT_FOR_PORT_TIMEOUT = 60
-WAIT_BEFORE_TRUNK_DELETE = 6
 
 
+# Note: this lock is local only to the ovs-agent, but not for
+# the RPC calls to the neutron-server! This can mean that the agent
+# is still working on trunk wiring but in the server the trunk is already
+# deleted.
 def lock_on_bridge_name(required_parameter):
     def func_decor(f):
         try:
@@ -96,12 +98,15 @@ def bridge_has_port(bridge, is_port_predicate):
     return any(iface for iface in ifaces if is_port_predicate(iface))
 
 
+def _is_instance_port(port_name):
+    return not is_trunk_service_port(port_name)
+
+
 def bridge_has_instance_port(bridge):
     """True if there is an OVS port that doesn't have bridge or patch ports
        prefix.
     """
-    is_instance_port = lambda p: not is_trunk_service_port(p)
-    return bridge_has_port(bridge, is_instance_port)
+    return bridge_has_port(bridge, _is_instance_port)
 
 
 def bridge_has_service_port(bridge):
@@ -111,7 +116,7 @@ def bridge_has_service_port(bridge):
 
 
 @registry.has_registry_receivers
-class OVSDBHandler(object):
+class OVSDBHandler:
     """It listens to OVSDB events to create the physical resources associated
     to a logical trunk in response to OVSDB events (such as VM boot and/or
     delete).
@@ -132,21 +137,24 @@ class OVSDBHandler(object):
     def process_trunk_port_events(
             self, resource, event, trigger, payload):
         """Process added and removed port events coming from OVSDB monitor."""
-        ovsdb_events = payload.latest_state
-        for port_event in ovsdb_events['added']:
-            port_name = port_event['name']
-            if is_trunk_bridge(port_name):
-                LOG.debug("Processing trunk bridge %s", port_name)
-                # As there is active waiting for port to appear, it's handled
-                # in a separate greenthread.
-                # NOTE: port_name is equal to bridge_name at this point.
-                eventlet.spawn_n(self.handle_trunk_add, port_name)
 
-        for port_event in ovsdb_events['removed']:
-            bridge_name = port_event['external_ids'].get('bridge_name')
-            if bridge_name and is_trunk_bridge(bridge_name):
-                eventlet.spawn_n(
-                    self.handle_trunk_remove, bridge_name, port_event)
+        with futurist.ThreadPoolExecutor() as executor:
+
+            ovsdb_events = payload.latest_state
+            for port_event in ovsdb_events['added']:
+                port_name = port_event['name']
+                if is_trunk_bridge(port_name):
+                    LOG.debug("Processing trunk bridge %s", port_name)
+                    # As there is active waiting for port to appear,
+                    # it'shandled in a separate greenthread.  NOTE:
+                    # port_name is equal to bridge_name at this point.
+                    executor.submit(self.handle_trunk_add, port_name)
+
+            for port_event in ovsdb_events['removed']:
+                bridge_name = port_event['external_ids'].get('bridge_name')
+                if bridge_name and is_trunk_bridge(bridge_name):
+                    executor.submit(
+                        self.handle_trunk_remove, bridge_name, port_event)
 
     @lock_on_bridge_name(required_parameter='bridge_name')
     def handle_trunk_add(self, bridge_name):
@@ -208,21 +216,6 @@ class OVSDBHandler(object):
         :param bridge_name: Name of the bridge used for locking purposes.
         :param port: Parent port dict.
         """
-        # TODO(njohnston): In the case of DPDK with trunk ports, if nova
-        # deletes an interface and then re-adds it we can get a race
-        # condition where the port is re-added and then the bridge is
-        # deleted because we did not properly catch the re-addition.  To
-        # solve this would require transitioning to ordered event
-        # resolution, like the L3 agent does with the
-        # ResourceProcessingQueue class.  Until we can make that happen, we
-        # try to mitigate the issue by checking if there is a port on the
-        # bridge and if so then do not remove it.
-        bridge = ovs_lib.OVSBridge(bridge_name)
-        time.sleep(WAIT_BEFORE_TRUNK_DELETE)
-        if bridge_has_instance_port(bridge):
-            LOG.debug("The bridge %s has instances attached so it will not "
-                      "be deleted.", bridge_name)
-            return
         try:
             # TODO(jlibosva): Investigate how to proceed during removal of
             # trunk bridge that doesn't have metadata stored.
@@ -253,7 +246,7 @@ class OVSDBHandler(object):
             return []
         try:
             ports = bridge.get_ports_attributes(
-                            'Interface', columns=['name', 'external_ids'])
+                'Interface', columns=['name', 'external_ids'])
             return [
                 self.trunk_manager.get_port_uuid_from_external_ids(port)
                 for port in ports if is_subport(port['name'])
@@ -289,6 +282,13 @@ class OVSDBHandler(object):
             else:
                 subport_ids.append(subport.port_id)
 
+        # Note: update_trunk_metadata tries to add the following fields
+        # to external_ids: bridge_name, trunk_id and subport_ids.
+        # It can happen that this metadata is not filled in time and
+        # the cleanup fails.
+        # As os-vif is responsible for creating these ports and at the time
+        # of creation the metadata is partially available, os-vif can add
+        # at least bridge_name to external_ids.
         try:
             self._update_trunk_metadata(
                 trunk_bridge, parent_port, trunk_id, subport_ids)
@@ -304,8 +304,7 @@ class OVSDBHandler(object):
         LOG.debug("Added trunk: %s", trunk_id)
         return self._get_current_status(subports, subport_ids)
 
-    def unwire_subports_for_trunk(self, trunk_id, subport_ids):
-        """Destroy OVS ports associated to the logical subports."""
+    def _remove_sub_ports(self, trunk_id, subport_ids):
         ids = []
         for subport_id in subport_ids:
             try:
@@ -317,6 +316,11 @@ class OVSDBHandler(object):
                           {'subport_id': subport_id,
                            'trunk_id': trunk_id,
                            'err': te})
+        return ids
+
+    def unwire_subports_for_trunk(self, trunk_id, subport_ids):
+        """Destroy OVS ports associated to the logical subports."""
+        ids = self._remove_sub_ports(trunk_id, subport_ids)
         try:
             # OVS bridge and port to be determined by _update_trunk_metadata
             bridge = None
@@ -460,8 +464,13 @@ class OVSDBHandler(object):
         :param subport_ids: subports affecting the metadata.
         :param wire: if True subport_ids are added, otherwise removed.
         """
-        trunk_bridge = trunk_bridge or ovs_lib.OVSBridge(
-            utils.gen_trunk_br_name(trunk_id))
+        bridge_name = utils.gen_trunk_br_name(trunk_id)
+        trunk_bridge = trunk_bridge or ovs_lib.OVSBridge(bridge_name)
+        if not trunk_bridge.bridge_exists(bridge_name):
+            LOG.info(
+                "Could not update trunk metadata in a non-existent bridge "
+                "(likely already deleted by nova/os-vif): %s", bridge_name)
+            return
         port = port or self._get_parent_port(trunk_bridge)
         _port_id, _trunk_id, old_subports = self._get_trunk_metadata(port)
         if wire:
@@ -482,8 +491,7 @@ class OVSDBHandler(object):
         # can be exceptions (e.g. unwire_subports_for_trunk).
         if len(expected_subports) != len(actual_subports):
             return constants.TRUNK_DEGRADED_STATUS
-        else:
-            return constants.TRUNK_ACTIVE_STATUS
+        return constants.TRUNK_ACTIVE_STATUS
 
     def _is_vm_connected(self, bridge):
         """True if an instance is connected to bridge, False otherwise."""

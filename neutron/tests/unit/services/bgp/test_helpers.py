@@ -1,0 +1,68 @@
+# Copyright 2025 Red Hat, Inc.
+# All Rights Reserved.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+import netaddr
+
+from neutron.services.bgp import constants
+from neutron.services.bgp import helpers
+from neutron.tests import base
+
+
+class GetMacAddressFromLrpNameTestCase(base.BaseTestCase):
+    def test_get_mac_address_from_lrp_name_unique(self):
+        num_macs = 1000
+        macs = set()
+        for i in range(num_macs):
+            lrp_name = f'test-lrp-{i}'
+            mac = helpers.get_mac_address_from_lrp_name(lrp_name)
+            try:
+                netaddr.EUI(mac, version=48)
+            except netaddr.AddrFormatError as e:
+                self.fail(f"Invalid MAC address generated: {mac}, error: {e}")
+            macs.add(mac)
+
+        self.assertEqual(num_macs, len(macs))
+
+    def test_get_mac_address_from_lrp_name_consistent(self):
+        lrp_name = 'test-lrp-1'
+        mac1 = helpers.get_mac_address_from_lrp_name(lrp_name)
+        mac2 = helpers.get_mac_address_from_lrp_name(lrp_name)
+        self.assertEqual(mac1, mac2)
+
+
+class GetChassisBgpBridgesTestCase(base.BaseTestCase):
+    class FakeChassis:
+        def __init__(self, name, external_ids):
+            self.name = name
+            self.external_ids = external_ids
+
+    def test_get_chassis_bgp_bridges(self):
+        chassis = self.FakeChassis(
+            name='test-chassis',
+            external_ids={constants.CHASSIS_BGP_BRIDGES_EXT_ID_KEY: 'br1,br2'})
+        self.assertEqual(['br1', 'br2'],
+                         sorted(helpers.get_chassis_bgp_bridges(chassis)))
+
+    def test_get_chassis_bgp_bridges_no_bridges(self):
+        chassis = self.FakeChassis(
+            name='test-chassis',
+            external_ids={})
+        self.assertEqual([], helpers.get_chassis_bgp_bridges(chassis))
+
+    def test_get_chassis_bgp_bridges_empty_bridges(self):
+        chassis = self.FakeChassis(
+            name='test-chassis',
+            external_ids={constants.CHASSIS_BGP_BRIDGES_EXT_ID_KEY: ''})
+        self.assertEqual([], helpers.get_chassis_bgp_bridges(chassis))

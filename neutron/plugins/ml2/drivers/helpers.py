@@ -15,14 +15,12 @@
 
 import functools
 
-from neutron_lib import context
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
 from neutron_lib.plugins import utils as p_utils
-from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log
@@ -37,13 +35,7 @@ class BaseTypeDriver(api.ML2TypeDriver):
     """BaseTypeDriver for functions common to Segment and flat."""
 
     def __init__(self):
-        try:
-            self.physnet_mtus = helpers.parse_mappings(
-                cfg.CONF.ml2.physical_network_mtus, unique_values=False
-            )
-        except Exception as e:
-            LOG.error("Failed to parse physical_network_mtus: %s", e)
-            self.physnet_mtus = []
+        self.physnet_mtus = cfg.CONF.ml2.physical_network_mtus
 
     def get_mtu(self, physical_network=None):
         return p_utils.get_deployment_physnet_mtu()
@@ -57,7 +49,7 @@ class SegmentTypeDriver(BaseTypeDriver):
     """
 
     def __init__(self, model):
-        super(SegmentTypeDriver, self).__init__()
+        super().__init__()
         self.model = model.db_model
         self.segmentation_obj = model
         primary_keys_columns = self.model.__table__.primary_key.columns
@@ -81,28 +73,25 @@ class SegmentTypeDriver(BaseTypeDriver):
                     if alloc.allocated:
                         # Segment already allocated
                         return
-                    else:
-                        # Segment not allocated
-                        LOG.debug("%(type)s segment %(segment)s allocate "
-                                  "started ",
-                                  {"type": network_type,
-                                   "segment": raw_segment})
-                        count = (context.session.query(self.model).
-                                 filter_by(allocated=False, **raw_segment).
-                                 update({"allocated": True}))
-                        if count:
-                            LOG.debug("%(type)s segment %(segment)s allocate "
-                                      "done ",
-                                      {"type": network_type,
-                                       "segment": raw_segment})
-                            return alloc
+                    # Segment not allocated
+                    LOG.debug("%(type)s segment %(segment)s allocate started ",
+                              {"type": network_type,
+                               "segment": raw_segment})
+                    count = (context.session.query(self.model).
+                             filter_by(allocated=False, **raw_segment).
+                             update({"allocated": True}))
+                    if count:
+                        LOG.debug(
+                            "%(type)s segment %(segment)s allocate done ",
+                            {"type": network_type, "segment": raw_segment})
+                        return alloc
 
-                        # Segment allocated or deleted since select
-                        LOG.debug("%(type)s segment %(segment)s allocate "
-                                  "failed: segment has been allocated or "
-                                  "deleted",
-                                  {"type": network_type,
-                                   "segment": raw_segment})
+                    # Segment allocated or deleted since select
+                    LOG.debug("%(type)s segment %(segment)s allocate "
+                              "failed: segment has been allocated or "
+                              "deleted",
+                              {"type": network_type,
+                               "segment": raw_segment})
 
                 # Segment to create or already allocated
                 LOG.debug("%(type)s segment %(segment)s create started",
@@ -147,7 +136,7 @@ class SegmentTypeDriver(BaseTypeDriver):
             if not isinstance(allocations, list):
                 allocations = [allocations] if allocations else []
             for alloc in allocations:
-                segment = dict((k, alloc[k]) for k in self.primary_keys)
+                segment = {k: alloc[k] for k in self.primary_keys}
                 try_to_allocate = True
                 if self.segmentation_obj.allocate(context, **segment):
                     LOG.debug('%(type)s segment allocate from pool success '
@@ -159,9 +148,23 @@ class SegmentTypeDriver(BaseTypeDriver):
             raise db_exc.RetryRequest(
                 exceptions.NoNetworkFoundInMaximumAllowedAttempts())
 
-    @db_api.retry_db_errors
-    def _delete_expired_default_network_segment_ranges(self):
-        ctx = context.get_admin_context()
-        with db_api.CONTEXT_WRITER.using(ctx):
-            filters = {'default': True, 'network_type': self.get_type()}
-            ns_range.NetworkSegmentRange.delete_objects(ctx, **filters)
+        # NOTE(ralonsoh): this debug message is added to debug LP#2086602.
+        # Once fixed, it won't be needed. This debug message should not be
+        # released.
+        LOG.debug('Partial segment allocation fail:')
+        LOG.debug('  - Filters: %s', filters)
+        LOG.debug('  - Non allocated segments:')
+        for non_allocated_segment in (
+                self.segmentation_obj.get_all_unallocated_segments(context,
+                                                                   **filters)):
+            LOG.debug('    - %s', non_allocated_segment)
+        if directory.get_plugin(plugin_constants.NETWORK_SEGMENT_RANGE):
+            LOG.debug('  - Network segment ranges:')
+            for srange in ns_range.NetworkSegmentRange.get_objects(
+                    context.elevated()):
+                LOG.debug('    - %s', srange)
+
+    def _delete_expired_default_network_segment_ranges(self, ctx, start_time):
+        (ns_range.NetworkSegmentRange.
+        delete_expired_default_network_segment_ranges(
+            ctx, self.get_type(), start_time))

@@ -14,19 +14,20 @@ import errno
 import os
 import socket
 
+import netaddr
 from neutron_lib import constants
 from oslo_log import log as logging
 import pyroute2
-from pyroute2 import netlink  # pylint: disable=no-name-in-module
-from pyroute2.netlink import exceptions \
-    as netlink_exceptions  # pylint: disable=no-name-in-module
-from pyroute2.netlink import rtnl  # pylint: disable=no-name-in-module
-from pyroute2.netlink.rtnl import ifinfmsg  # pylint: disable=no-name-in-module
-from pyroute2.netlink.rtnl import ndmsg  # pylint: disable=no-name-in-module
-from pyroute2 import netns  # pylint: disable=no-name-in-module
+from pyroute2 import iproute
+from pyroute2.netlink import exceptions as netlink_exceptions
+from pyroute2.netlink import rtnl
+from pyroute2.netlink.rtnl import ifinfmsg
+from pyroute2.netlink.rtnl import ndmsg
+from pyroute2 import netns
 import tenacity
 
 from neutron._i18n import _
+from neutron.common import utils as common_utils
 from neutron import privileged
 from neutron.privileged.agent import linux as priv_linux
 
@@ -57,7 +58,7 @@ class NetworkNamespaceNotFound(RuntimeError):
     message = _("Network namespace %(netns_name)s could not be found.")
 
     def __init__(self, netns_name):
-        super(NetworkNamespaceNotFound, self).__init__(
+        super().__init__(
             self.message % {'netns_name': netns_name})
 
 
@@ -72,8 +73,8 @@ class NetworkInterfaceNotFound(RuntimeError):
         # and will call it always with passing only message from originally
         # raised exception.
         message = message or self.message % {
-                'device': device, 'namespace': namespace}
-        super(NetworkInterfaceNotFound, self).__init__(message)
+            'device': device, 'namespace': namespace}
+        super().__init__(message)
 
 
 class InterfaceOperationNotSupported(RuntimeError):
@@ -87,8 +88,8 @@ class InterfaceOperationNotSupported(RuntimeError):
         # and will call it always with passing only message from originally
         # raised exception.
         message = message or self.message % {
-                'device': device, 'namespace': namespace}
-        super(InterfaceOperationNotSupported, self).__init__(message)
+            'device': device, 'namespace': namespace}
+        super().__init__(message)
 
 
 class InvalidArgument(RuntimeError):
@@ -103,7 +104,7 @@ class InvalidArgument(RuntimeError):
         # raised exception.
         message = message or self.message % {'device': device,
                                              'namespace': namespace}
-        super(InvalidArgument, self).__init__(message)
+        super().__init__(message)
 
 
 class IpAddressAlreadyExists(RuntimeError):
@@ -116,7 +117,7 @@ class IpAddressAlreadyExists(RuntimeError):
         # and will call it always with passing only message from originally
         # raised exception.
         message = message or self.message % {'ip': ip, 'device': device}
-        super(IpAddressAlreadyExists, self).__init__(message)
+        super().__init__(message)
 
 
 class InterfaceAlreadyExists(RuntimeError):
@@ -129,7 +130,7 @@ class InterfaceAlreadyExists(RuntimeError):
         # and will call it always with passing only message from originally
         # raised exception.
         message = message or self.message % {'device': device}
-        super(InterfaceAlreadyExists, self).__init__(message)
+        super().__init__(message)
 
 
 def _make_route_dict(destination, nexthop, device, scope):
@@ -146,8 +147,7 @@ def get_iproute(namespace):
     if namespace:
         # do not try and create the namespace
         return pyroute2.NetNS(namespace, flags=0, libc=priv_linux.get_cdll())
-    else:
-        return pyroute2.IPRoute()
+    return iproute.IPRoute()
 
 
 @privileged.default.entrypoint
@@ -211,7 +211,7 @@ def _run_iproute_link(command, device, namespace=None, **kwargs):
         with get_iproute(namespace) as ip:
             idx = get_link_id(device, namespace)
             return ip.link(command, index=idx, **kwargs)
-    except netlink.NetlinkError as e:
+    except netlink_exceptions.NetlinkError as e:
         _translate_ip_device_exception(e, device, namespace)
         raise
     except OSError as e:
@@ -273,6 +273,32 @@ def add_ip_address(ip_version, ip, prefixlen, device, namespace, scope,
 
 
 @privileged.default.entrypoint
+def add_ip_addresses(cidrs, device, namespace, scope,
+                     add_broadcast=True):
+    for cidr in cidrs:
+        net = netaddr.IPNetwork(cidr)
+        ip = str(net.ip)
+        prefixlen = net.prefixlen
+        family = _IP_VERSION_FAMILY_MAP[net.version]
+        broadcast = None
+        if add_broadcast:
+            broadcast = common_utils.cidr_broadcast_address_alternative(cidr)
+        try:
+            _run_iproute_addr('add',
+                              device,
+                              namespace,
+                              address=ip,
+                              mask=prefixlen,
+                              family=family,
+                              broadcast=broadcast,
+                              scope=get_scope_name(scope))
+        except netlink_exceptions.NetlinkError as e:
+            if e.code == errno.EEXIST:
+                raise IpAddressAlreadyExists(ip=ip, device=device)
+            raise
+
+
+@privileged.default.entrypoint
 def delete_ip_address(ip_version, ip, prefixlen, device, namespace):
     family = _IP_VERSION_FAMILY_MAP[ip_version]
     try:
@@ -290,6 +316,29 @@ def delete_ip_address(ip_version, ip, prefixlen, device, namespace):
         if e.code == errno.EADDRNOTAVAIL:
             return
         raise
+
+
+@privileged.default.entrypoint
+def delete_ip_addresses(cidrs, device, namespace):
+    for cidr in cidrs:
+        net = netaddr.IPNetwork(cidr)
+        ip = str(net.ip)
+        prefixlen = net.prefixlen
+        family = _IP_VERSION_FAMILY_MAP[net.version]
+        try:
+            _run_iproute_addr("delete",
+                              device,
+                              namespace,
+                              address=ip,
+                              mask=prefixlen,
+                              family=family)
+        except netlink_exceptions.NetlinkError as e:
+            # when trying to delete a non-existent IP address, pyroute2 raises
+            # NetlinkError with code EADDRNOTAVAIL (99, 'Cannot assign
+            # requested address')
+            # this shouldn't raise an error
+            if e.code != errno.EADDRNOTAVAIL:
+                raise
 
 
 @privileged.default.entrypoint
@@ -348,6 +397,10 @@ def set_link_flags(device, namespace, flags):
     _run_iproute_link("set", device, namespace, flags=new_flags)
 
 
+@tenacity.retry(
+    retry=tenacity.retry_if_exception_type(NetworkInterfaceNotFound),
+    wait=tenacity.wait_exponential(multiplier=0.02, max=1),
+    stop=tenacity.stop_after_delay(3), reraise=True)
 @privileged.link_cmd.entrypoint
 def set_link_attribute(device, namespace, **attributes):
     _run_iproute_link("set", device, namespace, **attributes)
@@ -378,7 +431,8 @@ def set_link_bridge_master(device, bridge, namespace=None):
 
 @tenacity.retry(
     retry=tenacity.retry_if_exception_type(
-        netlink_exceptions.NetlinkDumpInterrupted),
+        (netlink_exceptions.NetlinkDumpInterrupted,
+         NetworkInterfaceNotFound)),
     wait=tenacity.wait_exponential(multiplier=0.02, max=1),
     stop=tenacity.stop_after_delay(8),
     reraise=True)
@@ -473,6 +527,10 @@ def delete_neigh_entry(ip_version, ip_address, mac_address, device, namespace,
         if e.code == errno.ENOENT:
             return
         raise
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            raise NetworkNamespaceNotFound(netns_name=namespace)
+        raise
 
 
 @tenacity.retry(
@@ -527,9 +585,8 @@ def create_netns(name, **kwargs):
         except Exception:
             os._exit(1)
         os._exit(0)
-    else:
-        if os.waitpid(pid, 0)[1]:
-            raise RuntimeError(_('Error creating namespace %s' % name))
+    if os.waitpid(pid, 0)[1]:
+        raise RuntimeError(_('Error creating namespace %s') % name)
 
 
 @privileged.namespace_cmd.entrypoint
@@ -555,29 +612,6 @@ def list_netns(**kwargs):
     return netns.listnetns(**kwargs)
 
 
-def make_serializable(value):
-    """Make a pyroute2 object serializable
-
-    This function converts 'netlink.nla_slot' object (key, value) in a list
-    of two elements.
-    """
-    def _ensure_string(value):
-        return value.decode() if isinstance(value, bytes) else value
-
-    if isinstance(value, list):
-        return [make_serializable(item) for item in value]
-    elif isinstance(value, netlink.nla_slot):
-        return [_ensure_string(value[0]), make_serializable(value[1])]
-    elif isinstance(value, netlink.nla_base):
-        return make_serializable(value.dump())
-    elif isinstance(value, dict):
-        return {_ensure_string(key): make_serializable(data)
-                for key, data in value.items()}
-    elif isinstance(value, tuple):
-        return tuple(make_serializable(item) for item in value)
-    return _ensure_string(value)
-
-
 @tenacity.retry(
     retry=tenacity.retry_if_exception_type(
         netlink_exceptions.NetlinkDumpInterrupted),
@@ -590,9 +624,10 @@ def get_link_devices(namespace, **kwargs):
 
     :return: (list) interfaces in a namespace
     """
+    index = kwargs.pop('index') if 'index' in kwargs else 'all'
     try:
         with get_iproute(namespace) as ip:
-            return make_serializable(ip.get_links(**kwargs))
+            return priv_linux.make_serializable(ip.get_links(index, **kwargs))
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -628,7 +663,7 @@ def get_ip_addresses(namespace, **kwargs):
     """
     try:
         with get_iproute(namespace) as ip:
-            return make_serializable(ip.get_addr(**kwargs))
+            return priv_linux.make_serializable(ip.get_addr(**kwargs))
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -646,12 +681,12 @@ def list_ip_rules(namespace, ip_version, match=None, **kwargs):
     """List all IP rules"""
     try:
         with get_iproute(namespace) as ip:
-            rules = make_serializable(ip.get_rules(
+            rules = priv_linux.make_serializable(ip.get_rules(
                 family=_IP_VERSION_FAMILY_MAP[ip_version],
                 match=match, **kwargs))
             for rule in rules:
-                rule['attrs'] = dict(
-                    (item[0], item[1]) for item in rule['attrs'])
+                rule['attrs'] = {
+                    item[0]: item[1] for item in rule['attrs']}
             return rules
 
     except OSError as e:
@@ -682,6 +717,11 @@ def delete_ip_rule(namespace, **kwargs):
     try:
         with get_iproute(namespace) as ip:
             ip.rule('del', **kwargs)
+    except netlink_exceptions.NetlinkError as e:
+        # trying to delete a non-existent entry shouldn't raise an error
+        if e.code == errno.ENOENT:
+            return
+        raise
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -720,7 +760,7 @@ def _make_pyroute2_route_args(namespace, ip_version, cidr, device, via, table,
         if isinstance(protocol, str) and protocol in rtnl.rt_proto:
             protocol = rtnl.rt_proto[protocol]
         args['proto'] = protocol
-    if isinstance(via, (list, tuple)):
+    if isinstance(via, list | tuple):
         args['multipath'] = []
         for mp in via:
             multipath = {}
@@ -771,7 +811,7 @@ def list_ip_routes(namespace, ip_version, device=None, table=None, **kwargs):
         None))
     try:
         with get_iproute(namespace) as ip:
-            return make_serializable(ip.route('show', **kwargs))
+            return priv_linux.make_serializable(ip.route('show', **kwargs))
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -787,6 +827,11 @@ def delete_ip_route(namespace, cidr, ip_version, device=None, via=None,
     try:
         with get_iproute(namespace) as ip:
             ip.route('del', **kwargs)
+    except netlink_exceptions.NetlinkError as e:
+        # trying to delete a non-existent entry shouldn't raise an error
+        if e.code == errno.ESRCH:
+            return
+        raise
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -805,7 +850,7 @@ def list_bridge_fdb(namespace=None, **kwargs):
     # NOTE(ralonsoh): fbd does not support ifindex filtering in pyroute2 0.5.14
     try:
         with get_iproute(namespace) as ip:
-            return make_serializable(ip.fdb('dump', **kwargs))
+            return priv_linux.make_serializable(ip.fdb('dump', **kwargs))
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -820,7 +865,12 @@ def _command_bridge_fdb(command, mac, device, dst_ip=None, namespace=None,
         if dst_ip:
             kwargs['dst'] = dst_ip
         with get_iproute(namespace) as ip:
-            return make_serializable(ip.fdb(command, **kwargs))
+            return priv_linux.make_serializable(ip.fdb(command, **kwargs))
+    except netlink_exceptions.NetlinkError as e:
+        # trying to delete a non-existent entry shouldn't raise an error
+        if command == 'del' and e.code == errno.ENOENT:
+            return
+        raise
     except OSError as e:
         if e.errno == errno.ENOENT:
             raise NetworkNamespaceNotFound(netns_name=namespace)
@@ -836,20 +886,20 @@ def add_bridge_fdb(mac, device, dst_ip=None, namespace=None, **kwargs):
 
 @privileged.default.entrypoint
 def append_bridge_fdb(mac, device, dst_ip=None, namespace=None, **kwargs):
-    """Add a FDB entry"""
+    """Append a FDB entry"""
     _command_bridge_fdb('append', mac, device, dst_ip=dst_ip,
                         namespace=namespace, **kwargs)
 
 
 @privileged.default.entrypoint
 def replace_bridge_fdb(mac, device, dst_ip=None, namespace=None, **kwargs):
-    """Add a FDB entry"""
+    """Replace a FDB entry"""
     _command_bridge_fdb('replace', mac, device, dst_ip=dst_ip,
                         namespace=namespace, **kwargs)
 
 
 @privileged.default.entrypoint
 def delete_bridge_fdb(mac, device, dst_ip=None, namespace=None, **kwargs):
-    """Add a FDB entry"""
+    """Delete a FDB entry"""
     _command_bridge_fdb('del', mac, device, dst_ip=dst_ip,
                         namespace=namespace, **kwargs)

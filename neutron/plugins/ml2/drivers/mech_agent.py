@@ -43,18 +43,25 @@ class AgentMechanismDriverBase(api.MechanismDriver, metaclass=abc.ABCMeta):
     __init__(), and must implement try_to_bind_segment_for_agent().
     """
 
+    _explicitly_not_supported_extensions = set()
+
     def __init__(self, agent_type, supported_vnic_types):
         """Initialize base class for specific L2 agent type.
 
         :param agent_type: Constant identifying agent type in agents_db
         :param supported_vnic_types: The binding:vnic_type values we can bind
         """
-        super(AgentMechanismDriverBase, self).__init__()
+        super().__init__()
         self.agent_type = agent_type
         self.supported_vnic_types = supported_vnic_types
 
     def initialize(self):
         pass
+
+    def supported_extensions(self, extensions):
+        # filter out extensions which this mech driver explicitly claimed
+        # that are not supported
+        return extensions - self._explicitly_not_supported_extensions
 
     def create_port_precommit(self, context):
         self._insert_provisioning_block(context)
@@ -84,7 +91,7 @@ class AgentMechanismDriverBase(api.MechanismDriver, metaclass=abc.ABCMeta):
             return
         if context.host_agents(self.agent_type):
             provisioning_blocks.add_provisioning_component(
-                context._plugin_context, port['id'], resources.PORT,
+                context.plugin_context, port['id'], resources.PORT,
                 provisioning_blocks.L2_AGENT_ENTITY)
 
     def bind_port(self, context):
@@ -147,7 +154,7 @@ class AgentMechanismDriverBase(api.MechanismDriver, metaclass=abc.ABCMeta):
             subnet_id = data.get('subnet_id')
             if subnet_id:
                 subnets.append(context._plugin.get_subnet(
-                    context._plugin_context, subnet_id))
+                    context.plugin_context, subnet_id))
         return subnets
 
     @abc.abstractmethod
@@ -216,7 +223,7 @@ class AgentMechanismDriverBase(api.MechanismDriver, metaclass=abc.ABCMeta):
             # trying to bind with a dead agent.
         }
         return context._plugin.get_agents(
-            context._plugin_context,
+            context.plugin_context,
             filters=agent_filters,
         )
 
@@ -276,8 +283,8 @@ class AgentMechanismDriverBase(api.MechanismDriver, metaclass=abc.ABCMeta):
                     "host %(host)s reports being responsible for resource "
                     "provider %(rsc_provider)s: %(agents)s",
                     {'host': context.current['binding:host_id'],
-                    'rsc_provider': allocation[group],
-                    'agents': [agent['id'] for agent in agents]})
+                     'rsc_provider': allocation[group],
+                     'agents': [agent['id'] for agent in agents]})
                 return False
             else:
                 # not responsible, must be somebody else
@@ -316,7 +323,7 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase,
         """
         supported_vnic_types = (supported_vnic_types or
                                 [portbindings.VNIC_NORMAL])
-        super(SimpleAgentMechanismDriverBase, self).__init__(
+        super().__init__(
             agent_type, supported_vnic_types)
         self.supported_vnic_types = self.prohibit_list_supported_vnic_types(
             self.supported_vnic_types, vnic_type_prohibit_list)
@@ -331,8 +338,7 @@ class SimpleAgentMechanismDriverBase(AgentMechanismDriverBase,
                                 self.get_vif_type(context, agent, segment),
                                 self.get_vif_details(context, agent, segment))
             return True
-        else:
-            return False
+        return False
 
     def get_vif_details(self, context, agent, segment):
         return self.vif_details

@@ -26,10 +26,10 @@ from neutron.extensions import timestamp
 from neutron import manager
 from neutron.objects import network as net_obj
 from neutron.objects import tag as tag_obj
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
 
 
-class TimeStampExtensionManager(object):
+class TimeStampExtensionManager:
 
     def get_resources(self):
         return []
@@ -55,12 +55,12 @@ class TimeStampChangedsinceTestCase(test_db_base_plugin_v2.
 
     def setUp(self):
         ext_mgr = TimeStampExtensionManager()
-        super(TimeStampChangedsinceTestCase, self).setUp(plugin=self.plugin,
-                                                         ext_mgr=ext_mgr)
+        super().setUp(plugin=self.plugin,
+                      ext_mgr=ext_mgr)
         self.addCleanup(manager.NeutronManager.clear_instance)
 
     def setup_coreplugin(self, core_plugin=None, load_plugins=True):
-        super(TimeStampChangedsinceTestCase, self).setup_coreplugin(
+        super().setup_coreplugin(
             self.plugin, load_plugins=False)
         self.patched_default_svc_plugins.return_value = ['timestamp']
         manager.init()
@@ -178,7 +178,7 @@ class TimeStampChangedsinceTestCase(test_db_base_plugin_v2.
 
     def test_list_subnetpools_with_changed_since(self):
         prefixes = ['3.3.3.3/24', '4.4.4.4/24']
-        with self.subnetpool(prefixes, tenant_id=self._tenant_id,
+        with self.subnetpool(prefixes, project_id=self._project_id,
                              name='sp_test02') as subnetpool:
             self._list_resources_with_changed_since(subnetpool)
 
@@ -197,10 +197,10 @@ class TimeStampChangedsinceTestCase(test_db_base_plugin_v2.
         prefixes1 = ['3.3.3.3/24', '4.4.4.4/24']
         prefixes2 = ['5.5.5.5/24', '6.6.6.6/24']
         with self.subnetpool(prefixes1,
-                             tenant_id=self._tenant_id,
+                             project_id=self._project_id,
                              name='sp01') as sp1:
             with self.subnetpool(prefixes2,
-                                 tenant_id=self._tenant_id,
+                                 project_id=self._project_id,
                                  name='sp02') as sp2:
                 self._test_list_mutiple_resources_with_changed_since(sp1, sp2)
 
@@ -241,19 +241,23 @@ class TimeStampChangedsinceTestCase(test_db_base_plugin_v2.
 class TimeStampDBMixinTestCase(TimeStampChangedsinceTestCase):
     """Test timestamp_db.TimeStamp_db_mixin()"""
 
-    def _save_network(self, network_id):
+    def _save_network(self, network_id, timenow):
         ctx = context.get_admin_context()
+        # getting admin context will have called timeutils, reset now
+        timenow.reset_mock()
         obj = net_obj.Network(ctx, id=network_id)
         obj.create()
         return obj
 
     # Use tag as non StandardAttribute object
-    def _save_tag(self, tags, standard_attr_id):
+    def _save_tag(self, tags, standard_attr_id, timenow):
         ctx = context.get_admin_context()
         ret = []
+        # getting admin context will have called timeutils, reset now
+        timenow.reset_mock()
         for tag in tags:
             _tag_obj = tag_obj.Tag(ctx, standard_attr_id=standard_attr_id,
-                                  tag=tag)
+                                   tag=tag)
             _tag_obj.create()
             ret.append(_tag_obj)
         return ret
@@ -265,15 +269,14 @@ class TimeStampDBMixinTestCase(TimeStampChangedsinceTestCase):
         def save_network():
             if self._network:
                 self._network.delete()
-            timenow.reset_mock()
-            self._network = self._save_network(network_id)
+            self._network = self._save_network(network_id, timenow)
             return 1 == timenow.call_count
 
         def save_tag():
             for tag in self._tags:
                 tag.delete()
-            timenow.reset_mock()
-            self._tags = self._save_tag(tags, self._network.standard_attr_id)
+            self._tags = self._save_tag(tags, self._network.standard_attr_id,
+                                        timenow)
             return 0 == timenow.call_count
 
         network_id = uuidutils.generate_uuid()

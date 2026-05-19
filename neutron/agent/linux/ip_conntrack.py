@@ -11,9 +11,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+import queue
 import re
+import threading
 
-import eventlet
 import netaddr
 from neutron_lib import constants
 from neutron_lib import exceptions
@@ -27,15 +28,14 @@ CONTRACK_MGRS = {}
 MAX_CONNTRACK_ZONES = 65535
 ZONE_START = 4097
 
-WORKERS = 8
 
-
-class IpConntrackUpdate(object):
+class IpConntrackUpdate:
     """Encapsulates a conntrack update
 
     An instance of this object carries the information necessary to
     process a request to update the conntrack table.
     """
+
     def __init__(self, device_info_list, rule, remote_ips):
         self.device_info_list = device_info_list
         self.rule = rule
@@ -60,7 +60,7 @@ def get_conntrack(get_rules_for_table_func, filtered_ports, unfiltered_ports,
         return CONTRACK_MGRS[namespace]
 
 
-class IpConntrackManager(object):
+class IpConntrackManager:
     """Smart wrapper for ip conntrack."""
 
     def __init__(self, get_rules_for_table_func, filtered_ports,
@@ -73,14 +73,11 @@ class IpConntrackManager(object):
         self.unfiltered_ports = unfiltered_ports
         self.zone_per_port = zone_per_port  # zone per port vs per network
         self._populate_initial_zone_map()
-        self._queue = eventlet.queue.LightQueue()
-        self._start_process_queue()
-
-    def _start_process_queue(self):
-        LOG.debug("Starting ip_conntrack _process_queue_worker() threads")
-        pool = eventlet.GreenPool(size=WORKERS)
-        for i in range(WORKERS):
-            pool.spawn_n(self._process_queue_worker)
+        self._queue = queue.Queue()
+        LOG.debug('Starting the ip_conntrack _process_queue_worker() thread')
+        # TODO(sahid): We have to revisit this part as this should have
+        # some kind of termination event.
+        threading.Thread(target=self._process_queue_worker).start()
 
     def _process_queue_worker(self):
         # While it's technically not necessary to have this method, the
@@ -208,7 +205,7 @@ class IpConntrackManager(object):
         else:
             identifier = port['network_id']
         return identifier[:(constants.LINUX_DEV_LEN -
-                          constants.LINUX_DEV_PREFIX_LEN)]
+                            constants.LINUX_DEV_PREFIX_LEN)]
 
     def get_device_zone(self, port, create=True):
         device_key = self._device_key(port)
@@ -264,7 +261,7 @@ class IpConntrackManager(object):
 class OvsIpConntrackManager(IpConntrackManager):
 
     def __init__(self, execute=None):
-        super(OvsIpConntrackManager, self).__init__(
+        super().__init__(
             get_rules_for_table_func=None,
             filtered_ports={}, unfiltered_ports={},
             execute=execute, namespace=None, zone_per_port=False)

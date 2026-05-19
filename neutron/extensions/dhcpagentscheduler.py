@@ -27,8 +27,8 @@ from oslo_log import log as logging
 
 from neutron.api import extensions
 from neutron.api.v2 import resource
+from neutron.api import wsgi
 from neutron import policy
-from neutron import wsgi
 
 LOG = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class Dhcpagentscheduler(api_extensions.APIExtensionDescriptor):
         return exts
 
 
-class DhcpAgentSchedulerPluginBase(object, metaclass=abc.ABCMeta):
+class DhcpAgentSchedulerPluginBase(metaclass=abc.ABCMeta):
     """REST API to operate the DHCP agent scheduler.
 
     All of method must be in an admin context.

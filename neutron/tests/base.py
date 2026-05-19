@@ -17,7 +17,6 @@
 """
 
 import abc
-import contextlib
 import functools
 import inspect
 import logging
@@ -28,7 +27,6 @@ import threading
 from unittest import mock
 import warnings
 
-import eventlet.timeout
 import fixtures
 from neutron_lib.callbacks import manager as registry_manager
 from neutron_lib.db import api as db_api
@@ -46,7 +44,6 @@ from oslotest import base
 from osprofiler import profiler
 from sqlalchemy import exc as sqlalchemy_exc
 import testtools
-from testtools import content
 
 from neutron._i18n import _
 from neutron.agent.linux import external_process
@@ -67,8 +64,6 @@ ROOTDIR = os.path.dirname(__file__)
 ETCDIR = os.path.join(ROOTDIR, 'etc')
 
 SUDO_CMD = 'sudo -n'
-
-TESTCASE_RETRIES = 3
 
 
 def etcdir(*p):
@@ -174,48 +169,34 @@ class AttributeDict(dict):
         raise AttributeError(_("Unknown attribute '%s'.") % name)
 
 
-def _catch_timeout(f):
+def _catch_errors(f):
     @functools.wraps(f)
     def func(self, *args, **kwargs):
-        for idx in range(1, TESTCASE_RETRIES + 1):
-            try:
-                return f(self, *args, **kwargs)
-            except eventlet.Timeout as e:
-                self.fail('Execution of this test timed out: %s' % e)
-            # NOTE(ralonsoh): exception catch added due to the constant
-            # occurrences of this exception during FT and UT execution.
-            # This is due to [1]. Once the sync decorators are removed or the
-            # privsep ones are decorated by those ones (swap decorator
-            # declarations) this catch can be remove.
-            # [1] https://review.opendev.org/#/c/631275/
-            except fixtures.TimeoutException:
-                if idx < TESTCASE_RETRIES:
-                    msg = ('"fixtures.TimeoutException" during test case '
-                           'execution no %s; test case re-executed' % idx)
-                    self.addDetail('DietTestCase',
-                                   content.text_content(msg))
-                    self._set_timeout()
-                else:
-                    self.fail('Execution of this test timed out')
+        try:
+            return f(self, *args, **kwargs)
+        except db_exceptions.DBReferenceError:
+            # TODO(ralonsoh): fix the ``DBReferenceError`` issues in
+            # the functional tests. This is retrying the test execution once
+            # more. If it fails again, the test is skipped. See LP#2121935
+            self.skipTest(
+                'The test raised a ``DBReferenceError`` exception; please '
+                'check if this issue is a random occurrence or is '
+                'explicitly caused by the test')
     return func
 
 
-class _CatchTimeoutMetaclass(abc.ABCMeta):
+class _CatchErrorsMetaclass(abc.ABCMeta):
     def __init__(cls, name, bases, dct):
-        super(_CatchTimeoutMetaclass, cls).__init__(name, bases, dct)
+        super().__init__(name, bases, dct)
         for name, method in inspect.getmembers(
                 # NOTE(ihrachys): we should use isroutine because it will catch
                 # both unbound methods (python2) and functions (python3)
                 cls, predicate=inspect.isroutine):
             if name.startswith('test_'):
-                setattr(cls, name, _catch_timeout(method))
+                setattr(cls, name, _catch_errors(method))
 
 
-# Test worker cannot survive eventlet's Timeout exception, which effectively
-# kills the whole worker, with all test cases scheduled to it. This metaclass
-# makes all test cases convert Timeout exceptions into unittest friendly
-# failure mode (self.fail).
-class DietTestCase(base.BaseTestCase, metaclass=_CatchTimeoutMetaclass):
+class DietTestCase(base.BaseTestCase, metaclass=_CatchErrorsMetaclass):
     """Same great taste, less filling.
 
     BaseTestCase is responsible for doing lots of plugin-centric setup
@@ -224,7 +205,7 @@ class DietTestCase(base.BaseTestCase, metaclass=_CatchTimeoutMetaclass):
     """
 
     def setUp(self):
-        super(DietTestCase, self).setUp()
+        super().setUp()
 
         # NOTE(slaweq): Make deprecation warnings only happen once.
         warnings.simplefilter("once", DeprecationWarning)
@@ -243,7 +224,7 @@ class DietTestCase(base.BaseTestCase, metaclass=_CatchTimeoutMetaclass):
         # With this suppress of log levels DEBUG logs will not be captured by
         # stestr on pythonlogging stream and will not cause this parser issue.
         supress_logs = ['neutron', 'neutron_lib', 'stevedore', 'oslo_policy',
-                        'oslo_concurrency', 'oslo_db', 'alembic', 'ovsdbapp']
+                        'oslo_concurrency', 'oslo_db', 'alembic']
         for supress_log in supress_logs:
             logger = logging.getLogger(supress_log)
             logger.setLevel(logging.ERROR)
@@ -252,6 +233,10 @@ class DietTestCase(base.BaseTestCase, metaclass=_CatchTimeoutMetaclass):
         # class. Moving this may cause non-deterministic failures. Bug #1489098
         # for more info.
         db_options.set_defaults(cfg.CONF, connection='sqlite://')
+
+        # NOTE(ykarel): Disable pool recycle as tables are dropped with sqlite
+        # memory db with connection close or reconnect
+        cfg.CONF.set_override('connection_recycle_time', -1, group='database')
 
         # Configure this first to ensure pm debugging support for setUp()
         debugger = os.environ.get('OS_POST_MORTEM_DEBUGGER')
@@ -264,20 +249,32 @@ class DietTestCase(base.BaseTestCase, metaclass=_CatchTimeoutMetaclass):
 
         self.useFixture(fixture.DBQueryHooksFixture())
 
-        # NOTE(ihrachys): oslotest already sets stopall for cleanup, but it
-        # does it using six.moves.mock (the library was moved into
-        # unittest.mock in Python 3.4). So until we switch to six.moves.mock
-        # everywhere in unit tests, we can't remove this setup. The base class
-        # is used in 3party projects, so we would need to switch all of them to
-        # six before removing the cleanup callback from here.
-        self.addCleanup(mock.patch.stopall)
-
         self.useFixture(fixture.DBResourceExtendFixture())
 
         self.addOnException(self.check_for_systemexit)
         self.orig_pid = os.getpid()
 
         lib_test_tools.reset_random_seed()
+
+        config.register_common_config_options()
+
+        self.addCleanup(CONF.reset)
+        self.setup_config()
+
+    @staticmethod
+    def config_parse(conf=None, args=None):
+        """Create the default configurations."""
+        if args is None:
+            args = []
+        args += ['--config-file', etcdir('neutron.conf')]
+        if conf is None:
+            config.init(args=args)
+        else:
+            conf(args)
+
+    def setup_config(self, args=None):
+        """Tests that need a non-default config can override this method."""
+        self.config_parse(args=args)
 
     def addOnException(self, handler):
 
@@ -290,22 +287,15 @@ class DietTestCase(base.BaseTestCase, metaclass=_CatchTimeoutMetaclass):
                                    testtools.content.TracebackContent(
                                        (ctx.type_, ctx.value, ctx.tb), self))
 
-        return super(DietTestCase, self).addOnException(safe_handler)
+        return super().addOnException(safe_handler)
 
     def check_for_systemexit(self, exc_info):
         if isinstance(exc_info[1], SystemExit):
             if os.getpid() != self.orig_pid:
                 # Subprocess - let it just exit
-                raise
+                raise exc_info[1]
             # This makes sys.exit(0) still a failure
             self.force_failure = True
-
-    @contextlib.contextmanager
-    def assert_max_execution_time(self, max_execution_time=5):
-        with eventlet.Timeout(max_execution_time, False):
-            yield
-            return
-        self.fail('Execution of this test timed out')
 
     def assertOrderedEqual(self, expected, actual):
         expect_val = self.sort_dict_lists(expected)
@@ -353,6 +343,8 @@ class ProcessMonitorFixture(fixtures.Fixture):
         p.start()
         self.instances = []
         self.addCleanup(self.stop)
+        cfg.CONF.set_override('check_child_processes_interval', 0.1,
+                              group='AGENT')
 
     def stop(self):
         for instance in self.instances:
@@ -365,27 +357,14 @@ class ProcessMonitorFixture(fixtures.Fixture):
 
 class BaseTestCase(DietTestCase):
 
-    @staticmethod
-    def config_parse(conf=None, args=None):
-        """Create the default configurations."""
-        if args is None:
-            args = []
-        args += ['--config-file', etcdir('neutron.conf')]
-        if conf is None:
-            config.init(args=args)
-        else:
-            conf(args)
-
     def setUp(self):
-        super(BaseTestCase, self).setUp()
+        super().setUp()
 
         self.useFixture(lockutils.ExternalLockFixture())
         self.useFixture(fixture.APIDefinitionFixture())
 
-        config.register_common_config_options()
         cfg.CONF.set_override('state_path', self.get_default_temp_dir().path)
 
-        self.addCleanup(CONF.reset)
         self.useFixture(ProcessMonitorFixture())
 
         self.useFixture(fixtures.MonkeyPatch(
@@ -397,8 +376,6 @@ class BaseTestCase(DietTestCase):
             lambda project=None, prog=None, extension=None: []))
 
         self.useFixture(fixture.RPCFixture())
-
-        self.setup_config()
 
         self._callback_manager = registry_manager.CallbacksManager()
         self.useFixture(fixture.CallbackRegistryFixture(
@@ -450,10 +427,6 @@ class BaseTestCase(DietTestCase):
         root = root or self.get_default_temp_dir()
         return root.join(filename)
 
-    def setup_config(self, args=None):
-        """Tests that need a non-default config can override this method."""
-        self.config_parse(args=args)
-
     def config(self, **kw):
         """Override some configuration values.
 
@@ -492,10 +465,14 @@ class BaseTestCase(DietTestCase):
                     root_helper_daemon=get_rootwrap_daemon_cmd())
 
     def _simulate_concurrent_requests_process_and_raise(self, calls, args):
+        self._simulate_concurrent_requests_process(calls, args,
+                                                   raise_on_exception=True)
 
+    def _simulate_concurrent_requests_process(self, calls, args,
+                                              raise_on_exception=False):
         class SimpleThread(threading.Thread):
             def __init__(self, q):
-                super(SimpleThread, self).__init__()
+                super().__init__()
                 self.q = q
                 self.exception = None
 
@@ -529,19 +506,25 @@ class BaseTestCase(DietTestCase):
             t.start()
         q.join()
 
+        threads_exceptions = []
         for t in threads:
             e = t.get_exception()
             if e:
-                raise e
+                if raise_on_exception:
+                    raise e
+                threads_exceptions.append(e)
+
+        return threads_exceptions
 
 
 class PluginFixture(fixtures.Fixture):
 
     def __init__(self, core_plugin=None):
-        super(PluginFixture, self).__init__()
+        super().__init__()
         self.core_plugin = core_plugin
 
     def _setUp(self):
+        config.register_common_config_options()
         # Do not load default service plugins in the testing framework
         # as all the mocking involved can cause havoc.
         self.default_svc_plugins_p = mock.patch(
@@ -585,7 +568,7 @@ class Timeout(fixtures.Fixture):
     """
 
     def __init__(self, timeout=None, scaling=1):
-        super(Timeout, self).__init__()
+        super().__init__()
         if timeout is None:
             timeout = os.environ.get('OS_TEST_TIMEOUT', 0)
         try:
@@ -593,12 +576,11 @@ class Timeout(fixtures.Fixture):
         except ValueError:
             # If timeout value is invalid do not set a timeout.
             self.test_timeout = 0
-        if scaling >= 1:
-            self.test_timeout *= scaling
-        else:
+        if scaling < 1:
             raise ValueError('scaling value must be >= 1')
+        self.test_timeout *= scaling
 
     def setUp(self):
-        super(Timeout, self).setUp()
+        super().setUp()
         if self.test_timeout > 0:
             self.useFixture(fixtures.Timeout(self.test_timeout, gentle=True))

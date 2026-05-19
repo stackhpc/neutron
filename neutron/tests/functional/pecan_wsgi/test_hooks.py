@@ -37,13 +37,13 @@ class TestOwnershipHook(test_functional.PecanFunctionalTest):
         net_response = self.app.post_json(
             '/v2.0/networks.json',
             params={'network': {'name': 'meh'}},
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         network_id = jsonutils.loads(net_response.body)['network']['id']
         port_response = self.app.post_json(
             '/v2.0/ports.json',
             params={'port': {'network_id': network_id,
                              'admin_state_up': True}},
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(201, port_response.status_int)
 
 
@@ -53,11 +53,11 @@ class TestQueryParametersHook(test_functional.PecanFunctionalTest):
         net_response = jsonutils.loads(self.app.post_json(
             '/v2.0/networks.json',
             params={'network': {'name': 'meh'}},
-            headers={'X-Project-Id': 'tenid'}).body)
+            headers={'X-Project-Id': 'projid'}).body)
         network_id = net_response['network']['id']
         response = self.app.put_json('/v2.0/networks/%s.json' % network_id,
                                      params={'network': {'name': 'cat'}},
-                                     headers={'X-Project-Id': 'tenid',
+                                     headers={'X-Project-Id': 'projid',
                                               'If-Match': 'revision_number=0'},
                                      expect_errors=True)
         # revision plugin not supported by default, so badrequest
@@ -68,13 +68,13 @@ class TestQueryParametersHookWithRevision(test_functional.PecanFunctionalTest):
 
     def setUp(self):
         cfg.CONF.set_override('service_plugins', ['revisions'])
-        super(TestQueryParametersHookWithRevision, self).setUp()
+        super().setUp()
 
     def test_if_match_on_update(self):
         net_response = jsonutils.loads(self.app.post_json(
             '/v2.0/networks.json',
             params={'network': {'name': 'meh'}},
-            headers={'X-Project-Id': 'tenid'}).body)
+            headers={'X-Project-Id': 'projid'}).body)
         network_id = net_response['network']['id']
         rev = net_response['network']['revision_number']
         stale = rev - 1
@@ -82,13 +82,13 @@ class TestQueryParametersHookWithRevision(test_functional.PecanFunctionalTest):
         response = self.app.put_json(
             '/v2.0/networks/%s.json' % network_id,
             params={'network': {'name': 'cat'}},
-            headers={'X-Project-Id': 'tenid',
+            headers={'X-Project-Id': 'projid',
                      'If-Match': 'revision_number=%s' % stale},
             expect_errors=True)
         self.assertEqual(412, response.status_int)
         self.app.put_json('/v2.0/networks/%s.json' % network_id,
                           params={'network': {'name': 'cat'}},
-                          headers={'X-Project-Id': 'tenid',
+                          headers={'X-Project-Id': 'projid',
                                    'If-Match': 'revision_number=%s' % rev})
 
 
@@ -97,32 +97,32 @@ class TestQuotaEnforcementHook(test_functional.PecanFunctionalTest):
     def test_quota_enforcement_single(self):
         ctx = context.get_admin_context()
         quota_driver.DbQuotaDriver.update_quota_limit(
-            ctx, 'tenid', 'network', 1)
+            ctx, 'projid', 'network', 1)
         # There is enough headroom for creating a network
         response = self.app.post_json(
             '/v2.0/networks.json',
             params={'network': {'name': 'meh'}},
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(response.status_int, 201)
         # But a second request will fail
         response = self.app.post_json(
             '/v2.0/networks.json',
             params={'network': {'name': 'meh-2'}},
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(response.status_int, 409)
 
     def test_quota_enforcement_bulk_request(self):
         ctx = context.get_admin_context()
         quota_driver.DbQuotaDriver.update_quota_limit(
-            ctx, 'tenid', 'network', 3)
+            ctx, 'projid', 'network', 3)
         # There is enough headroom for a bulk request creating 2 networks
         response = self.app.post_json(
             '/v2.0/networks.json',
             params={'networks': [
                 {'name': 'meh1'},
                 {'name': 'meh2'}]},
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(response.status_int, 201)
         # But it won't be possible to create 2 more networks...
         response = self.app.post_json(
@@ -130,7 +130,7 @@ class TestQuotaEnforcementHook(test_functional.PecanFunctionalTest):
             params={'networks': [
                 {'name': 'meh3'},
                 {'name': 'meh4'}]},
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(response.status_int, 409)
 
@@ -145,22 +145,22 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
                      'is_visible': True, 'default': ''},
             'restricted_attr': {'allow_post': True, 'allow_put': True,
                                 'is_visible': True, 'default': ''},
-            'tenant_id': {'allow_post': True, 'allow_put': False,
-                          'required_by_policy': True,
-                          'validate': {'type:string':
-                                       db_const.PROJECT_ID_FIELD_SIZE},
-                          'is_visible': True}
+            'project_id': {'allow_post': True, 'allow_put': False,
+                           'required_by_policy': True,
+                           'validate': {'type:string':
+                                        db_const.PROJECT_ID_FIELD_SIZE},
+                           'is_visible': True}
         },
         'admin_mehs': {
             'id': {'allow_post': False, 'allow_put': False,
                    'is_visible': True, 'primary_key': True},
             'foo': {'allow_post': True, 'allow_put': True,
                     'is_visible': True, 'default': ''},
-            'tenant_id': {'allow_post': True, 'allow_put': False,
-                          'required_by_policy': True,
-                          'validate': {'type:string':
-                                       db_const.PROJECT_ID_FIELD_SIZE},
-                          'is_visible': True}
+            'project_id': {'allow_post': True, 'allow_put': False,
+                           'required_by_policy': True,
+                           'validate': {'type:string':
+                                        db_const.PROJECT_ID_FIELD_SIZE},
+                           'is_visible': True}
         }
     }
 
@@ -169,7 +169,7 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
         # independent from the evolution of the API (so if one changes the API
         # or the default policies there won't be any risk of breaking these
         # tests, or at least I hope so)
-        super(TestPolicyEnforcementHook, self).setUp()
+        super().setUp()
         self.mock_plugin = mock.Mock()
         attributes.RESOURCES.update(self.FAKE_RESOURCE)
         manager.NeutronManager.set_plugin_for_resource('mehs',
@@ -200,7 +200,7 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
         response = self.app.post_json(
             '/v2.0/admin_mehs.json',
             params={'admin_meh': {'foo': 'bar'}},
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         # We expect this operation to fail with 403 error
         self.assertEqual(403, response.status_int)
@@ -211,10 +211,10 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
             'id': 'xxx',
             'attr': 'meh',
             'restricted_attr': '',
-            'tenant_id': 'tenid'}
+            'project_id': 'projid'}
         response = self.app.post_json('/v2.0/mehs.json',
                                       params={'meh': {'attr': 'meh'}},
-                                      headers={'X-Project-Id': 'tenid'})
+                                      headers={'X-Project-Id': 'projid'})
         # We expect this operation to succeed
         self.assertEqual(201, response.status_int)
         self.assertEqual(0, self.mock_plugin.get_meh.call_count)
@@ -227,12 +227,12 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
             'id': 'xxx',
             'attr': 'meh',
             'restricted_attr': '',
-            'tenant_id': 'tenid'}
+            'project_id': 'projid'}
         # The policy engine should trigger an exception in 'before', and the
         # plugin method should not be called at all
         response = self.app.put_json('/v2.0/mehs/xxx.json',
                                      params={'meh': {'attr': 'meh'}},
-                                     headers={'X-Project-Id': 'tenid'},
+                                     headers={'X-Project-Id': 'projid'},
                                      expect_errors=True)
         self.assertEqual(403, response.status_int)
         self.assertEqual(1, self.mock_plugin.get_meh.call_count)
@@ -246,10 +246,10 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
             'id': 'yyy',
             'attr': 'meh',
             'restricted_attr': '',
-            'tenant_id': 'tenid'}
+            'project_id': 'projid'}
         response = self.app.put_json('/v2.0/mehs/yyy.json',
                                      params={'meh': {'attr': 'meh'}},
-                                     headers={'X-Project-Id': 'tenid'},
+                                     headers={'X-Project-Id': 'projid'},
                                      expect_errors=True)
         self.assertEqual(404, response.status_int)
         self.assertEqual(1, self.mock_plugin.get_meh.call_count)
@@ -263,11 +263,11 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
             'id': 'xxx',
             'attr': 'meh',
             'restricted_attr': '',
-            'tenant_id': 'tenid'}
+            'project_id': 'projid'}
         # The policy engine should trigger an exception in 'before', and the
         # plugin method should not be called
         response = self.app.delete_json('/v2.0/mehs/xxx.json',
-                                        headers={'X-Project-Id': 'tenid'},
+                                        headers={'X-Project-Id': 'projid'},
                                         expect_errors=True)
         self.assertEqual(403, response.status_int)
         self.assertEqual(1, self.mock_plugin.get_meh.call_count)
@@ -281,13 +281,19 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
             'id': 'yyy',
             'attr': 'meh',
             'restricted_attr': '',
-            'tenant_id': 'tenid'}
+            'project_id': 'projid'}
         # The policy engine should trigger an exception in 'after', and the
         # plugin method should be called
         response = self.app.get('/v2.0/mehs/yyy.json',
-                                headers={'X-Project-Id': 'tenid'},
+                                headers={'X-Project-Id': 'projid'},
                                 expect_errors=True)
         self.assertEqual(404, response.status_int)
+        self.assertEqual(
+            {
+                'type': 'HTTPNotFound',
+                'message': 'The resource could not be found.',
+                'detail': ''
+            }, jsonutils.loads(response.body))
         self.assertEqual(1, self.mock_plugin.get_meh.call_count)
 
     def test_after_on_get_excludes_admin_attribute(self):
@@ -295,9 +301,9 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
             'id': 'xxx',
             'attr': 'meh',
             'restricted_attr': '',
-            'tenant_id': 'tenid'}
+            'project_id': 'projid'}
         response = self.app.get('/v2.0/mehs/xxx.json',
-                                headers={'X-Project-Id': 'tenid'})
+                                headers={'X-Project-Id': 'projid'})
         self.assertEqual(200, response.status_int)
         json_response = jsonutils.loads(response.body)
         self.assertNotIn('restricted_attr', json_response['meh'])
@@ -307,9 +313,9 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
             'id': 'xxx',
             'attr': 'meh',
             'restricted_attr': '',
-            'tenant_id': 'tenid'}]
+            'project_id': 'projid'}]
         response = self.app.get('/v2.0/mehs',
-                                headers={'X-Project-Id': 'tenid'})
+                                headers={'X-Project-Id': 'projid'})
         self.assertEqual(200, response.status_int)
         json_response = jsonutils.loads(response.body)
         self.assertNotIn('restricted_attr', json_response['mehs'][0])
@@ -319,10 +325,10 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
             'id': 'xxx',
             'attr': 'meh',
             'restricted_attr': '',
-            'tenant_id': 'tenid'}]
+            'project_id': 'projid'}]
         policy.reset()
         response = self.app.get('/v2.0/mehs',
-                                headers={'X-Project-Id': 'tenid'})
+                                headers={'X-Project-Id': 'projid'})
         self.assertEqual(200, response.status_int)
 
 
@@ -332,10 +338,10 @@ class TestMetricsNotifierHook(test_functional.PecanFunctionalTest):
         patcher = mock.patch('neutron.pecan_wsgi.hooks.notifier.NotifierHook.'
                              '_notifier')
         self.mock_notifier = patcher.start().info
-        super(TestMetricsNotifierHook, self).setUp()
+        super().setUp()
 
     def test_post_put_delete_triggers_notification(self):
-        req_headers = {'X-Project-Id': 'tenid', 'X-Roles': 'admin'}
+        req_headers = {'X-Project-Id': 'projid', 'X-Roles': 'admin'}
         payload = {'network': {'name': 'meh'}}
         response = self.app.post_json(
             '/v2.0/networks.json',
@@ -376,7 +382,7 @@ class TestMetricsNotifierHook(test_functional.PecanFunctionalTest):
             self.mock_notifier.mock_calls)
 
     def test_bulk_create_triggers_notification(self):
-        req_headers = {'X-Project-Id': 'tenid', 'X-Roles': 'admin'}
+        req_headers = {'X-Project-Id': 'projid', 'X-Roles': 'admin'}
         payload = {'networks': [{'name': 'meh_1'}, {'name': 'meh_2'}]}
         response = self.app.post_json(
             '/v2.0/networks.json',
@@ -390,7 +396,7 @@ class TestMetricsNotifierHook(test_functional.PecanFunctionalTest):
              mock.call(mock.ANY, 'network.create.end', json_body)])
 
     def test_bad_create_doesnt_emit_end(self):
-        req_headers = {'X-Project-Id': 'tenid', 'X-Roles': 'admin'}
+        req_headers = {'X-Project-Id': 'projid', 'X-Roles': 'admin'}
         payload = {'network': {'name': 'meh'}}
         plugin = directory.get_plugin()
         with mock.patch.object(plugin, 'create_network',
@@ -405,7 +411,7 @@ class TestMetricsNotifierHook(test_functional.PecanFunctionalTest):
             self.mock_notifier.mock_calls)
 
     def test_bad_update_doesnt_emit_end(self):
-        req_headers = {'X-Project-Id': 'tenid', 'X-Roles': 'admin'}
+        req_headers = {'X-Project-Id': 'projid', 'X-Roles': 'admin'}
         payload = {'network': {'name': 'meh'}}
         response = self.app.post_json(
             '/v2.0/networks.json',
@@ -427,7 +433,7 @@ class TestMetricsNotifierHook(test_functional.PecanFunctionalTest):
             self.mock_notifier.mock_calls)
 
     def test_bad_delete_doesnt_emit_end(self):
-        req_headers = {'X-Project-Id': 'tenid', 'X-Roles': 'admin'}
+        req_headers = {'X-Project-Id': 'projid', 'X-Roles': 'admin'}
         payload = {'network': {'name': 'meh'}}
         response = self.app.post_json(
             '/v2.0/networks.json',
@@ -451,7 +457,7 @@ class TestMetricsNotifierHook(test_functional.PecanFunctionalTest):
 class TestCallbackRegistryNotifier(test_functional.PecanFunctionalTest):
 
     def setUp(self):
-        super(TestCallbackRegistryNotifier, self).setUp()
+        super().setUp()
         patcher = mock.patch('neutron.pecan_wsgi.hooks.notifier.registry')
         self.mock_notifier = patcher.start().publish
 
@@ -462,7 +468,7 @@ class TestCallbackRegistryNotifier(test_functional.PecanFunctionalTest):
             body = {'network': {'name': 'meh-1'}}
         response = self.app.post_json(
             '/v2.0/networks.json',
-            params=body, headers={'X-Project-Id': 'tenid'})
+            params=body, headers={'X-Project-Id': 'projid'})
         return response.json
 
     def test_create(self):
@@ -497,7 +503,7 @@ class TestCallbackRegistryNotifier(test_functional.PecanFunctionalTest):
         self.mock_notifier.reset_mock()
         self.app.put_json('/v2.0/networks/%s.json' % network_id,
                           params={'network': {'name': 'new-meh'}},
-                          headers={'X-Project-Id': 'tenid'})
+                          headers={'X-Project-Id': 'projid'})
         self.mock_notifier.assert_called_once_with(
             'network', events.BEFORE_RESPONSE, mock.ANY, payload=mock.ANY)
 
@@ -516,7 +522,7 @@ class TestCallbackRegistryNotifier(test_functional.PecanFunctionalTest):
         self.mock_notifier.reset_mock()
         self.app.delete(
             '/v2.0/networks/%s.json' % network_id,
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.mock_notifier.assert_called_once_with(
             'network', events.BEFORE_RESPONSE, mock.ANY, payload=mock.ANY)
 

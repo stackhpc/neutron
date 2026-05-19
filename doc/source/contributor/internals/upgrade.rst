@@ -35,7 +35,8 @@ Upgrade strategy
 
 There are two general upgrade scenarios supported by Neutron:
 
-#. All services are shut down, code upgraded, then all services are started again.
+#. All services are shut down, code upgraded, then all services are started
+   again.
 #. Services are upgraded gradually, based on operator service windows.
 
 The latter is the preferred way to upgrade an OpenStack cloud, since it allows
@@ -119,7 +120,7 @@ sent by older versions of agents which are part of the cloud.
 
 The recommended order of agent upgrade (per node) is:
 
-#. first, L2 agents (openvswitch, linuxbridge, sr-iov).
+#. first, L2 agents (openvswitch, sr-iov).
 #. then, all other agents (L3, DHCP, Metadata, ...).
 
 The rationale of the agent upgrade order is that L2 agent is usually

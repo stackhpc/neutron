@@ -14,7 +14,6 @@
 #    under the License.
 
 import collections
-from datetime import datetime
 import itertools
 
 import netaddr
@@ -31,6 +30,7 @@ from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging
 from oslo_serialization import jsonutils
+from oslo_utils import timeutils
 from oslo_utils import uuidutils
 
 from neutron.agent import resource_cache
@@ -63,7 +63,7 @@ def create_consumers(endpoints, prefix, topic_details, start_listening=True):
         topic_name = topics.get_topic_name(prefix, topic, operation)
         connection.create_consumer(topic_name, endpoints, fanout=True)
         if node_name:
-            node_topic_name = '%s.%s' % (topic_name, node_name)
+            node_topic_name = f'{topic_name}.{node_name}'
             connection.create_consumer(node_topic_name,
                                        endpoints,
                                        fanout=False)
@@ -72,7 +72,7 @@ def create_consumers(endpoints, prefix, topic_details, start_listening=True):
     return connection
 
 
-class PluginReportStateAPI(object):
+class PluginReportStateAPI:
     """RPC client used to report state back to plugin.
 
     This class implements the client side of an rpc interface.  The server side
@@ -80,8 +80,9 @@ class PluginReportStateAPI(object):
     information on changing rpc interfaces, see
     doc/source/contributor/internals/rpc_api.rst.
     """
+
     def __init__(self, topic):
-        target = oslo_messaging.Target(topic=topic, version='1.2',
+        target = oslo_messaging.Target(topic=topic, version='1.4',
                                        namespace=constants.RPC_NAMESPACE_STATE)
         self.client = lib_rpc.get_client(target)
         self.timeout = cfg.CONF.AGENT.report_interval
@@ -99,14 +100,22 @@ class PluginReportStateAPI(object):
         agent_state['uuid'] = uuidutils.generate_uuid()
         kwargs = {
             'agent_state': {'agent_state': agent_state},
-            'time': datetime.utcnow().strftime(constants.ISO8601_TIME_FORMAT),
+            'time': timeutils.utcnow().strftime(constants.ISO8601_TIME_FORMAT),
         }
         method = cctxt.call if use_call else cctxt.cast
         return method(context, 'report_state', **kwargs)
 
+    def get_agents(self, context, **filters):
+        cctxt = self.client.prepare(timeout=self.timeout)
+        return cctxt.call(context, 'get_agents', **filters)
 
-class PluginApi(object):
-    '''Agent side of the rpc API.
+    def delete_agent(self, context, **kwargs):
+        cctxt = self.client.prepare(timeout=self.timeout)
+        return cctxt.call(context, 'delete_agent', **kwargs)
+
+
+class PluginApi:
+    """Agent side of the rpc API.
 
     API version history:
         1.0 - Initial version.
@@ -127,7 +136,7 @@ class PluginApi(object):
               - update_device_up
               - update_device_list (indirectly, called from update_device_down
                 and update_device_up)
-    '''
+    """
 
     def __init__(self, topic):
         target = oslo_messaging.Target(topic=topic, version='1.9')
@@ -223,7 +232,7 @@ class CacheBackedPluginApi(PluginApi):
                       resources.ADDRESSGROUP]
 
     def __init__(self, *args, **kwargs):
-        super(CacheBackedPluginApi, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.remote_resource_cache = None
         self._create_cache_for_l2_agent()
 
@@ -280,7 +289,7 @@ class CacheBackedPluginApi(PluginApi):
         """
         is_delete = event == callback_events.AFTER_DELETE
         suffix = 'delete' if is_delete else 'update'
-        method = "%s_%s" % (rtype, suffix)
+        method = "{}_{}".format(rtype, suffix)
         host_with_activation = None
         host_with_deactivation = None
         if is_delete or rtype != callback_resources.PORT:
@@ -352,7 +361,8 @@ class CacheBackedPluginApi(PluginApi):
                     constants.NO_ACTIVE_BINDING: True}
         net = self.remote_resource_cache.get_resource_by_id(
             resources.NETWORK, port_obj.network_id)
-        qos_network_policy_id = net.qos_policy_id
+        qos_network_policy_id = getattr(net, 'qos_policy_id', None)
+
         # match format of old RPC interface
         mac_addr = str(netaddr.EUI(str(port_obj.mac_address),
                                    dialect=netaddr.mac_unix_expanded))
@@ -383,6 +393,7 @@ class CacheBackedPluginApi(PluginApi):
             'vnic_type': binding.vnic_type,
             'security_groups': list(port_obj.security_group_ids),
             'migrating_to': migrating_to,
+            'hints': port_obj.hints.hints if port_obj.hints else None,
         }
         LOG.debug("Returning: %s", entry)
         return entry

@@ -32,7 +32,7 @@ from neutron.services.externaldns import driver
 LOG = logging.getLogger(__name__)
 
 
-class DNSActionsData(object):
+class DNSActionsData:
 
     def __init__(self, current_dns_name=None, current_dns_domain=None,
                  previous_dns_name=None, previous_dns_domain=None):
@@ -43,7 +43,7 @@ class DNSActionsData(object):
 
 
 @resource_extend.has_resource_extenders
-class DNSDbMixin(object):
+class DNSDbMixin:
     """Mixin class to add DNS methods to db_base_plugin_v2."""
 
     _dns_driver = None
@@ -134,21 +134,20 @@ class DNSDbMixin(object):
             self._get_requested_state_for_external_dns_service_update(
                 context, floatingip_data))
         if dns_data_db:
-            if (dns_data_db['published_dns_name'] != current_dns_name or
-                    dns_data_db['published_dns_domain'] != current_dns_domain):
-                dns_actions_data = DNSActionsData(
-                    previous_dns_name=dns_data_db['published_dns_name'],
-                    previous_dns_domain=dns_data_db['published_dns_domain'])
-                if current_dns_name and current_dns_domain:
-                    dns_data_db['published_dns_name'] = current_dns_name
-                    dns_data_db['published_dns_domain'] = current_dns_domain
-                    dns_actions_data.current_dns_name = current_dns_name
-                    dns_actions_data.current_dns_domain = current_dns_domain
-                else:
-                    dns_data_db.delete()
-                return dns_actions_data
-            else:
+            if (dns_data_db['published_dns_name'] == current_dns_name and
+                    dns_data_db['published_dns_domain'] == current_dns_domain):
                 return
+            dns_actions_data = DNSActionsData(
+                previous_dns_name=dns_data_db['published_dns_name'],
+                previous_dns_domain=dns_data_db['published_dns_domain'])
+            if current_dns_name and current_dns_domain:
+                dns_data_db['published_dns_name'] = current_dns_name
+                dns_data_db['published_dns_domain'] = current_dns_domain
+                dns_actions_data.current_dns_name = current_dns_name
+                dns_actions_data.current_dns_domain = current_dns_domain
+            else:
+                dns_data_db.delete()
+            return dns_actions_data
         if current_dns_name and current_dns_domain:
             fip_obj.FloatingIPDNS(
                 context,
@@ -213,15 +212,18 @@ class DNSDbMixin(object):
         try:
             self.dns_driver.delete_record_set(context, dns_domain, dns_name,
                                               ips)
-        except (dns_exc.DNSDomainNotFound, dns_exc.DuplicateRecordSet) as e:
-            LOG.exception("Error deleting Floating IP data from external "
-                          "DNS service. Name: '%(name)s'. Domain: "
-                          "'%(domain)s'. IP addresses '%(ips)s'. DNS "
-                          "service driver message '%(message)s'",
-                          {"name": dns_name,
-                           "domain": dns_domain,
-                           "message": e.msg,
-                           "ips": ', '.join(ips)})
+        except dns_exc.DNSDomainNotFound:
+            LOG.error("Error deleting Floating IP record %(name)s from "
+                      "external DNS service. The DNS domain %(domain)s was "
+                      "not found.",
+                      {"name": dns_name,
+                       "domain": dns_domain})
+        except dns_exc.DuplicateRecordSet:
+            LOG.error("Error deleting Floating IP record from external DNS "
+                      "service. Duplicate Floating IP records for %(name)s in "
+                      "domain %(domain)s were found.",
+                      {"name": dns_name,
+                       "domain": dns_domain})
 
     def _get_requested_state_for_external_dns_service_create(self, context,
                                                              floatingip_data,
@@ -245,11 +247,15 @@ class DNSDbMixin(object):
         try:
             self.dns_driver.create_record_set(context, dns_domain, dns_name,
                                               ips)
-        except (dns_exc.DNSDomainNotFound, dns_exc.DuplicateRecordSet) as e:
-            LOG.exception("Error publishing floating IP data in external "
-                          "DNS service. Name: '%(name)s'. Domain: "
-                          "'%(domain)s'. DNS service driver message "
-                          "'%(message)s'",
-                          {"name": dns_name,
-                           "domain": dns_domain,
-                           "message": e.msg})
+        except dns_exc.DNSDomainNotFound:
+            LOG.error("The DNS domain %(domain)s was not found. Creation of "
+                      "Floating IP record %(name)s from external DNS service "
+                      "will be skipped.",
+                      {"name": dns_name,
+                       "domain": dns_domain})
+        except dns_exc.DuplicateRecordSet:
+            LOG.error("A Floating IP record for %(name)s in domain %(domain)s "
+                      "already exists. record creation in external DNS "
+                      "service will be skipped.",
+                      {"name": dns_name,
+                       "domain": dns_domain})

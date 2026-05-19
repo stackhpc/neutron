@@ -18,7 +18,7 @@ import abc
 from neutron_lib.api import extensions as api_extensions
 from neutron_lib.services import base
 
-from neutron import wsgi
+from neutron.api import wsgi
 
 
 class StubExtension(api_extensions.ExtensionDescriptor):
@@ -49,7 +49,7 @@ class StubExtensionWithReqs(StubExtension):
         return ["foo"]
 
 
-class StubPlugin(object):
+class StubPlugin:
 
     def __init__(self, supported_extensions=None):
         supported_extensions = supported_extensions or []
@@ -70,7 +70,7 @@ class ExtensionExpectingPluginInterface(StubExtension):
 class StubPluginInterface(base.ServicePluginBase):
 
     @abc.abstractmethod
-    def get_foo(self, bar=None):
+    def get_foo(self, ext=None):
         pass
 
     def get_plugin_type(self):

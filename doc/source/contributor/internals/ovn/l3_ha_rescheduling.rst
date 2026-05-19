@@ -1,8 +1,16 @@
 .. _l3_ha_rescheduling:
 
-===================================
-L3 HA Scheduling of Gateway Chassis
-===================================
+============================================
+L3 HA Scheduling of Gateway Chassis (legacy)
+============================================
+
+.. note::
+
+   This document was originally written when Neutron used the
+   ``Gateway_Chassis`` table for L3 HA scheduling. Neutron now uses the
+   ``HA_Chassis_Group`` and ``HA_Chassis`` tables instead, which is the
+   preferred method for HA scheduling in OVN. The scheduling and
+   rebalancing concepts described here still apply.
 
 Problem Description
 -------------------
@@ -50,7 +58,7 @@ chassis is added or removed. When it happend, ``schedule_unhosted_gateways()``
 `[1]`_ will be called to host the unhosted gateways. Routers without gateway
 ports are excluded in this operation because those are not connected to
 provider networks and haven't the gateway ports. More information about
-it can be found in the ``gateway_chassis`` table definition in OVN
+it can be found in the ``HA_Chassis_Group`` table definition in OVN
 NorthBound DB `[5]`_.
 
 Chassis which has the flag ``enable-chassis-as-gw`` enabled in their OVN
@@ -109,7 +117,8 @@ Similar approach has been implemeneted for DHCP rescheduling `[4]`_.
 The primary chassis gateway could be moved only to other, previously scheduled
 gateway. Rebalancing of chassis occurs only if number of scheduled primary
 chassis ports per each provider network hosted by given chassis is higher than
-average number of hosted primary gateway ports per chassis per provider network.
+average number of hosted primary gateway ports per chassis per provider
+network.
 
 This dependency is determined by formula:
 

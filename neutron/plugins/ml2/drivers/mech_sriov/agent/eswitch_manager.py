@@ -39,7 +39,7 @@ IP_LINK_CAPABILITY_SPOOFCHK = 'spoofchk'
 IP_LINK_SUB_CAPABILITY_QOS = 'qos'
 
 
-class PciOsWrapper(object):
+class PciOsWrapper:
     """OS wrapper for checking virtual functions"""
 
     DEVICE_PATH = "/sys/class/net/%s/device"
@@ -132,15 +132,15 @@ class PciOsWrapper(object):
             with open(cls.NUMVFS_PATH % dev_name) as f:
                 numvfs = int(f.read())
                 LOG.debug("Number of VFs configured on device %s: %s",
-                    dev_name, numvfs)
+                          dev_name, numvfs)
                 return numvfs
-        except IOError:
+        except OSError:
             LOG.warning("Error reading sriov_numvfs file for device %s, "
                         "probably not supported by this device", dev_name)
             return -1
 
 
-class EmbSwitch(object):
+class EmbSwitch:
     """Class to manage logical embedded switch entity.
 
     Embedded Switch object is logical entity representing all VFs
@@ -314,13 +314,13 @@ class EmbSwitch(object):
         return mac
 
 
-class ESwitchManager(object):
+class ESwitchManager:
     """Manages logical Embedded Switch entities for physical network."""
 
     def __new__(cls):
         # make it a singleton
         if not hasattr(cls, '_instance'):
-            cls._instance = super(ESwitchManager, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
             cls.emb_switches_map = {}
             cls.pci_slot_map = {}
             cls.skipped_devices = set()
@@ -471,10 +471,9 @@ class ESwitchManager(object):
                 LOG.info("Device %s has 0 VFs configured. Skipping "
                          "for now to let the device initialize", dev_name)
                 return
-            else:
-                # looks like device indeed has 0 VFs configured
-                # it is probably used just as direct-physical
-                LOG.info("Device %s has 0 VFs configured", dev_name)
+            # looks like device indeed has 0 VFs configured it is probably used
+            # just as direct-physical
+            LOG.info("Device %s has 0 VFs configured", dev_name)
 
         numvfs_cur = len(embedded_switch.scanned_pci_list)
         if numvfs >= 0 and numvfs > numvfs_cur:

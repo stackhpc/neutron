@@ -44,11 +44,11 @@ def _get_param(args, kwargs, name, index):
             raise log_exc.LogapiDriverException(exception_msg=msg)
 
 
-class ResourceCallBackBase(object):
+class ResourceCallBackBase:
 
     def __new__(cls, *args, **kwargs):
         if not hasattr(cls, '_instance'):
-            cls._instance = super(ResourceCallBackBase, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, resource, push_api):
@@ -62,20 +62,23 @@ class ResourceCallBackBase(object):
         pass
 
 
-class LoggingServiceDriverManager(object):
+class LoggingServiceDriverManager:
 
     def __init__(self):
         self._drivers = set()
         self.rpc_required = False
         registry.publish(log_const.LOGGING_PLUGIN, events.AFTER_INIT, self)
-
-        if self.rpc_required:
-            self._start_rpc_listeners()
-            self.logging_rpc = server_rpc.LoggingApiNotification()
+        self._logging_rpc = None
 
     @property
     def drivers(self):
         return self._drivers
+
+    @property
+    def logging_rpc(self):
+        if self.rpc_required and not self._logging_rpc:
+            self._logging_rpc = server_rpc.LoggingApiNotification()
+        return self._logging_rpc
 
     def register_driver(self, driver):
         """Register driver with logging plugin.
@@ -92,6 +95,9 @@ class LoggingServiceDriverManager(object):
         self._setup_resources_cb_handle()
 
     def _start_rpc_listeners(self):
+        if not self.rpc_required:
+            return []
+
         self._skeleton = server_rpc.LoggingApiSkeleton()
         return self._skeleton.conn.consume_in_threads()
 

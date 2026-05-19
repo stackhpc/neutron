@@ -22,6 +22,7 @@ from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
 
 from neutron.db import extraroute_db
+from neutron.objects import router as l3_obj
 from neutron.tests.unit import testlib_api
 
 
@@ -31,7 +32,7 @@ class _Plugin(extraroute_db.ExtraRoute_dbonly_mixin):
 
 class TestExtraRouteDb(testlib_api.SqlTestCase):
     def setUp(self):
-        super(TestExtraRouteDb, self).setUp()
+        super().setUp()
         self._plugin = _Plugin()
         directory.add_plugin(constants.CORE, self._plugin)
 
@@ -40,7 +41,7 @@ class TestExtraRouteDb(testlib_api.SqlTestCase):
         create_request = {
             'router': {
                 'name': 'my router',
-                'tenant_id': 'my tenant',
+                'project_id': 'my project',
                 'admin_state_up': True,
             }
         }
@@ -78,8 +79,8 @@ class TestExtraRouteDb(testlib_api.SqlTestCase):
     def assertEqualRoutes(self, a, b):
         """Compare a list of routes without caring for the list order."""
         return self.assertSetEqual(
-            set(frozenset(r.items()) for r in a),
-            set(frozenset(r.items()) for r in b))
+            {frozenset(r.items()) for r in a},
+            {frozenset(r.items()) for r in b})
 
     def test_add_extra_routes(self):
         self.assertEqual(
@@ -156,3 +157,49 @@ class TestExtraRouteDb(testlib_api.SqlTestCase):
             {"destination": "10.0.10.0/24", "nexthop": "10.0.0.10"},
         ]
         self.assertEqual([], self._plugin._remove_extra_routes(old, remove))
+
+    def test_update_routes_where_route_vanishes_while_on_delete(self):
+        ctx = context.get_admin_context()
+        create_request = {
+            'router': {
+                'name': 'my router',
+                'project_id': 'my project',
+                'admin_state_up': True,
+            }
+        }
+        router = self._plugin.create_router(ctx, create_request)
+        self.assertCountEqual(router['routes'], [])
+        router_id = router['id']
+        routes = [
+            {'destination': '10.0.0.0/24', 'nexthop': '1.1.1.4'},
+            {'destination': '10.1.0.0/24', 'nexthop': '1.1.1.3'},
+            {'destination': '10.2.0.0/24', 'nexthop': '1.1.1.2'},
+        ]
+        self._test_update_routes(ctx, router_id, router, routes)
+        routes = [
+            {'destination': '10.0.0.0/24', 'nexthop': '1.1.1.4'},
+            {'destination': '10.1.0.0/24', 'nexthop': '1.1.1.3'},
+        ]
+
+        def _remove_last_route(orig_func):
+            def _wrapper(ctx, router_id):
+                routes = orig_func(ctx, router_id)
+
+                # forcefully delete route to 10.2.0.0/24
+                ctx2 = context.get_admin_context()
+                l3_obj.RouterRoute.get_object(
+                    ctx2,
+                    router_id=router_id,
+                    destination="10.2.0.0/24",
+                    nexthop="1.1.1.2").delete()
+                return routes
+
+            return _wrapper
+
+        with mock.patch.object(
+                self._plugin, '_get_extra_routes_by_router_id',
+                wraps=_remove_last_route(
+                    self._plugin._get_extra_routes_by_router_id)) \
+                as mock_get_routes:
+            self._test_update_routes(ctx, router_id, router, routes)
+            mock_get_routes.assert_called_once()

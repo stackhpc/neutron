@@ -10,6 +10,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -27,7 +28,7 @@ RESOURCE_PATH = '/quota/{id}'
 rules = [
     policy.DocumentedRuleDefault(
         name='get_quota',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Get a resource quota',
         operations=[
@@ -42,7 +43,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='get_quota',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -59,7 +60,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='update_quota',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -76,7 +77,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='delete_quota',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),

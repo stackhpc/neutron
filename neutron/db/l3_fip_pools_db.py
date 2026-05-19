@@ -12,11 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from neutron_lib.api.definitions import fip64
-from neutron_lib.api import extensions
 from neutron_lib import constants as lib_const
 from neutron_lib.db import utils as lib_db_utils
-from neutron_lib.plugins import directory
 
 from neutron.extensions import floatingip_pools as fip_pools_ext
 from neutron.objects import base as base_obj
@@ -24,16 +21,14 @@ from neutron.objects import network as net_obj
 from neutron.objects import subnet as subnet_obj
 
 
-class FloatingIPPoolsDbMixin(object):
+class FloatingIPPoolsDbMixin:
     """Class to support floating IP pool."""
-
-    _is_v6_supported = None
 
     @staticmethod
     def _make_floatingip_pool_dict(context, subnet, fields=None):
         res = {'subnet_id': subnet.id,
                'subnet_name': subnet.name,
-               'tenant_id': context.tenant_id,
+               'project_id': context.project_id,
                'network_id': subnet.network_id,
                'cidr': str(subnet.cidr)}
 
@@ -47,29 +42,15 @@ class FloatingIPPoolsDbMixin(object):
         net_ids = [n.network_id
                    for n in net_obj.ExternalNetwork.get_objects(context)]
         # NOTE(hongbin): Use elevated context to make sure we have enough
-        # permission to retrieve subnets that are not in current tenant
-        # but belongs to external networks shared with current tenant.
+        # permission to retrieve subnets that are not in current project
+        # but belongs to external networks shared with current project.
         admin_context = context.elevated()
         subnet_objs = subnet_obj.Subnet.get_objects(admin_context,
                                                     _pager=pager,
                                                     network_id=net_ids)
         return [self._make_floatingip_pool_dict(context, obj, fields)
                 for obj in subnet_objs
-                if (obj.ip_version == lib_const.IP_VERSION_4 or
-                    self.is_v6_supported)]
-
-    @property
-    def is_v6_supported(self):
-        supported = self._is_v6_supported
-        if supported is None:
-            supported = False
-            for plugin in directory.get_plugins().values():
-                if extensions.is_extension_supported(plugin, fip64.ALIAS):
-                    supported = True
-                    break
-        self._is_v6_supported = supported
-
-        return supported
+                if obj.ip_version == lib_const.IP_VERSION_4]
 
 
 class FloatingIPPoolsMixin(FloatingIPPoolsDbMixin,

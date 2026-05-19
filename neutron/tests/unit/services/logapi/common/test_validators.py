@@ -32,7 +32,7 @@ class TestRegisterValidateMethods(base.BaseTestCase):
 
     def setUp(self):
         self.validator_mgr = validators.ResourceValidateRequest.get_instance()
-        super(TestRegisterValidateMethods, self).setUp()
+        super().setUp()
 
     def test_register_validate_method(self):
         self.validator_mgr.validate_methods.clear()
@@ -59,8 +59,8 @@ class TestLogDriversLoggingTypeValidations(drv_mgr.TestLogDriversManagerBase):
     """Test validation of logging type for a port"""
 
     def setUp(self):
-        super(TestLogDriversLoggingTypeValidations, self).setUp()
-        self.ctxt = context.Context('fake_user', 'fake_tenant')
+        super().setUp()
+        self.ctxt = context.Context('fake_user', 'fake_project')
 
     def _get_port(self, vif_type, vnic_type):
         port_id = uuidutils.generate_uuid()
@@ -87,7 +87,7 @@ class TestLogDriversLoggingTypeValidations(drv_mgr.TestLogDriversManagerBase):
             is_log_type_supported_mock
         )
 
-        class FakeLoggingPlugin(object):
+        class FakeLoggingPlugin:
             def __init__(self):
                 self.driver_manager = driver_manager
 

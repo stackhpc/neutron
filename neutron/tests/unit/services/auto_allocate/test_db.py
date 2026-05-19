@@ -14,6 +14,7 @@
 from unittest import mock
 
 from neutron_lib.api.definitions import constants as api_const
+from neutron_lib.api.definitions import external_net as external_net_apidef
 from neutron_lib.callbacks import events
 from neutron_lib import constants
 from neutron_lib import context
@@ -33,7 +34,7 @@ DB_PLUGIN_KLASS = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 class AutoAllocateTestCase(testlib_api.SqlTestCase):
 
     def setUp(self):
-        super(AutoAllocateTestCase, self).setUp()
+        super().setUp()
         self.setup_coreplugin(core_plugin=DB_PLUGIN_KLASS)
         self.ctx = context.get_admin_context()
         self.mixin = db.AutoAllocatedTopologyMixin()
@@ -46,15 +47,18 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             "context": self.ctx,
             "request": {
                 "id": network_id,
-                api_const.IS_DEFAULT: True
+                api_const.IS_DEFAULT: True,
+                external_net_apidef.EXTERNAL: True,
             },
             "network": {
                 "id": network_id,
-                api_const.IS_DEFAULT: False
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: False,
             },
             "original_network": {
                 "id": network_id,
-                api_const.IS_DEFAULT: False
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: False,
             }
         }
         network_mock = mock.MagicMock(network_id=network_id, is_default=False)
@@ -82,11 +86,13 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             "context": self.ctx,
             "request": {
                 "id": network_id,
-                api_const.IS_DEFAULT: None
+                api_const.IS_DEFAULT: None,
+                external_net_apidef.EXTERNAL: False,
             },
             "network": {
                 "id": network_id,
-                api_const.IS_DEFAULT: False
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: False,
             },
         }
         network_mock = mock.MagicMock(network_id=network_id, is_default=False)
@@ -101,7 +107,7 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
                 "NETWORK", "precommit_update", "test_plugin",
                 payload=events.DBEventPayload(
                     self.ctx, request_body=kwargs['request'],
-                    states=(kwargs['network'],)))
+                    states=({}, kwargs['network'])))
             get_external_nets.assert_not_called()
             get_external_net.assert_not_called()
             network_mock.update.assert_not_called()
@@ -112,15 +118,18 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             "context": self.ctx,
             "request": {
                 "id": network_id,
-                api_const.IS_DEFAULT: True
+                api_const.IS_DEFAULT: True,
+                external_net_apidef.EXTERNAL: True,
             },
             "network": {
                 "id": network_id,
-                api_const.IS_DEFAULT: True
+                api_const.IS_DEFAULT: True,
+                external_net_apidef.EXTERNAL: True,
             },
             "original_network": {
                 "id": network_id,
-                api_const.IS_DEFAULT: True
+                api_const.IS_DEFAULT: True,
+                external_net_apidef.EXTERNAL: True,
             }
         }
         network_mock = mock.MagicMock(network_id=network_id, is_default=True)
@@ -147,15 +156,18 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             "context": self.ctx,
             "request": {
                 "id": network_id,
-                api_const.IS_DEFAULT: True
+                api_const.IS_DEFAULT: True,
+                external_net_apidef.EXTERNAL: True,
             },
             "network": {
                 "id": network_id,
-                api_const.IS_DEFAULT: False
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: False,
             },
             "original_network": {
                 "id": network_id,
-                api_const.IS_DEFAULT: False
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: False,
             }
         }
         network_mock = mock.MagicMock(network_id='fake_id', is_default=False)
@@ -166,7 +178,8 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             'neutron.objects.network.ExternalNetwork.get_object',
             return_value=network_mock
         ) as get_external_net:
-            self.assertRaises(exceptions.DefaultExternalNetworkExists,
+            self.assertRaises(
+                exceptions.DefaultExternalNetworkExists,
                 db._ensure_external_network_default_value_callback,
                 "NETWORK", "precommit_update", "test_plugin",
                 payload=events.DBEventPayload(
@@ -174,6 +187,111 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
                     states=(kwargs['original_network'], kwargs['network'])))
             get_external_nets.assert_called_once_with(
                 self.ctx, _pager=mock.ANY, is_default=True)
+            get_external_net.assert_not_called()
+            network_mock.update.assert_not_called()
+
+    def test_ensure_external_network_default_value_update(self):
+        network_id = uuidutils.generate_uuid()
+        kwargs = {
+            "context": self.ctx,
+            "request": {
+                "id": network_id,
+                api_const.IS_DEFAULT: True,
+            },
+            "network": {
+                "id": network_id,
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: True,
+            },
+            "original_network": {
+                "id": network_id,
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: True,
+            }
+        }
+        network_mock = mock.MagicMock(network_id=network_id, is_default=False)
+        with mock.patch(
+            'neutron.objects.network.ExternalNetwork.get_objects',
+            return_value=[network_mock]
+        ) as get_external_nets, mock.patch(
+            'neutron.objects.network.ExternalNetwork.get_object',
+            return_value=network_mock
+        ) as get_external_net:
+            db._ensure_external_network_default_value_callback(
+                "NETWORK", "precommit_update", "test_plugin",
+                payload=events.DBEventPayload(
+                    self.ctx, request_body=kwargs['request'],
+                    states=(kwargs['original_network'], kwargs['network'])))
+            get_external_nets.assert_called_once_with(
+                self.ctx, _pager=mock.ANY, is_default=True)
+            get_external_net.assert_called_once_with(
+                self.ctx, network_id=network_id)
+            network_mock.update.assert_called_once_with()
+
+    def test_ensure_external_network_default_value_internal_update(self):
+        network_id = uuidutils.generate_uuid()
+        kwargs = {
+            "context": self.ctx,
+            "request": {
+                "id": network_id,
+                api_const.IS_DEFAULT: True,
+            },
+            "network": {
+                "id": network_id,
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: False,
+            },
+            "original_network": {
+                "id": network_id,
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: False,
+            }
+        }
+        network_mock = mock.MagicMock(network_id='fake_id', is_default=False)
+        with mock.patch(
+            'neutron.objects.network.ExternalNetwork.get_objects',
+            return_value=[network_mock]
+        ) as get_external_nets, mock.patch(
+            'neutron.objects.network.ExternalNetwork.get_object',
+            return_value=network_mock
+        ) as get_external_net:
+            db._ensure_external_network_default_value_callback(
+                "NETWORK", "precommit_update", "test_plugin",
+                payload=events.DBEventPayload(
+                    self.ctx, request_body=kwargs['request'],
+                    states=(kwargs['original_network'], kwargs['network'])))
+            get_external_nets.assert_not_called()
+            get_external_net.assert_not_called()
+            network_mock.update.assert_not_called()
+
+    def test_ensure_external_network_default_value_internal_create(self):
+        network_id = uuidutils.generate_uuid()
+        kwargs = {
+            "context": self.ctx,
+            "request": {
+                "id": network_id,
+                api_const.IS_DEFAULT: True,
+            },
+            "network": {
+                "id": network_id,
+                api_const.IS_DEFAULT: False,
+                external_net_apidef.EXTERNAL: False,
+            },
+        }
+        network_mock = mock.MagicMock(network_id='fake_id', is_default=False)
+        with mock.patch(
+            'neutron.objects.network.ExternalNetwork.get_objects',
+            return_value=[network_mock]
+        ) as get_external_nets, mock.patch(
+            'neutron.objects.network.ExternalNetwork.get_object',
+            return_value=network_mock
+        ) as get_external_net:
+            db._ensure_external_network_default_value_callback(
+                "NETWORK", "precommit_update", "test_plugin",
+                payload=events.DBEventPayload(
+                    self.ctx, request_body=kwargs['request'],
+                    states=({}, kwargs['network'])))
+            get_external_nets.assert_not_called()
             get_external_net.assert_not_called()
             network_mock.update.assert_not_called()
 
@@ -189,8 +307,8 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             self.mixin.l3_plugin.add_router_interface.side_effect = (
                 n_exc.BadRequest(resource='router', msg='doh!'))
             self.assertRaises(exceptions.AutoAllocationFailure,
-                self.mixin._provision_external_connectivity,
-                self.ctx, 'ext_net_foo', subnets, 'tenant_foo')
+                              self.mixin._provision_external_connectivity,
+                              self.ctx, 'ext_net_foo', subnets, 'project_foo')
             # expect no subnets to be unplugged
             mock_cleanup.assert_called_once_with(
                 self.ctx, network_id='network_foo',
@@ -205,8 +323,8 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             self.mixin.l3_plugin.create_router.side_effect = (
                 n_exc.BadRequest(resource='router', msg='doh!'))
             self.assertRaises(exceptions.AutoAllocationFailure,
-                self.mixin._provision_external_connectivity,
-                self.ctx, 'ext_net_foo', subnets, 'tenant_foo')
+                              self.mixin._provision_external_connectivity,
+                              self.ctx, 'ext_net_foo', subnets, 'project_foo')
             # expected router_id to be None
             mock_cleanup.assert_called_once_with(
                 self.ctx, network_id='network_foo',
@@ -220,10 +338,10 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
 
     def test_get_auto_allocated_topology_dry_run_bad_input(self):
         self.assertRaises(n_exc.BadRequest,
-            self.mixin.get_auto_allocated_topology,
-            self.ctx, mock.ANY, fields=['foo'])
+                          self.mixin.get_auto_allocated_topology,
+                          self.ctx, mock.ANY, fields=['foo'])
 
-    def test__provision_tenant_private_network_handles_subnet_errors(self):
+    def test__provision_project_private_network_handles_subnet_errors(self):
         network_id = uuidutils.generate_uuid()
         self.mixin._core_plugin.create_network.return_value = (
             {'id': network_id})
@@ -235,8 +353,8 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
                 [{'ip_version': constants.IP_VERSION_4,
                   'id': uuidutils.generate_uuid()}])
             self.assertRaises(exceptions.AutoAllocationFailure,
-                              self.mixin._provision_tenant_private_network,
-                              self.ctx, 'foo_tenant')
+                              self.mixin._provision_project_private_network,
+                              self.ctx, 'foo_project')
             g.assert_called_once_with(self.ctx, network_id)
 
     def _test__build_topology(self, method, provisioning_exception):
@@ -258,21 +376,21 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
         provisioning_exception = exceptions.UnknownProvisioningError(
             db_exc.DBError)
         self._test__build_topology(
-            '_provision_tenant_private_network',
+            '_provision_project_private_network',
             provisioning_exception)
 
     def test__build_topology_provisioning_error_network_only(self):
         provisioning_exception = exceptions.UnknownProvisioningError(
             Exception, network_id='foo')
         self._test__build_topology(
-            '_provision_tenant_private_network',
+            '_provision_project_private_network',
             provisioning_exception)
 
     def test__build_topology_error_only_network_again(self):
         provisioning_exception = exceptions.UnknownProvisioningError(
             AttributeError, network_id='foo')
         with mock.patch.object(self.mixin,
-                               '_provision_tenant_private_network') as f:
+                               '_provision_project_private_network') as f:
             f.return_value = [{'network_id': 'foo'}]
             self._test__build_topology(
                 '_provision_external_connectivity',
@@ -282,7 +400,7 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
         provisioning_exception = exceptions.UnknownProvisioningError(
             KeyError, network_id='foo_n', router_id='foo_r')
         with mock.patch.object(self.mixin,
-                               '_provision_tenant_private_network') as f:
+                               '_provision_project_private_network') as f:
             f.return_value = [{'network_id': 'foo_n'}]
             self._test__build_topology(
                 '_provision_external_connectivity',
@@ -293,7 +411,7 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             db_exc.DBConnectionError,
             network_id='foo_n', router_id='foo_r', subnets=[{'id': 'foo_s'}])
         with mock.patch.object(self.mixin,
-                               '_provision_tenant_private_network') as f,\
+                               '_provision_project_private_network') as f,\
                 mock.patch.object(self.mixin,
                                   '_provision_external_connectivity') as g:
             f.return_value = [{'network_id': 'foo_n'}]
@@ -319,22 +437,23 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             self.mixin._provision_external_connectivity(
                 self.ctx, 'foo_default',
                 [{'id': 'foo_s', 'network_id': 'foo_n'}],
-                'foo_tenant')
+                'foo_project')
             self.assertEqual('foo_n', e.network_id)
             self.assertIsNone(e.router_id)
             self.assertIsNone(e.subnets)
 
-    def test__provision_tenant_private_network_with_provisioning_error(self):
+    def test__provision_project_private_network_with_provisioning_error(self):
         self.mixin._core_plugin.create_network.side_effect = Exception
         with testtools.ExpectedException(
                 exceptions.UnknownProvisioningError) as e:
-            self.mixin._provision_tenant_private_network(
-                self.ctx, 'foo_tenant')
+            self.mixin._provision_project_private_network(
+                self.ctx, 'foo_project')
             self.assertIsNone(e.network_id)
 
     def test__check_requirements_fail_on_missing_ext_net(self):
-        self.assertRaises(exceptions.AutoAllocationFailure,
-            self.mixin._check_requirements, self.ctx, 'foo_tenant')
+        self.assertRaises(
+            exceptions.AutoAllocationFailure,
+            self.mixin._check_requirements, self.ctx, 'foo_project')
 
     def test__check_requirements_fail_on_missing_pools(self):
         with mock.patch.object(
@@ -342,16 +461,19 @@ class AutoAllocateTestCase(testlib_api.SqlTestCase):
             mock.patch.object(
                 self.mixin, '_get_supported_subnetpools') as g:
             g.side_effect = n_exc.NotFound()
-            self.assertRaises(exceptions.AutoAllocationFailure,
-                self.mixin._check_requirements, self.ctx, 'foo_tenant')
+            self.assertRaises(
+                exceptions.AutoAllocationFailure,
+                self.mixin._check_requirements, self.ctx, 'foo_project')
 
     def test__check_requirements_happy_path_for_kevin(self):
         with mock.patch.object(
             self.mixin, '_get_default_external_network'),\
             mock.patch.object(
                 self.mixin, '_get_supported_subnetpools'):
-            result = self.mixin._check_requirements(self.ctx, 'foo_tenant')
-            expected = {'id': 'dry-run=pass', 'tenant_id': 'foo_tenant'}
+            result = self.mixin._check_requirements(self.ctx, 'foo_project')
+            expected = {
+                'id': 'dry-run=pass',
+                'project_id': 'foo_project'}
             self.assertEqual(expected, result)
 
     def test__cleanup_handles_failures(self):

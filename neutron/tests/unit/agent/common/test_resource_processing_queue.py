@@ -15,6 +15,7 @@
 
 import datetime
 
+from oslo_utils import timeutils
 from oslo_utils import uuidutils
 
 from neutron.agent.common import resource_processing_queue as queue
@@ -75,13 +76,36 @@ class TestExclusiveResourceProcessor(base.BaseTestCase):
         primary.__exit__(None, None, None)
         self.assertNotIn(FAKE_ID, queue.ExclusiveResourceProcessor._primaries)
 
+    def test__exit__cleans_resource_timestamps(self):
+        with queue.ExclusiveResourceProcessor(FAKE_ID) as primary:
+            primary.fetched_and_processed(timeutils.utcnow())
+            self.assertIn(
+                FAKE_ID,
+                queue.ExclusiveResourceProcessor._resource_timestamps)
+        self.assertNotIn(
+            FAKE_ID,
+            queue.ExclusiveResourceProcessor._resource_timestamps)
+
+    def test__exit__non_primary_does_not_clean_resource_timestamps(self):
+        primary = queue.ExclusiveResourceProcessor(FAKE_ID)
+        primary.fetched_and_processed(timeutils.utcnow())
+        not_primary = queue.ExclusiveResourceProcessor(FAKE_ID)
+        not_primary.__exit__(None, None, None)
+        self.assertIn(
+            FAKE_ID,
+            queue.ExclusiveResourceProcessor._resource_timestamps)
+        primary.__exit__(None, None, None)
+        self.assertNotIn(
+            FAKE_ID,
+            queue.ExclusiveResourceProcessor._resource_timestamps)
+
     def test_data_fetched_since(self):
         primary = queue.ExclusiveResourceProcessor(FAKE_ID)
         self.assertEqual(datetime.datetime.min,
                          primary._get_resource_data_timestamp())
 
-        ts1 = datetime.datetime.utcnow() - datetime.timedelta(seconds=10)
-        ts2 = datetime.datetime.utcnow()
+        ts1 = timeutils.utcnow() - datetime.timedelta(seconds=10)
+        ts2 = timeutils.utcnow()
 
         primary.fetched_and_processed(ts2)
         self.assertEqual(ts2, primary._get_resource_data_timestamp())
@@ -110,3 +134,12 @@ class TestExclusiveResourceProcessor(base.BaseTestCase):
         self.assertFalse(update.hit_retry_limit())
         rpqueue.add(update)
         self.assertTrue(update.hit_retry_limit())
+
+    def test_qsize(self):
+        rpqueue = queue.ResourceProcessingQueue()
+        for idx in range(5):
+            rpqueue.add(queue.ResourceUpdate(FAKE_ID, PRIORITY_RPC))
+            self.assertEqual(idx + 1, rpqueue.qsize)
+        for idx in reversed(range(5)):
+            rpqueue._queue.get()
+            self.assertEqual(idx, rpqueue.qsize)

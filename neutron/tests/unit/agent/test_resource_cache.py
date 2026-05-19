@@ -23,7 +23,7 @@ from neutron.api.rpc.callbacks import events as events_rpc
 from neutron.tests import base
 
 
-class OVOLikeThing(object):
+class OVOLikeThing:
     def __init__(self, id, revision_number=10, **kwargs):
         self.id = id
         self.fields = ['id', 'revision_number']
@@ -41,7 +41,7 @@ class OVOLikeThing(object):
 
 class RemoteResourceCacheTestCase(base.BaseTestCase):
     def setUp(self):
-        super(RemoteResourceCacheTestCase, self).setUp()
+        super().setUp()
         rtypes = ['duck', 'goose']
         self.goose = OVOLikeThing(1)
         self.duck = OVOLikeThing(2)
@@ -58,8 +58,9 @@ class RemoteResourceCacheTestCase(base.BaseTestCase):
     def test__flood_cache_for_query_pulls_once(self):
         resources = [OVOLikeThing(66), OVOLikeThing(67)]
         received_kw = []
-        receiver = lambda r, e, t, payload: \
-            received_kw.append(payload)
+
+        def receiver(r, e, t, payload):
+            return received_kw.append(payload)
         registry.subscribe(receiver, 'goose', events.AFTER_UPDATE)
 
         self._pullmock.bulk_pull.side_effect = [
@@ -117,7 +118,9 @@ class RemoteResourceCacheTestCase(base.BaseTestCase):
                  OVOLikeThing(4, size='xlarge'), OVOLikeThing(6, size='small')]
         for goose in geese:
             self.rcache.record_resource_update(self.ctx, 'goose', goose)
-        has_large = lambda o: 'large' in o.size
+
+        def has_large(o):
+            return 'large' in o.size
         self.assertCountEqual([geese[0], geese[2]],
                               self.rcache.match_resources_with_func('goose',
                                                                     has_large))
@@ -138,8 +141,9 @@ class RemoteResourceCacheTestCase(base.BaseTestCase):
 
     def test_record_resource_update(self):
         received_kw = []
-        receiver = lambda r, e, t, payload: \
-            received_kw.append(payload)
+
+        def receiver(r, e, t, payload):
+            return received_kw.append(payload)
         registry.subscribe(receiver, 'goose', events.AFTER_UPDATE)
         self.rcache.record_resource_update(self.ctx, 'goose',
                                            OVOLikeThing(3, size='large'))
@@ -156,13 +160,14 @@ class RemoteResourceCacheTestCase(base.BaseTestCase):
         self.assertEqual(2, len(received_kw))
         self.assertEqual('large', received_kw[1].states[0].size)
         self.assertEqual('small', received_kw[1].latest_state.size)
-        self.assertEqual(set(['size']),
+        self.assertEqual({'size'},
                          received_kw[1].metadata['changed_fields'])
 
     def test_record_resource_delete(self):
         received_kw = []
-        receiver = lambda r, e, t, payload: \
-            received_kw.append(payload)
+
+        def receiver(r, e, t, payload):
+            return received_kw.append(payload)
         registry.subscribe(receiver, 'goose', events.AFTER_DELETE)
         self.rcache.record_resource_update(self.ctx, 'goose',
                                            OVOLikeThing(3, size='large'))
@@ -178,8 +183,9 @@ class RemoteResourceCacheTestCase(base.BaseTestCase):
 
     def test_record_resource_delete_ignores_dups(self):
         received_kw = []
-        receiver = lambda r, e, t, payload: \
-            received_kw.append(payload)
+
+        def receiver(r, e, t, payload):
+            return received_kw.append(payload)
         registry.subscribe(receiver, 'goose', events.AFTER_DELETE)
         self.rcache.record_resource_delete(self.ctx, 'goose', 3)
         self.assertEqual(1, len(received_kw))

@@ -82,7 +82,7 @@ class NeutronDbSubnet(ipam_base.Subnet):
                    cidr=subnet_request.subnet_cidr,
                    allocation_pools=pools,
                    gateway_ip=subnet_request.gateway_ip,
-                   tenant_id=subnet_request.tenant_id,
+                   project_id=subnet_request.project_id,
                    subnet_id=subnet_request.subnet_id)
 
     @classmethod
@@ -108,7 +108,7 @@ class NeutronDbSubnet(ipam_base.Subnet):
                    cidr=neutron_subnet_obj.cidr,
                    allocation_pools=pools,
                    gateway_ip=neutron_subnet_obj.gateway_ip,
-                   tenant_id=neutron_subnet_obj.tenant_id,
+                   project_id=neutron_subnet_obj.project_id,
                    subnet_id=neutron_subnet_id)
 
     @classmethod
@@ -117,7 +117,7 @@ class NeutronDbSubnet(ipam_base.Subnet):
         return plugin._get_subnet_object(context, id)
 
     def __init__(self, internal_id, ctx, cidr=None,
-                 allocation_pools=None, gateway_ip=None, tenant_id=None,
+                 allocation_pools=None, gateway_ip=None, project_id=None,
                  subnet_id=None):
         # NOTE: In theory it could have been possible to grant the IPAM
         # driver direct access to the database. While this is possible,
@@ -128,7 +128,7 @@ class NeutronDbSubnet(ipam_base.Subnet):
         self._cidr = cidr
         self._pools = allocation_pools
         self._gateway_ip = gateway_ip
-        self._tenant_id = tenant_id
+        self._project_id = project_id
         self._subnet_id = subnet_id
         self.subnet_manager = ipam_db_api.IpamSubnetManager(internal_id,
                                                             self._subnet_id)
@@ -226,7 +226,7 @@ class NeutronDbSubnet(ipam_base.Subnet):
             return allocated_ips
 
         raise ipam_exc.IpAddressGenerationFailure(
-                  subnet_id=self.subnet_manager.neutron_id)
+            subnet_id=self.subnet_manager.neutron_id)
 
     def allocate(self, address_request):
         # NOTE(pbondar): Ipam driver is always called in context of already
@@ -305,7 +305,7 @@ class NeutronDbSubnet(ipam_base.Subnet):
     def get_details(self):
         """Return subnet data as a SpecificSubnetRequest"""
         return ipam_req.SpecificSubnetRequest(
-            self._tenant_id, self.subnet_manager.neutron_id,
+            self._project_id, self.subnet_manager.neutron_id,
             self._cidr, self._gateway_ip, self._pools)
 
 
@@ -334,7 +334,7 @@ class NeutronDbPool(subnet_alloc.SubnetAllocator):
         :returns: a NeutronDbSubnet instance
         """
         if self._subnetpool:
-            subnet = super(NeutronDbPool, self).allocate_subnet(subnet_request)
+            subnet = super().allocate_subnet(subnet_request)
             subnet_request = subnet.get_details()
 
         # SubnetRequest must be an instance of SpecificSubnet

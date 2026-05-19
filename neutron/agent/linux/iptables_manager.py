@@ -77,22 +77,21 @@ def comment_rule(rule, comment):
     comment = '-m comment --comment "%s"' % comment
     if rule.startswith('-j'):
         # this is a jump only rule so we just put the comment first
-        return '%s %s' % (comment, rule)
+        return f'{comment} {rule}'
     try:
         jpos = rule.index(' -j ')
         return ' '.join((rule[:jpos], comment, rule[jpos + 1:]))
     except ValueError:
-        return '%s %s' % (rule, comment)
+        return f'{rule} {comment}'
 
 
 def get_chain_name(chain_name, wrap=True):
     if wrap:
         return chain_name[:constants.MAX_IPTABLES_CHAIN_LEN_WRAP]
-    else:
-        return chain_name[:constants.MAX_IPTABLES_CHAIN_LEN_NOWRAP]
+    return chain_name[:constants.MAX_IPTABLES_CHAIN_LEN_NOWRAP]
 
 
-class IptablesRule(object):
+class IptablesRule:
     """An iptables rule.
 
     You shouldn't need to use this class directly, it's only used by
@@ -121,16 +120,16 @@ class IptablesRule(object):
 
     def __str__(self):
         if self.wrap:
-            chain = '%s-%s' % (self.wrap_name, self.chain)
+            chain = f'{self.wrap_name}-{self.chain}'
         else:
             chain = self.chain
-        rule = '-A %s %s' % (chain, self.rule)
+        rule = f'-A {chain} {self.rule}'
         # If self.rule is '' the above will cause a trailing space, which
         # could cause us to not match on save/restore, so strip it now.
         return comment_rule(rule.strip(), self.comment)
 
 
-class IptablesTable(object):
+class IptablesTable:
     """An iptables table."""
 
     def __init__(self, binary_name=binary_name):
@@ -162,8 +161,7 @@ class IptablesTable(object):
     def _select_chain_set(self, wrap):
         if wrap:
             return self.chains
-        else:
-            return self.unwrapped_chains
+        return self.unwrapped_chains
 
     def remove_chain(self, name, wrap=True):
         """Remove named chain.
@@ -195,7 +193,7 @@ class IptablesTable(object):
             self.remove_rules += [str(r) for r in self.rules
                                   if r.chain == name or jump_snippet in r.rule]
         else:
-            jump_snippet = '-j %s-%s' % (self.wrap_name, name)
+            jump_snippet = f'-j {self.wrap_name}-{name}'
 
         # Remove rules from list that have a matching chain name or
         # a matching jump chain
@@ -227,7 +225,7 @@ class IptablesTable(object):
 
     def _wrap_target_chain(self, s, wrap):
         if s.startswith('$'):
-            s = ('%s-%s' % (self.wrap_name, get_chain_name(s[1:], wrap)))
+            s = (f'{self.wrap_name}-{get_chain_name(s[1:], wrap)}')
 
         return s
 
@@ -277,7 +275,7 @@ class IptablesTable(object):
             self.rules.remove(rule)
 
 
-class IptablesManager(object):
+class IptablesManager:
     """Wrapper for iptables.
 
     See IptablesTable for some usage docs
@@ -304,7 +302,7 @@ class IptablesManager(object):
     # run iptables-restore without it.
     use_table_lock = False
 
-    # Flag to denote iptables supports --random-fully argument
+    # Flag to denote iptables --random-fully option enabled
     _random_fully = None
 
     def __init__(self, state_less=False, use_ipv6=False, nat=True,
@@ -335,11 +333,16 @@ class IptablesManager(object):
         self.ipv4.update({'raw': IptablesTable(binary_name=self.wrap_name)})
         self.ipv6.update({'raw': IptablesTable(binary_name=self.wrap_name)})
 
+        self.ipv4.update({'nat': IptablesTable(binary_name=self.wrap_name)})
+        self.ipv6.update({'nat': IptablesTable(binary_name=self.wrap_name)})
+
         # Wrap the built-in chains
         builtin_chains = {4: {'filter': ['INPUT', 'OUTPUT', 'FORWARD']},
                           6: {'filter': ['INPUT', 'OUTPUT', 'FORWARD']}}
         builtin_chains[4].update({'raw': ['PREROUTING', 'OUTPUT']})
         builtin_chains[6].update({'raw': ['PREROUTING', 'OUTPUT']})
+        builtin_chains[4].update({'nat': ['PREROUTING']})
+        builtin_chains[6].update({'nat': ['PREROUTING']})
         self._configure_builtin_chains(builtin_chains)
 
         if not state_less:
@@ -482,7 +485,8 @@ class IptablesManager(object):
                                    privsep_exec=True).split('\n')
 
     def _get_version(self):
-        # Output example is "iptables v1.6.2"
+        # Output example is "iptables v1.8.7 (nf_tables)",
+        # this will return "1.8.7"
         args = ['iptables', '--version']
         version = str(linux_utils.execute(
             args, run_as_root=True, privsep_exec=True).split()[1][1:])
@@ -495,10 +499,11 @@ class IptablesManager(object):
             return self._random_fully
 
         version = self._get_version()
-        self.__class__._random_fully = utils.is_version_greater_equal(
+
+        random_fully_support = utils.is_version_greater_equal(
             version, n_const.IPTABLES_RANDOM_FULLY_VERSION)
 
-        self._random_fully = self._random_fully and \
+        self.__class__._random_fully = random_fully_support and \
             cfg.CONF.AGENT.use_random_fully
 
         return self._random_fully
@@ -550,8 +555,8 @@ class IptablesManager(object):
             # line error wasn't found, print all lines instead
             log_start = 0
             log_end = len(commands)
-        log_lines = ('%7d. %s' % (idx, l)
-                     for idx, l in enumerate(
+        log_lines = ('%7d. %s' % (idx, line)
+                     for idx, line in enumerate(
                          commands[log_start:log_end],
                          log_start + 1)
                      )
@@ -573,7 +578,7 @@ class IptablesManager(object):
             s += [('ip6tables', self.ipv6)]
         all_commands = []  # variable to keep track all commands for return val
         for cmd, tables in s:
-            args = ['%s-save' % (cmd,)]
+            args = [f'{cmd}-save']
             if self.namespace:
                 args = ['ip', 'netns', 'exec', self.namespace] + args
             try:
@@ -617,7 +622,7 @@ class IptablesManager(object):
             # always end with a new line
             commands.append('')
 
-            args = ['%s-restore' % (cmd,), '-n']
+            args = [f'{cmd}-restore', '-n']
             if self.namespace:
                 args = ['ip', 'netns', 'exec', self.namespace] + args
 
@@ -677,7 +682,7 @@ class IptablesManager(object):
                       line.strip() not in rules]
 
         # generate our list of chain names
-        our_chains = [':%s-%s' % (self.wrap_name, name) for name in chains]
+        our_chains = [f':{self.wrap_name}-{name}' for name in chains]
 
         # the unwrapped chains (e.g. neutron-filter-top) may already exist in
         # the new_filter since they aren't marked by the wrap_name so we only
@@ -855,11 +860,14 @@ def _get_rules_by_chain(rules):
 
 
 def _ensure_all_mac_addresses_are_uppercase(rules):
+
+    def _to_upper(pat):
+        return pat.group(0).upper()
+
     new_rules = []
     lowercase_mac_regex = re.compile(r"(?:[0-9a-f]{2}[:]){5}(?:[0-9a-f]{2})")
-    callback = lambda pat: pat.group(0).upper()
     for rule in rules:
-        new_rules.append(re.sub(lowercase_mac_regex, callback, rule))
+        new_rules.append(re.sub(lowercase_mac_regex, _to_upper, rule))
     return new_rules
 
 

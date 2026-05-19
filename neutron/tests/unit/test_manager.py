@@ -14,7 +14,6 @@
 #    under the License.
 
 from unittest import mock
-import weakref
 
 import fixtures
 from neutron_lib.plugins import constants as lib_const
@@ -31,11 +30,11 @@ from neutron.tests.unit import testlib_api
 DB_PLUGIN_KLASS = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 
 
-class MultiServiceCorePlugin(object):
+class MultiServiceCorePlugin:
     supported_extension_aliases = ['fwaas', dummy_plugin.Dummy.get_alias()]
 
 
-class CorePluginWithAgentNotifiers(object):
+class CorePluginWithAgentNotifiers:
     supported_extension_aliases = []
     agent_notifiers = {'l3': 'l3_agent_notifier',
                        'dhcp': 'dhcp_agent_notifier'}
@@ -48,7 +47,7 @@ class NeutronManagerTestCase(base.BaseTestCase):
         if dummy_plugin.Dummy.get_alias() not in ext_mapping:
             ext_mapping[dummy_plugin.Dummy.get_alias()] = (
                 dummy_plugin.DUMMY_SERVICE_TYPE)
-        super(NeutronManagerTestCase, self).setUp()
+        super().setUp()
         self.config_parse()
         self.setup_coreplugin(load_plugins=False)
         self.useFixture(
@@ -58,7 +57,7 @@ class NeutronManagerTestCase(base.BaseTestCase):
         ext_mapping = constants.EXT_TO_SERVICE_MAPPING
         if dummy_plugin.Dummy.get_alias() in ext_mapping:
             del ext_mapping[dummy_plugin.Dummy.get_alias()]
-        super(NeutronManagerTestCase, self).tearDown()
+        super().tearDown()
 
     def test_service_plugin_is_loaded(self):
         cfg.CONF.set_override("core_plugin", DB_PLUGIN_KLASS)
@@ -248,20 +247,3 @@ class NeutronManagerTestCase(base.BaseTestCase):
         with testlib_api.ExpectedException(ImportError):
             manager.NeutronManager.load_class_for_provider(
                     'neutron.core_plugins', 'ml2XXXXXX')
-
-    def test_get_service_plugin_by_path_prefix_3(self):
-        cfg.CONF.set_override("core_plugin", DB_PLUGIN_KLASS)
-        nm = manager.NeutronManager.get_instance()
-
-        class pclass(object):
-            def __init__(self, path_prefix):
-                self.path_prefix = path_prefix
-
-        x_plugin, y_plugin = pclass('xpa'), pclass('ypa')
-        directory.add_plugin('x', x_plugin)
-        directory.add_plugin('y', y_plugin)
-        self.assertEqual(weakref.proxy(x_plugin),
-                         nm.get_service_plugin_by_path_prefix('xpa'))
-        self.assertEqual(weakref.proxy(y_plugin),
-                         nm.get_service_plugin_by_path_prefix('ypa'))
-        self.assertIsNone(nm.get_service_plugin_by_path_prefix('abc'))

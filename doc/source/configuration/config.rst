@@ -28,11 +28,9 @@ arbitrary file names.
    :maxdepth: 1
 
    ml2-conf.rst
-   linuxbridge-agent.rst
    macvtap-agent.rst
    openvswitch-agent.rst
    sriov-agent.rst
-   ovn.rst
 
 .. toctree::
    :maxdepth: 1

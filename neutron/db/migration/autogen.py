@@ -76,8 +76,6 @@ def _migration_script_ops(context, directive, phase):
 def _expands(context, directive, phase):
     if phase == 'expand':
         return directive
-    else:
-        return None
 
 
 @_ec_dispatcher.dispatch_for(ops.DropConstraintOp)
@@ -87,26 +85,19 @@ def _expands(context, directive, phase):
 def _contracts(context, directive, phase):
     if phase == 'contract':
         return directive
-    else:
-        return None
 
 
 @_ec_dispatcher.dispatch_for(ops.AlterColumnOp)
 def _alter_column(context, directive, phase):
     is_expand = phase == 'expand'
 
-    if is_expand and (
-        directive.modify_nullable is True
-    ):
+    if is_expand and directive.modify_nullable is True:
         return directive
-    elif not is_expand and (
-        directive.modify_nullable is False
-    ):
+    if not is_expand and directive.modify_nullable is False:
         return directive
-    else:
-        raise NotImplementedError(
-            _("Don't know if operation is an expand or "
-              "contract at the moment: %s") % directive)
+    raise NotImplementedError(
+        _("Don't know if operation is an expand or "
+          "contract at the moment: %s") % directive)
 
 
 @_ec_dispatcher.dispatch_for(ops.ModifyTableOps)

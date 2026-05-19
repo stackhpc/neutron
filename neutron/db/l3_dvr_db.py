@@ -64,9 +64,10 @@ _IS_ADMIN_STATE_DOWN_NECESSARY = None
 def is_admin_state_down_necessary():
     global _IS_ADMIN_STATE_DOWN_NECESSARY
     if _IS_ADMIN_STATE_DOWN_NECESSARY is None:
-        _IS_ADMIN_STATE_DOWN_NECESSARY = \
-            router_admin_state_down_before_update.ALIAS in (extensions.
-                    PluginAwareExtensionManager.get_instance().extensions)
+        _IS_ADMIN_STATE_DOWN_NECESSARY = (
+            router_admin_state_down_before_update.ALIAS in (
+                extensions.PluginAwareExtensionManager.get_instance().
+                extensions))
     return _IS_ADMIN_STATE_DOWN_NECESSARY
 
 
@@ -83,7 +84,7 @@ def is_port_bound(port):
 
 
 @registry.has_registry_receivers
-class DVRResourceOperationHandler(object):
+class DVRResourceOperationHandler:
     """Contains callbacks for DVR operations.
 
     This can be implemented as a mixin or can be instantiated as a stand-alone
@@ -103,13 +104,11 @@ class DVRResourceOperationHandler(object):
                        priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
     def _set_distributed_flag(self, resource, event, trigger, payload):
         """Event handler to set distributed flag on creation."""
-        context = payload.context
         router = payload.latest_state
         router_db = payload.metadata['router_db']
         dist = is_distributed_router(router)
         router['distributed'] = dist
-        self.l3plugin.set_extra_attr_value(context, router_db, 'distributed',
-                                           dist)
+        self.l3plugin.set_extra_attr_value(router_db, 'distributed', dist)
 
     def _validate_router_migration(self, context, router_db, router_res,
                                    old_router=None):
@@ -203,8 +202,7 @@ class DVRResourceOperationHandler(object):
                 payload.context, payload.resource_id,
                 agent['id'])
         self.l3plugin.set_extra_attr_value(
-            payload.context, payload.desired_state,
-            'distributed', migrating_to_distributed)
+            payload.desired_state, 'distributed', migrating_to_distributed)
 
     @registry.receives(resources.ROUTER, [events.AFTER_UPDATE],
                        priority_group.PRIORITY_ROUTER_EXTENDED_ATTRIBUTE)
@@ -280,7 +278,7 @@ class DVRResourceOperationHandler(object):
     def _add_csnat_router_interface_port(
             self, context, router, network_id, subnets, do_pop=True):
         """Add SNAT interface to the specified router and subnet."""
-        port_data = {'tenant_id': '',
+        port_data = {'project_id': '',
                      'network_id': network_id,
                      'fixed_ips': subnets,
                      'device_id': router.id,
@@ -621,8 +619,8 @@ class DVRResourceOperationHandler(object):
             if cs_port:
                 fixed_ips = (
                     [fixedip for fixedip in
-                        cs_port['fixed_ips']
-                        if fixedip['subnet_id'] != subnet_id])
+                     cs_port['fixed_ips']
+                     if fixedip['subnet_id'] != subnet_id])
 
                 if len(fixed_ips) == len(cs_port['fixed_ips']):
                     # The subnet being detached from router is not part of
@@ -861,7 +859,7 @@ class DVRResourceOperationHandler(object):
             self._core_plugin.delete_port(payload.context, gw_port['id'])
 
 
-class _DVRAgentInterfaceMixin(object):
+class _DVRAgentInterfaceMixin:
     """Contains calls made by the DVR scheduler and RPC interface.
 
     Must be instantiated as a mixin with the L3 plugin.
@@ -899,7 +897,7 @@ class _DVRAgentInterfaceMixin(object):
 
     def _build_routers_list(self, context, routers, gw_ports):
         # Perform a single query up front for all routers
-        routers = super(_DVRAgentInterfaceMixin, self)._build_routers_list(
+        routers = super()._build_routers_list(
             context, routers, gw_ports)
         for router in routers:
             gw_port_host = self._get_gateway_port_host(
@@ -994,11 +992,19 @@ class _DVRAgentInterfaceMixin(object):
     @log_helper.log_method_call
     def _get_dvr_sync_data(self, context, host, agent, router_ids=None,
                            active=None):
+        # If the requesting agent is in normal dvr mode, we can fetch
+        # only FIPs bound to the particular host requesting the update
+        requesting_agent_mode = self._get_agent_mode(agent)
+        fip_host_filter = None
+        if requesting_agent_mode == const.L3_AGENT_MODE_DVR:
+            fip_host_filter = host
+
         routers, interfaces, floating_ips = self._get_router_info_list(
             context, router_ids=router_ids, active=active,
-            device_owners=const.ROUTER_INTERFACE_OWNERS)
-        dvr_router_ids = set(router['id'] for router in routers
-                             if is_distributed_router(router))
+            device_owners=const.ROUTER_INTERFACE_OWNERS,
+            fip_host_filter=fip_host_filter)
+        dvr_router_ids = {router['id'] for router in routers
+                          if is_distributed_router(router)}
         floating_ip_port_ids = [fip['port_id'] for fip in floating_ips
                                 if fip['router_id'] in dvr_router_ids]
         if floating_ip_port_ids:
@@ -1029,7 +1035,6 @@ class _DVRAgentInterfaceMixin(object):
                     if len(l3_agent_on_host):
                         l3_agent_mode = self._get_agent_mode(
                             l3_agent_on_host[0])
-                    requesting_agent_mode = self._get_agent_mode(agent)
                     # Consider the ports where the portbinding host and
                     # request host match.
                     if port_host == host:
@@ -1039,9 +1044,9 @@ class _DVRAgentInterfaceMixin(object):
                         # agent on re-syncs then we need to add the appropriate
                         # port['agent'] before updating the dict.
                         if (l3_agent_mode == (
-                            const.L3_AGENT_MODE_DVR_NO_EXTERNAL) and
-                            requesting_agent_mode == (
-                                const.L3_AGENT_MODE_DVR_NO_EXTERNAL)):
+                                const.L3_AGENT_MODE_DVR_NO_EXTERNAL) and
+                                requesting_agent_mode == (
+                                    const.L3_AGENT_MODE_DVR_NO_EXTERNAL)):
                             port['agent'] = (
                                 const.L3_AGENT_MODE_DVR_NO_EXTERNAL)
 
@@ -1053,9 +1058,9 @@ class _DVRAgentInterfaceMixin(object):
                         # the portbinding host resides in dvr_no_external
                         # agent then include the port.
                         if (l3_agent_mode == (
-                            const.L3_AGENT_MODE_DVR_NO_EXTERNAL) and
-                            requesting_agent_mode == (
-                                const.L3_AGENT_MODE_DVR_SNAT)):
+                                const.L3_AGENT_MODE_DVR_NO_EXTERNAL) and
+                                requesting_agent_mode == (
+                                    const.L3_AGENT_MODE_DVR_SNAT)):
                             port['agent'] = (
                                 const.L3_AGENT_MODE_DVR_NO_EXTERNAL)
                             port_dict.update({port['id']: port})
@@ -1206,7 +1211,7 @@ class _DVRAgentInterfaceMixin(object):
                           {'gw': agent_port,
                            'dest_host': host})
             else:
-                port_data = {'tenant_id': '',
+                port_data = {'project_id': '',
                              'network_id': network_id,
                              'device_id': l3_agent_db['id'],
                              'device_owner': const.DEVICE_OWNER_AGENT_GW,
@@ -1255,17 +1260,21 @@ class _DVRAgentInterfaceMixin(object):
         aa_pair_fixed_ips = []
         if port_dict.get('allowed_address_pairs'):
             for address_pair in port_dict['allowed_address_pairs']:
-                aap_ip_cidr = address_pair['ip_address'].split("/")
-                if len(aap_ip_cidr) == 1 or int(aap_ip_cidr[1]) == 32:
+                aap_mac_address = address_pair.get("mac_address",
+                                                   port_dict["mac_address"])
+                aap_ip_cidr = netaddr.IPNetwork(address_pair['ip_address'])
+                aap_ip_str = str(aap_ip_cidr.ip)
+                if n_utils.is_cidr_host(str(aap_ip_cidr.cidr)):
                     subnet_id = self._get_subnet_id_for_given_fixed_ip(
-                        context, aap_ip_cidr[0], port_dict)
+                        context, aap_ip_str, port_dict)
                     if subnet_id is not None:
                         fixed_ip = {'subnet_id': subnet_id,
-                                    'ip_address': aap_ip_cidr[0]}
+                                    'ip_address': aap_ip_str,
+                                    'mac_address': aap_mac_address}
                         aa_pair_fixed_ips.append(fixed_ip)
                     else:
                         LOG.debug("Subnet does not match for the given "
-                                  "fixed_ip %s for arp update", aap_ip_cidr[0])
+                                  "fixed_ip %s for arp update", aap_ip_str)
         return aa_pair_fixed_ips
 
     def update_arp_entry_for_dvr_service_port(self, context, port_dict):
@@ -1284,8 +1293,9 @@ class _DVRAgentInterfaceMixin(object):
             self._get_allowed_address_pair_fixed_ips(context, port_dict))
         changed_fixed_ips = fixed_ips + allowed_address_pair_fixed_ips
         for fixed_ip in changed_fixed_ips:
+            mac_address = fixed_ip.get("mac_address", port_dict['mac_address'])
             self._generate_arp_table_and_notify_agent(
-                context, fixed_ip, port_dict['mac_address'],
+                context, fixed_ip, mac_address,
                 self.l3_rpc_notifier.add_arp_entry)
 
     def delete_arp_entry_for_dvr_service_port(self, context, port_dict,
@@ -1306,8 +1316,9 @@ class _DVRAgentInterfaceMixin(object):
                 self._get_allowed_address_pair_fixed_ips(context, port_dict))
             fixed_ips_to_delete = fixed_ips + allowed_address_pair_fixed_ips
         for fixed_ip in fixed_ips_to_delete:
+            mac_address = fixed_ip.get("mac_address", port_dict['mac_address'])
             self._generate_arp_table_and_notify_agent(
-                context, fixed_ip, port_dict['mac_address'],
+                context, fixed_ip, mac_address,
                 self.l3_rpc_notifier.del_arp_entry)
 
     def _get_address_pair_active_port_with_fip(
@@ -1341,8 +1352,7 @@ class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
             router = self._get_router(context, router)
         if is_distributed_router(router):
             return const.DEVICE_OWNER_DVR_INTERFACE
-        return super(L3_NAT_with_dvr_db_mixin,
-                     self)._get_device_owner(context, router)
+        return super()._get_device_owner(context, router)
 
     @db_api.retry_if_session_inactive()
     def create_floatingip(self, context, floatingip,
@@ -1364,7 +1374,7 @@ class L3_NAT_with_dvr_db_mixin(_DVRAgentInterfaceMixin,
             return
 
         try:
-            # using admin context as router may belong to admin tenant
+            # using admin context as router may belong to admin project
             router = self._get_router(context.elevated(), router_id)
         except l3_exc.RouterNotFound:
             LOG.warning("Router %s was not found. "

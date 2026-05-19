@@ -39,6 +39,7 @@ class OVSDBHandlerTestCase(base.OVSAgentTestFramework):
     This suite aims for interaction between events coming from OVSDB monitor,
     agent and wiring ports via trunk bridge to integration bridge.
     """
+
     def setUp(self):
         """Prepare resources.
 
@@ -47,7 +48,7 @@ class OVSDBHandlerTestCase(base.OVSAgentTestFramework):
         trunk bridge which its creation is simulated when creating a port in l2
         agent framework.
         """
-        super(OVSDBHandlerTestCase, self).setUp()
+        super().setUp()
         trunk_id = uuidutils.generate_uuid()
         self.trunk_dict = {
             'id': trunk_id,
@@ -121,7 +122,7 @@ class OVSDBHandlerTestCase(base.OVSAgentTestFramework):
                         filtered_events[event_type].append(dev)
             return filtered_events
         mock.patch.object(polling_manager, 'get_events',
-            side_effect=filter_events).start()
+                          side_effect=filter_events).start()
 
     def _fill_trunk_dict(self, num=3):
         ports = self.create_test_ports(amount=num)
@@ -140,8 +141,6 @@ class OVSDBHandlerTestCase(base.OVSAgentTestFramework):
         self.wait_until_ports_state(self.ports, up=True)
         self.trunk_br.delete_port(self.trunk_port_name)
         self.wait_until_ports_state(self.ports, up=False)
-        common_utils.wait_until_true(lambda:
-            not self.trunk_br.bridge_exists(self.trunk_br.br_name))
 
     def test_trunk_creation_with_subports(self):
         ports = self._fill_trunk_dict()
@@ -177,7 +176,7 @@ class OVSDBHandlerTestCase(base.OVSAgentTestFramework):
         self.wait_until_ports_state(self.ports, up=True)
         common_utils.wait_until_true(
             lambda: (deleted_sp.patch_port_trunk_name not in
-                self.trunk_br.get_port_name_list()))
+                     self.trunk_br.get_port_name_list()))
 
     def test_cleanup_on_vm_delete(self):
         with mock.patch.object(self.ovsdb_handler, 'handle_trunk_remove'):
@@ -194,11 +193,3 @@ class OVSDBHandlerTestCase(base.OVSAgentTestFramework):
             # Check no resources are left behind.
             self.assertFalse(self.trunk_br.exists())
             self.assertFalse(ovsdb_handler.bridge_has_service_port(br_int))
-
-    def test_do_not_delete_trunk_bridge_with_instance_ports(self):
-        ports = self._fill_trunk_dict()
-        self.setup_agent_and_ports(port_dicts=ports)
-        self.wait_until_ports_state(self.ports, up=True)
-        self.ovsdb_handler.handle_trunk_remove(self.trunk_br.br_name,
-                ports.pop())
-        self.assertTrue(self.trunk_br.exists())

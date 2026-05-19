@@ -33,8 +33,7 @@ def get_cache(conf):
     """Used to get cache client"""
     if conf.cache.enabled:
         return _get_cache_region(conf)
-    else:
-        return False
+    return False
 
 
 def _get_cache_region(conf):
@@ -56,7 +55,7 @@ def _get_memory_cache_region(expiration_time=5):
     return _get_cache_region(conf)
 
 
-class cache_method_results(object):
+class cache_method_results:
     """This decorator is intended for object methods only."""
 
     def __init__(self, func):
@@ -107,8 +106,8 @@ class cache_method_results(object):
             raise NotImplementedError(
                 _("Instance of class %(module)s.%(class)s must contain _cache "
                   "attribute") % {
-                    'module': target_self.__module__,
-                    'class': target_self_cls_name})
+                      'module': target_self.__module__,
+                      'class': target_self_cls_name})
         if not target_self._cache:
             if self._first_call:
                 LOG.debug("Instance of class %(module)s.%(class)s doesn't "

@@ -33,11 +33,11 @@ log_cfg.register_log_driver_opts()
 LOGGING_DRIVERS_NAMESPACE = 'neutron.services.logapi.drivers'
 
 
-class LoggingDriver(object, metaclass=abc.ABCMeta):
+class LoggingDriver(metaclass=abc.ABCMeta):
     """Defines abstract interface for logging driver"""
 
     # specific logging types are supported
-    SUPPORTED_LOGGING_TYPES = None
+    SUPPORTED_LOGGING_TYPES = tuple()
 
     @abc.abstractmethod
     def initialize(self, resource_rpc, **kwargs):

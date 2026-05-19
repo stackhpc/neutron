@@ -58,10 +58,9 @@ class NDPProxyPlugin(l3_ndp_proxy.NDPProxyBase):
 
     __native_pagination_support = True
     __native_sorting_support = True
-    __filter_validation_support = True
 
     def __init__(self):
-        super(NDPProxyPlugin, self).__init__()
+        super().__init__()
         self.push_api = resources_rpc.ResourcesPushRpcApi()
         self.l3_plugin = directory.get_plugin(constants.L3)
         self.core_plugin = directory.get_plugin()
@@ -117,8 +116,8 @@ class NDPProxyPlugin(l3_ndp_proxy.NDPProxyBase):
                 (f.get('ip_address') and
                  netaddr.IPNetwork(f['ip_address']).version == V6)]:
             return
-        subnet_ids = set(f['subnet_id'] for f in ext_ips
-                         if f.get('subnet_id'))
+        subnet_ids = {f['subnet_id'] for f in ext_ips
+                      if f.get('subnet_id')}
         for subnet_id in subnet_ids:
             if self.core_plugin.get_subnet(
                     context, subnet_id)['ip_version'] == V6:
@@ -309,7 +308,7 @@ class NDPProxyPlugin(l3_ndp_proxy.NDPProxyBase):
                         "router %s") % ndp_proxy['router_id']
                 raise exc.InvalidAddress(address=ip_address, reason=msg)
         network_dict = self.core_plugin.get_network(
-                context, port_dict['network_id'])
+            context, port_dict['network_id'])
         return network_dict.get('ipv6_address_scope', None)
 
     @db_base_plugin_common.convert_result_to_dict
@@ -329,7 +328,7 @@ class NDPProxyPlugin(l3_ndp_proxy.NDPProxyBase):
             raise exc.RouterNDPProxyNotEnable(router_id=router_dict['id'])
         extrnal_gw_info = router_dict[l3_apidef.EXTERNAL_GW_INFO]
         gw_network_dict = self.core_plugin.get_network(
-                context, extrnal_gw_info['network_id'])
+            context, extrnal_gw_info['network_id'])
         ext_address_scope = gw_network_dict.get('ipv6_address_scope', None)
         internal_address_scope = self._check_port(
             context, port_dict, ndp_proxy, router_ports)
@@ -341,9 +340,15 @@ class NDPProxyPlugin(l3_ndp_proxy.NDPProxyBase):
                 ext_address_scope=ext_address_scope,
                 internal_address_scope=internal_address_scope)
 
+        # TODO(haleyb): "tenant_id" reference should be removed
         tenant_id = ndp_proxy.pop('tenant_id', None)
         if not ndp_proxy.get('project_id', None):
             ndp_proxy['project_id'] = tenant_id
+            if tenant_id:
+                LOG.warning('project_id key not found in ndp_proxy '
+                            'dictionary, using tenant_id instead. This '
+                            'support has been deprecated and will be '
+                            'removed in a future release.')
 
         with db_api.CONTEXT_WRITER.using(context):
             np_obj = np.NDPProxy(context, **ndp_proxy)

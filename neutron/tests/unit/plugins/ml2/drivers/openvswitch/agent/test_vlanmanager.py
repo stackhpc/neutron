@@ -22,7 +22,7 @@ from neutron.tests import base
 
 class LocalVlanManagerFixture(fixtures.Fixture):
     def _setUp(self):
-        super(LocalVlanManagerFixture, self)._setUp()
+        super()._setUp()
         self.vlan_manager = vlanmanager.LocalVlanManager()
         self.addCleanup(self.restore_manager)
         # Remove _instance attribute from VlanManager in order to not obtain a
@@ -53,7 +53,7 @@ class TestLocalVLANMapping(base.BaseTestCase):
 class TestLocalVlanManager(base.BaseTestCase):
 
     def setUp(self):
-        super(TestLocalVlanManager, self).setUp()
+        super().setUp()
         self.vlan_manager = self.useFixture(LocalVlanManagerFixture()).manager
 
     def test_is_singleton(self):
@@ -142,3 +142,15 @@ class TestLocalVlanManager(base.BaseTestCase):
         with testtools.ExpectedException(vlanmanager.NotUniqMapping):
             self.vlan_manager.update_segmentation_id(
                 'net_id-not-uniq', 1003)
+
+    def test_add_with_tun_ofports(self):
+        self.vlan_manager.add('net_id', 'vlan_id', 'vlan', 'phys_net',
+                              1001, None, {2, 3})
+        self.assertEqual({2, 3}, self.vlan_manager.get(
+            'net_id', 1001).tun_ofports)
+
+    def test_add_without_tun_ofports(self):
+        self.vlan_manager.add('net_id', 'vlan_id', 'vlan', 'phys_net',
+                              1001, None)
+        self.assertEqual(set(), self.vlan_manager.get(
+            'net_id', 1001).tun_ofports)

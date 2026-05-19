@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2016 OVH SAS
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -21,7 +21,7 @@ from oslo_config import cfg
 from oslo_utils import uuidutils
 
 from neutron.agent.linux import dhcp as linux_dhcp
-from neutron.cmd.eventlet.agents import dhcp as dhcp_agent
+from neutron.cmd.agents import dhcp as dhcp_agent
 from neutron.common import config
 
 
@@ -33,7 +33,7 @@ OPTS = [
 
 def _get_namespace_name(id_, suffix=None):
     suffix = suffix or cfg.CONF.test_namespace_suffix
-    return "%s%s%s" % (linux_dhcp.NS_PREFIX, id_, suffix)
+    return f"{linux_dhcp.NS_PREFIX}{id_}{suffix}"
 
 
 def NetModel_init(self, d):
@@ -62,7 +62,8 @@ def monkeypatch_dhcplocalprocess_init():
     def new_init(self, conf, network, process_monitor, version=None,
                  plugin=None, segment=None):
         network_copy = copy.deepcopy(network)
-        network_copy.id = "%s%s" % (network.id, cfg.CONF.test_namespace_suffix)
+        network_copy.id = "{}{}".format(
+            network.id, cfg.CONF.test_namespace_suffix)
         original_init(
             self, conf, network_copy, process_monitor, version, plugin,
             segment)

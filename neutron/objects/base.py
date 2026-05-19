@@ -20,13 +20,13 @@ import sys
 import traceback
 
 from neutron_lib.db import api as db_api
+from neutron_lib.db import model_base
 from neutron_lib.db import standard_attr
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import exceptions as o_exc
 from neutron_lib.objects.extensions import standardattributes
 from oslo_config import cfg
 from oslo_db import exception as obj_exc
-from oslo_db.sqlalchemy import enginefacade
 from oslo_db.sqlalchemy import utils as db_utils
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
@@ -87,7 +87,7 @@ def register_filter_hook_on_model(model, filter_name):
     obj_class.add_extra_filter_name(filter_name)
 
 
-class LazyQueryIterator(object):
+class LazyQueryIterator:
     def __init__(self, obj_class, lazy_query):
         self.obj_class = obj_class
         self.context = None
@@ -106,12 +106,13 @@ class LazyQueryIterator(object):
         return item
 
 
-class Pager(object):
+class Pager:
     '''Pager class
 
     This class represents a pager object. It is consumed by get_objects to
     specify sorting and pagination criteria.
     '''
+
     def __init__(self, sorts=None, limit=None, page_reverse=None, marker=None):
         '''Initialize
 
@@ -188,7 +189,7 @@ class NeutronObject(obj_base.VersionedObject,
     lazy_fields = set()
 
     def __init__(self, context=None, **kwargs):
-        super(NeutronObject, self).__init__(context, **kwargs)
+        super().__init__(context, **kwargs)
         self._load_synthetic_fields = True
         self.obj_set_defaults()
 
@@ -228,8 +229,9 @@ class NeutronObject(obj_base.VersionedObject,
 
     @classmethod
     def is_object_field(cls, field):
-        return (isinstance(cls.fields[field], obj_fields.ListOfObjectsField) or
-                isinstance(cls.fields[field], obj_fields.ObjectField))
+        return isinstance(
+                   cls.fields[field],
+                   obj_fields.ListOfObjectsField | obj_fields.ObjectField)
 
     @classmethod
     def obj_class_from_name(cls, objname, objver):
@@ -374,7 +376,7 @@ def _guarantee_rw_subtransaction(func):
 class DeclarativeObject(abc.ABCMeta):
 
     def __init__(cls, name, bases, dct):
-        super(DeclarativeObject, cls).__init__(name, bases, dct)
+        super().__init__(name, bases, dct)
         # TODO(ralonsoh): remove once bp/keystone-v3 migration finishes.
         if 'project_id' in cls.fields:
             obj_extra_fields_set = set(cls.obj_extra_fields)
@@ -435,11 +437,11 @@ class DeclarativeObject(abc.ABCMeta):
 
 class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
 
-    # should be overridden for all persistent objects
-    db_model = None
+    # should be set for all persistent objects
+    db_model: model_base.BASEV2 | None = None
 
-    # should be overridden for all rbac aware objects
-    rbac_db_cls = None
+    # should be set for all rbac aware objects
+    rbac_db_cls: model_base.BASEV2 | None = None
 
     primary_keys = ['id']
 
@@ -457,7 +459,7 @@ class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
     # E.g. all the port extension will use 'port_id' as key.
     foreign_keys = {}
 
-    fields_no_update = []
+    fields_no_update: list[str] = []
 
     # dict with name mapping: {'field_name_in_object': 'field_name_in_db'}
     # It can be used also as DB relationship mapping to synthetic fields name.
@@ -475,7 +477,7 @@ class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
     # obj_extra_fields = []
 
     def __init__(self, *args, **kwargs):
-        super(NeutronDbObject, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self._captured_db_model = None
 
     @property
@@ -594,18 +596,9 @@ class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
         try:
             is_attr_nullable = self.fields[attrname].nullable
         except KeyError:
-            return super(NeutronDbObject, self).obj_load_attr(attrname)
+            return super().obj_load_attr(attrname)
         if is_attr_nullable:
             self[attrname] = None
-
-    # TODO(ihrachys) remove once we switch plugin code to enginefacade
-    @staticmethod
-    def _use_db_facade(context):
-        try:
-            enginefacade._transaction_ctx_for_context(context)
-        except obj_exc.NoEngineContextEstablished:
-            return False
-        return True
 
     @classmethod
     def db_context_writer(cls, context):
@@ -618,7 +611,7 @@ class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
         return db_api.CONTEXT_READER.using(context)
 
     @classmethod
-    def get_object(cls, context, fields=None, **kwargs):
+    def get_object(cls, context, fields=None, return_db_obj=False, **kwargs):
         """Fetch a single object
 
         Return the first result of given context or None if the result doesn't
@@ -630,6 +623,8 @@ class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
                        avoid loading synthetic fields when possible, and
                        does not affect db queries. Default is None, which
                        is the same as []. Example: ['id', 'name']
+        :param return_db_obj: return the DB model object instead of loading
+                              the OVO; that could save some time.
         :param kwargs: multiple keys defined by key=value pairs
         :return: single object of NeutronDbObject class or None
         """
@@ -643,6 +638,8 @@ class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
         with cls.db_context_reader(context):
             db_obj = obj_db_api.get_object(
                 cls, context, **cls.modify_fields_to_db(kwargs))
+            if return_db_obj:
+                return db_obj
             if db_obj:
                 return cls._load_object(context, db_obj, fields=fields)
 
@@ -734,15 +731,13 @@ class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
         # update revision numbers
         db_obj = None
         if cls.has_standard_attributes():
-            return super(NeutronDbObject, cls).update_object(
+            return super().update_object(
                 context, values, validate_filters=False, **kwargs)
-        else:
-            with cls.db_context_writer(context):
-                db_obj = obj_db_api.update_object(
-                    cls, context,
-                    cls.modify_fields_to_db(values),
-                    **cls.modify_fields_to_db(kwargs))
-                return cls._load_object(context, db_obj)
+        with cls.db_context_writer(context):
+            db_obj = obj_db_api.update_object(
+                cls, context, cls.modify_fields_to_db(values),
+                **cls.modify_fields_to_db(kwargs))
+            return cls._load_object(context, db_obj)
 
     @classmethod
     def update_objects(cls, context, values, validate_filters=True, **kwargs):
@@ -762,7 +757,7 @@ class NeutronDbObject(NeutronObject, metaclass=DeclarativeObject):
             # if we have standard attributes, we will need to fetch records to
             # update revision numbers
             if cls.has_standard_attributes():
-                return super(NeutronDbObject, cls).update_objects(
+                return super().update_objects(
                     context, values, validate_filters=False, **kwargs)
             return obj_db_api.update_objects(
                 cls, context,

@@ -19,7 +19,7 @@ from oslo_utils import uuidutils
 from neutron.agent.linux import iptables_firewall
 from neutron.agent.linux import iptables_manager
 from neutron.cmd.sanity import checks
-from neutron.common import utils as common_utils
+from neutron.cmd import sanity_check
 from neutron.tests.common import net_helpers
 from neutron.tests.fullstack import base
 from neutron.tests.fullstack.resources import environment
@@ -33,8 +33,10 @@ class StatelessRulesNotConfiguredException(Exception):
     pass
 
 
-class OVSVersionChecker(object):
+class OVSVersionChecker:
     conntrack_supported = None
+
+    sanity_check.setup_conf()
 
     @classmethod
     def supports_ovsfirewall(cls):
@@ -58,7 +60,7 @@ class BaseSecurityGroupsSameNetworkTest(base.BaseFullStackTestCase):
                 network_type=self.network_type,
                 debug_iptables=debug_iptables),
             host_descriptions)
-        super(BaseSecurityGroupsSameNetworkTest, self).setUp(env)
+        super().setUp(env)
 
         if (self.firewall_driver == 'openvswitch' and
                 not OVSVersionChecker.supports_ovsfirewall()):
@@ -75,14 +77,14 @@ class BaseSecurityGroupsSameNetworkTest(base.BaseFullStackTestCase):
                 return False
 
         try:
-            common_utils.wait_until_true(test_connectivity)
+            base.wait_until_true(test_connectivity)
         finally:
             netcat.stop_processes()
 
     def assert_no_connection(self, *args, **kwargs):
         netcat = net_helpers.NetcatTester(*args, **kwargs)
         try:
-            common_utils.wait_until_true(netcat.test_no_connectivity)
+            base.wait_until_true(netcat.test_no_connectivity)
         finally:
             netcat.stop_processes()
 
@@ -91,9 +93,6 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
 
     network_type = 'vxlan'
     scenarios = [
-        # TODO(njohnston): Re-add the linuxbridge scenario once it is stable
-        # The iptables_hybrid driver lacks isolation between agents and
-        # because of that using only one host is enough
         ('ovs-hybrid', {
             'firewall_driver': 'iptables_hybrid',
             'l2_agent_type': constants.AGENT_TYPE_OVS,
@@ -155,7 +154,7 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
             vms[2].namespace, vms[0].namespace, vms[0].ip, 3333,
             net_helpers.NetcatTester.TCP)
         # Wait until port update takes effect on the ports
-        common_utils.wait_until_true(
+        base.wait_until_true(
             netcat.test_no_connectivity,
             exception=AssertionError(
                 "Still can connect to the VM from different host.")
@@ -251,17 +250,15 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
 
         vms[4].block_until_boot()
 
-        netcat = net_helpers.NetcatTester(vms[4].namespace,
-            vms[0].namespace, vms[0].ip, 3355,
+        self.assert_connection(
+            vms[4].namespace, vms[0].namespace, vms[0].ip, 3355,
             net_helpers.NetcatTester.TCP)
 
-        self.addCleanup(netcat.stop_processes)
-        self.assertTrue(netcat.test_connectivity())
-
         self.client.delete_security_group_rule(rule2['id'])
-        common_utils.wait_until_true(lambda: netcat.test_no_connectivity(),
-                                     sleep=8)
-        netcat.stop_processes()
+
+        self.assert_no_connection(
+            vms[4].namespace, vms[0].namespace, vms[0].ip, 3355,
+            net_helpers.NetcatTester.TCP)
 
         # 8. check if multiple overlapping remote rules work
         self.safe_client.create_security_group_rule(
@@ -514,7 +511,7 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
                 namespace=vm.host.host_namespace)
             vm_tap_device = iptables_firewall.get_hybrid_port_name(
                 vm.neutron_port['id'])
-            common_utils.wait_until_true(
+            base.wait_until_true(
                 lambda: self._is_stateless_configured(iptables,
                                                       vm_tap_device),
                 exception=StatelessRulesNotConfiguredException(
@@ -664,42 +661,3 @@ class TestSecurityGroupsSameNetwork(BaseSecurityGroupsSameNetworkTest):
                 vm1, vm2, net_helpers.NetcatTester.TCP, port + 1)
             self.verify_no_connectivity_between_vms(
                 vm2, vm1, net_helpers.NetcatTester.TCP, port + 1)
-
-
-class SecurityGroupRulesTest(base.BaseFullStackTestCase):
-
-    def setUp(self):
-        host_descriptions = [environment.HostDescription()]
-        env = environment.Environment(environment.EnvironmentDescription(),
-                                      host_descriptions)
-        super(SecurityGroupRulesTest, self).setUp(env)
-
-    def test_security_group_rule_quota(self):
-        project_id = uuidutils.generate_uuid()
-        quota = self.client.show_quota_details(project_id)
-        sg_rules_used = quota['quota']['security_group_rule']['used']
-        self.assertEqual(0, sg_rules_used)
-
-        self.safe_client.create_security_group(project_id)
-        quota = self.client.show_quota_details(project_id)
-        sg_rules_used = quota['quota']['security_group_rule']['used']
-        self.safe_client.update_quota(project_id, 'security_group_rule',
-                                      sg_rules_used)
-
-        self.assertRaises(nc_exc.OverQuotaClient,
-                          self.safe_client.create_security_group, project_id)
-
-    def test_normalized_cidr_in_rule(self):
-        project_id = uuidutils.generate_uuid()
-        sg = self.safe_client.create_security_group(project_id)
-
-        rule = self.safe_client.create_security_group_rule(
-            project_id, sg['id'], direction='ingress',
-            remote_ip_prefix='10.0.0.34/24')
-        self.assertEqual('10.0.0.0/24', rule['normalized_cidr'])
-        self.assertEqual('10.0.0.34/24', rule['remote_ip_prefix'])
-
-        rule = self.safe_client.create_security_group_rule(
-            project_id, sg['id'], direction='ingress')
-        self.assertIsNone(rule['normalized_cidr'])
-        self.assertIsNone(rule['remote_ip_prefix'])

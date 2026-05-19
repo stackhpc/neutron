@@ -28,7 +28,7 @@ _uuid = uuidutils.generate_uuid
 
 class TestRouterInfo(base.BaseTestCase):
     def setUp(self):
-        super(TestRouterInfo, self).setUp()
+        super().setUp()
 
         conf = config.setup_conf()
         l3_config.register_l3_agent_config_opts(l3_config.OPTS, conf)
@@ -191,28 +191,6 @@ class TestRouterInfo(base.BaseTestCase):
         expected = {'delete': [('110.100.30.0/24', '10.100.10.30')]}
         self._check_agent_method_called(ri, expected)
 
-    def test__process_pd_iptables_rules(self):
-        subnet_id = _uuid()
-        ex_gw_port = {'id': _uuid()}
-        prefix = '2001:db8:cafe::/64'
-
-        ri = router_info.RouterInfo(mock.Mock(), _uuid(), {}, **self.ri_kwargs)
-
-        ipv6_mangle = ri.iptables_manager.ipv6['mangle'] = mock.MagicMock()
-        ri.get_ex_gw_port = mock.Mock(return_value=ex_gw_port)
-        ri.get_external_device_name = mock.Mock(return_value='fake_device')
-        ri.get_address_scope_mark_mask = mock.Mock(return_value='fake_mark')
-
-        ri._process_pd_iptables_rules(prefix, subnet_id)
-
-        mangle_rule = '-d %s ' % prefix
-        mangle_rule += ri.address_scope_mangle_rule('fake_device', 'fake_mark')
-
-        ipv6_mangle.add_rule.assert_called_once_with(
-            'scope',
-            mangle_rule,
-            tag='prefix_delegation_%s' % subnet_id)
-
     def test_add_ports_address_scope_iptables(self):
         ri = router_info.RouterInfo(mock.Mock(), _uuid(), {}, **self.ri_kwargs)
         port = {
@@ -370,21 +348,23 @@ class TestBasicRouterOperations(BasicRouterTestCaseFramework):
         ri.get_floating_ips = mock.Mock(return_value=fips)
         ri._get_external_address_scope = mock.Mock(return_value='scope2')
         ipv4_mangle = ri.iptables_manager.ipv4['mangle'] = mock.MagicMock()
-        ri.floating_mangle_rules = mock.Mock(
-            return_value=[(mock.sentinel.chain1, mock.sentinel.rule1)])
         ri.get_external_device_name = mock.Mock()
 
         ri.process_floating_ip_address_scope_rules()
 
-        # Be sure that the rules are cleared first
-        self.assertEqual(mock.call.clear_rules_by_tag('floating_ip'),
-                         ipv4_mangle.mock_calls[0])
-        # Be sure that add_rule is called somewhere in the middle
-        self.assertEqual(1, ipv4_mangle.add_rule.call_count)
-        self.assertEqual(mock.call.add_rule(mock.sentinel.chain1,
-                                            mock.sentinel.rule1,
-                                            tag='floating_ip'),
-                         ipv4_mangle.mock_calls[1])
+        internal_mark = ri.get_address_scope_mark_mask('scope1')
+        self.assertEqual(2, ipv4_mangle.add_rule.call_count)
+        expected_calls = [
+            mock.call.clear_rules_by_tag('floating_ip'),
+            mock.call.add_rule('floatingip',
+                               '-d %s/32 -j MARK --set-xmark %s' %
+                               (mock.sentinel.fip, internal_mark),
+                               tag='floating_ip'),
+            mock.call.add_rule('FORWARD',
+                               '-s %s/32 -j $float-snat' % mock.sentinel.ip,
+                               tag='floating_ip')
+        ]
+        ipv4_mangle.assert_has_calls(expected_calls)
 
     def test_process_floating_ip_address_scope_rules_same_scopes(self):
         ri = self._create_router()

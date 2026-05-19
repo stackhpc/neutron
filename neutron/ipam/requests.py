@@ -15,6 +15,7 @@ import abc
 import netaddr
 from neutron_lib.api import validators
 from neutron_lib import constants
+from oslo_log import log as logging
 from oslo_utils import netutils
 from oslo_utils import uuidutils
 
@@ -24,23 +25,28 @@ from neutron.ipam import exceptions as ipam_exc
 from neutron.ipam import utils as ipam_utils
 
 
-class SubnetPool(object, metaclass=abc.ABCMeta):
+LOG = logging.getLogger(__name__)
+
+
+class SubnetPool(metaclass=abc.ABCMeta):
     """Represents a pool of IPs available inside an address scope."""
 
 
-class SubnetRequest(object, metaclass=abc.ABCMeta):
+class SubnetRequest(metaclass=abc.ABCMeta):
     """Carries the data needed to make a subnet request
 
     The data validated and carried by an instance of this class is the data
     that is common to any type of request.  This class shouldn't be
     instantiated on its own.  Rather, a subclass of this class should be used.
     """
-    def __init__(self, tenant_id, subnet_id,
-                 gateway_ip=None, allocation_pools=None):
+
+    def __init__(self, project_id, subnet_id,
+                 gateway_ip=None, allocation_pools=None,
+                 set_gateway_ip=True):
         """Initialize and validate
 
-        :param tenant_id: The tenant id who will own the subnet
-        :type tenant_id: str uuid
+        :param project_id: The project id who will own the subnet
+        :type project_id: str uuid
         :param subnet_id: Neutron's subnet ID
         :type subnet_id: str uuid
         :param gateway_ip: An IP to reserve for the subnet gateway.
@@ -50,10 +56,16 @@ class SubnetRequest(object, metaclass=abc.ABCMeta):
             of this range if specifically requested.
         :type allocation_pools: A list of netaddr.IPRange.  None if not
             specified.
+        :param set_gateway_ip: in case the ``gateway_ip`` value is not defined
+            (None), the IPAM module will set an IP address within the range of
+            the subnet CIDR. If ``set_gateway_ip`` is unset, no IP address will
+            be assigned.
+        :type set_gateway_ip: boolean
         """
-        self._tenant_id = tenant_id
+        self._project_id = project_id
         self._subnet_id = subnet_id
         self._gateway_ip = None
+        self._set_gateway_ip = set_gateway_ip
         self._allocation_pools = None
 
         if gateway_ip is not None:
@@ -86,8 +98,8 @@ class SubnetRequest(object, metaclass=abc.ABCMeta):
                                    "allocation pool version"))
 
     @property
-    def tenant_id(self):
-        return self._tenant_id
+    def project_id(self):
+        return self._project_id
 
     @property
     def subnet_id(self):
@@ -98,6 +110,10 @@ class SubnetRequest(object, metaclass=abc.ABCMeta):
         return self._gateway_ip
 
     @property
+    def set_gateway_ip(self):
+        return self._set_gateway_ip
+
+    @property
     def allocation_pools(self):
         return self._allocation_pools
 
@@ -105,22 +121,31 @@ class SubnetRequest(object, metaclass=abc.ABCMeta):
         if self.allocation_pools:
             if subnet_cidr.version != self.allocation_pools[0].version:
                 raise ipam_exc.IpamValueInvalid(_(
-                                "allocation_pools use the wrong ip version"))
+                    "allocation_pools use the wrong ip version"))
             for pool in self.allocation_pools:
                 if pool not in subnet_cidr:
                     raise ipam_exc.IpamValueInvalid(_(
-                                "allocation_pools are not in the subnet"))
+                        "allocation_pools are not in the subnet"))
 
     @staticmethod
     def _validate_gateway_ip_in_subnet(subnet_cidr, gateway_ip):
+        """Validates if the Gateway IP is in subnet CIDR if needed
+
+        If the Gateway (GW) IP address is in the subnet CIDR, we need to make
+        sure that the user has not used the IPs reserved to represent the
+        network or the broadcast domain.
+
+        If the Gateway is not in the subnet CIDR, we do not validate it.
+        Therefore, for such cases, it is assumed that its access is on link.
+        """
         if not gateway_ip:
             return
 
         if ipam_utils.check_gateway_invalid_in_subnet(subnet_cidr, gateway_ip):
             raise ipam_exc.IpamValueInvalid(_(
-                'Gateway IP %(gateway_ip)s cannot be allocated in CIDR '
-                '%(subnet_cidr)s' % {'gateway_ip': gateway_ip,
-                                     'subnet_cidr': subnet_cidr}))
+                'Gateway IP %(gateway_ip)s cannot be the network or broadcast '
+                'IP address %(subnet_cidr)s') % {'gateway_ip': gateway_ip,
+                                                 'subnet_cidr': subnet_cidr})
 
 
 class AnySubnetRequest(SubnetRequest):
@@ -134,8 +159,9 @@ class AnySubnetRequest(SubnetRequest):
     WILDCARDS = {constants.IPv4: '0.0.0.0',
                  constants.IPv6: '::'}
 
-    def __init__(self, tenant_id, subnet_id, version, prefixlen,
-                 gateway_ip=None, allocation_pools=None):
+    def __init__(self, project_id, subnet_id, version, prefixlen,
+                 gateway_ip=None, allocation_pools=None,
+                 set_gateway_ip=True):
         """Initialize AnySubnetRequest
 
         :param version: Either constants.IPv4 or constants.IPv6
@@ -143,11 +169,13 @@ class AnySubnetRequest(SubnetRequest):
             max allowed.
         :type prefixlen: int
         """
-        super(AnySubnetRequest, self).__init__(
-            tenant_id=tenant_id,
+        super().__init__(
+            project_id=project_id,
             subnet_id=subnet_id,
             gateway_ip=gateway_ip,
-            allocation_pools=allocation_pools)
+            allocation_pools=allocation_pools,
+            set_gateway_ip=set_gateway_ip,
+        )
 
         net = netaddr.IPNetwork(self.WILDCARDS[version] + '/' + str(prefixlen))
         self._validate_with_subnet(net)
@@ -166,8 +194,10 @@ class SpecificSubnetRequest(SubnetRequest):
     allocation, even overlapping ones.  This can be expanded on by future
     blueprints.
     """
-    def __init__(self, tenant_id, subnet_id, subnet_cidr,
-                 gateway_ip=None, allocation_pools=None):
+
+    def __init__(self, project_id, subnet_id, subnet_cidr,
+                 gateway_ip=None, allocation_pools=None,
+                 set_gateway_ip=True):
         """Initialize SpecificSubnetRequest
 
         :param subnet: The subnet requested.  Can be IPv4 or IPv6.  However,
@@ -175,11 +205,13 @@ class SpecificSubnetRequest(SubnetRequest):
             the version of the address scope being used.
         :type subnet: netaddr.IPNetwork or convertible to one
         """
-        super(SpecificSubnetRequest, self).__init__(
-            tenant_id=tenant_id,
+        super().__init__(
+            project_id=project_id,
             subnet_id=subnet_id,
             gateway_ip=gateway_ip,
-            allocation_pools=allocation_pools)
+            allocation_pools=allocation_pools,
+            set_gateway_ip=set_gateway_ip,
+        )
 
         self._subnet_cidr = netaddr.IPNetwork(subnet_cidr)
         self._validate_with_subnet(self._subnet_cidr)
@@ -194,19 +226,20 @@ class SpecificSubnetRequest(SubnetRequest):
         return self._subnet_cidr.prefixlen
 
 
-class AddressRequest(object, metaclass=abc.ABCMeta):
+class AddressRequest(metaclass=abc.ABCMeta):
     """Abstract base class for address requests"""
 
 
 class SpecificAddressRequest(AddressRequest):
     """For requesting a specified address from IPAM"""
+
     def __init__(self, address):
         """Initialize SpecificAddressRequest
 
         :param address: The address being requested
         :type address: A netaddr.IPAddress or convertible to one.
         """
-        super(SpecificAddressRequest, self).__init__()
+        super().__init__()
         self._address = netaddr.IPAddress(address)
 
     @property
@@ -216,12 +249,13 @@ class SpecificAddressRequest(AddressRequest):
 
 class BulkAddressRequest(AddressRequest):
     """For requesting a batch of available addresses from IPAM"""
+
     def __init__(self, num_addresses):
         """Initialize BulkAddressRequest
         :param num_addresses: The quantity of IP addresses being requested
         :type num_addresses: int
         """
-        super(BulkAddressRequest, self).__init__()
+        super().__init__()
         self._num_addresses = num_addresses
 
     @property
@@ -242,7 +276,7 @@ class AutomaticAddressRequest(SpecificAddressRequest):
     EUI64 = 'eui64'
 
     def _generate_eui64_address(self, **kwargs):
-        if set(kwargs) != set(['prefix', 'mac']):
+        if set(kwargs) != {'prefix', 'mac'}:
             raise ipam_exc.AddressCalculationFailure(
                 address_type='eui-64',
                 reason=_('must provide exactly 2 arguments - cidr and MAC'))
@@ -267,14 +301,14 @@ class AutomaticAddressRequest(SpecificAddressRequest):
         if not address_generator:
             raise ipam_exc.InvalidAddressType(address_type=address_type)
         address = address_generator(self, **kwargs)
-        super(AutomaticAddressRequest, self).__init__(address)
+        super().__init__(address)
 
 
 class RouterGatewayAddressRequest(AddressRequest):
     """Used to request allocating the special router gateway address."""
 
 
-class AddressRequestFactory(object):
+class AddressRequestFactory:
     """Builds request using ip info
 
     Additional parameters(port and context) are not used in default
@@ -295,18 +329,17 @@ class AddressRequestFactory(object):
         """
         if ip_dict.get('ip_address'):
             return SpecificAddressRequest(ip_dict['ip_address'])
-        elif ip_dict.get('eui64_address'):
+        if ip_dict.get('eui64_address'):
             return AutomaticAddressRequest(prefix=ip_dict['subnet_cidr'],
                                            mac=ip_dict['mac'])
-        elif (port['device_owner'] == constants.DEVICE_OWNER_DHCP or
-              port['device_owner'] == constants.DEVICE_OWNER_DISTRIBUTED):
+        if (port['device_owner'] == constants.DEVICE_OWNER_DHCP or
+                port['device_owner'] == constants.DEVICE_OWNER_DISTRIBUTED):
             # preserve previous behavior of DHCP ports choosing start of pool
             return PreferNextAddressRequest()
-        else:
-            return AnyAddressRequest()
+        return AnyAddressRequest()
 
 
-class SubnetRequestFactory(object):
+class SubnetRequestFactory:
     """Builds request using subnet info"""
 
     @classmethod
@@ -314,6 +347,7 @@ class SubnetRequestFactory(object):
         cidr = subnet.get('cidr')
         cidr = cidr if validators.is_attr_set(cidr) else None
         gateway_ip = subnet.get('gateway_ip')
+        set_gateway_ip = gateway_ip is not None
         gateway_ip = gateway_ip if validators.is_attr_set(gateway_ip) else None
         subnet_id = subnet.get('id', uuidutils.generate_uuid())
 
@@ -324,25 +358,34 @@ class SubnetRequestFactory(object):
                 prefixlen = int(subnetpool['default_prefixlen'])
 
             return AnySubnetRequest(
-                subnet['tenant_id'],
+                subnet['project_id'],
                 subnet_id,
                 common_utils.ip_version_from_int(subnetpool['ip_version']),
-                prefixlen)
-        else:
-            alloc_pools = subnet.get('allocation_pools')
-            alloc_pools = (alloc_pools if validators.is_attr_set(alloc_pools)
-                           else None)
-            if not cidr and gateway_ip:
-                prefixlen = subnet['prefixlen']
-                if not validators.is_attr_set(prefixlen):
-                    prefixlen = int(subnetpool['default_prefixlen'])
-                gw_ip_net = netaddr.IPNetwork('%s/%s' %
-                                              (gateway_ip, prefixlen))
-                cidr = gw_ip_net.cidr
+                prefixlen,
+                set_gateway_ip=set_gateway_ip,
+            )
+        alloc_pools = subnet.get('allocation_pools')
+        alloc_pools = (
+            alloc_pools if validators.is_attr_set(alloc_pools) else None)
+        if not cidr and gateway_ip:
+            prefixlen = subnet['prefixlen']
+            if not validators.is_attr_set(prefixlen):
+                prefixlen = int(subnetpool['default_prefixlen'])
+            gw_ip_net = netaddr.IPNetwork(
+                '{}/{}'.format(gateway_ip, prefixlen))
+            cidr = gw_ip_net.cidr
 
-            return SpecificSubnetRequest(
-                subnet['tenant_id'],
-                subnet_id,
-                cidr,
-                gateway_ip=gateway_ip,
-                allocation_pools=alloc_pools)
+        # TODO(ralonsoh): migrate "tenant_id" to "project_id", remove in G+2
+        if subnet.get('tenant_id') and subnet.get('project_id') is None:
+            subnet['project_id'] = subnet['tenant_id']
+            LOG.warning('project_id key not found in subnet dictionary, using '
+                        'tenant_id instead. This support has been deprecated '
+                        'and will be removed in a future release.')
+        project_id = subnet['project_id']
+        return SpecificSubnetRequest(project_id,
+                                     subnet_id,
+                                     cidr,
+                                     gateway_ip=gateway_ip,
+                                     allocation_pools=alloc_pools,
+                                     set_gateway_ip=set_gateway_ip,
+                                     )

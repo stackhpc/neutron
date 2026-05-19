@@ -70,9 +70,8 @@ class L3_gw_ip_qos_dbonly_mixin(l3_gwmode_db.L3_NAT_dbonly_mixin):
     def _update_router_gw_info(self, context, router_id, info,
                                request_body, router=None):
         # Calls superclass, pass router db object for avoiding re-loading
-        router = super(L3_gw_ip_qos_dbonly_mixin,
-                       self)._update_router_gw_info(
-            context, router_id, info, request_body, router)
+        router = super()._update_router_gw_info(
+                           context, router_id, info, request_body, router)
 
         if not self._is_gw_ip_qos_supported:
             return router
@@ -112,8 +111,7 @@ class L3_gw_ip_qos_dbonly_mixin(l3_gwmode_db.L3_NAT_dbonly_mixin):
                 context, router_id, new_qos_policy_id)
 
     def _build_routers_list(self, context, routers, gw_ports):
-        routers = super(L3_gw_ip_qos_dbonly_mixin,
-                        self)._build_routers_list(
+        routers = super()._build_routers_list(
                             context, routers, gw_ports)
 
         if not self._is_gw_ip_qos_supported:

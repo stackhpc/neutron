@@ -10,6 +10,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -20,6 +21,24 @@ DEPRECATED_REASON = (
 
 COLLECTION_PATH = '/segments'
 RESOURCE_PATH = '/segments/{id}'
+TAGS_PATH = RESOURCE_PATH + '/tags'
+TAG_PATH = RESOURCE_PATH + '/tags/{tag_id}'
+
+ACTION_GET_TAGS: list[policy.Operation] = [
+    {'method': 'GET', 'path': TAGS_PATH},
+    {'method': 'GET', 'path': TAG_PATH},
+]
+ACTION_PUT_TAGS: list[policy.Operation] = [
+    {'method': 'PUT', 'path': TAGS_PATH},
+    {'method': 'PUT', 'path': TAG_PATH},
+]
+ACTION_POST_TAGS: list[policy.Operation] = [
+    {'method': 'POST', 'path': TAGS_PATH},
+]
+ACTION_DELETE_TAGS: list[policy.Operation] = [
+    {'method': 'DELETE', 'path': TAGS_PATH},
+    {'method': 'DELETE', 'path': TAG_PATH},
+]
 
 
 rules = [
@@ -36,9 +55,16 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='create_segment',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='create_segments_tags',
+        check_str=base.ADMIN,
+        scope_types=['project'],
+        description='Create the segment tags',
+        operations=ACTION_POST_TAGS,
     ),
     policy.DocumentedRuleDefault(
         name='get_segment',
@@ -57,9 +83,16 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='get_segment',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='get_segments_tags',
+        check_str=base.ADMIN,
+        scope_types=['project'],
+        description='Get the segment tags',
+        operations=ACTION_GET_TAGS,
     ),
     policy.DocumentedRuleDefault(
         name='update_segment',
@@ -74,9 +107,16 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='update_segment',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='update_segments_tags',
+        check_str=base.ADMIN,
+        scope_types=['project'],
+        description='Update the segment tags',
+        operations=ACTION_PUT_TAGS,
     ),
     policy.DocumentedRuleDefault(
         name='delete_segment',
@@ -91,9 +131,16 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='delete_segment',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='delete_segments_tags',
+        check_str=base.ADMIN,
+        scope_types=['project'],
+        description='Delete the segment tags',
+        operations=ACTION_DELETE_TAGS,
     ),
 ]
 

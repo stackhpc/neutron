@@ -49,10 +49,11 @@ class NetworkSegmentRange(standard_attr.HasStandardAttributes,
         constants.TYPE_GRE,
         constants.TYPE_GENEVE,
         name='network_segment_range_network_type'),
-        nullable=False)
+                             nullable=False)
 
     # network segment range physical network, only applicable for VLAN.
-    physical_network = sa.Column(sa.String(64))
+    physical_network = sa.Column(sa.String(64), nullable=False,
+                                 server_default='')
 
     # minimum segmentation id value
     minimum = sa.Column(sa.Integer)
@@ -65,14 +66,21 @@ class NetworkSegmentRange(standard_attr.HasStandardAttributes,
         range_apidef.COLLECTION_NAME: range_apidef.RESOURCE_NAME}
     tag_support = True
 
+    __table_args__ = (
+        sa.UniqueConstraint('default', 'network_type',
+                            'physical_network',
+                            'minimum', 'maximum',
+                            name='uniq_network_segment_ranges'),
+    )
+
     def __init__(self, *args, **kwargs):
-        super(NetworkSegmentRange, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.project_id = None if self.shared else kwargs['project_id']
         is_vlan = self.network_type == constants.TYPE_VLAN
-        self.physical_network = kwargs['physical_network'] if is_vlan else None
+        self.physical_network = kwargs['physical_network'] if is_vlan else ''
 
     def __repr__(self):
-        return "<NetworkSegmentRange(%s,%s,%s,%s,%s,%s - %s,%s)>" % (
+        return "<NetworkSegmentRange({},{},{},{},{},{} - {},{})>".format(
             self.id, self.name, str(self.shared), self.project_id,
             self.network_type, self.physical_network, self.minimum,
             self.maximum)

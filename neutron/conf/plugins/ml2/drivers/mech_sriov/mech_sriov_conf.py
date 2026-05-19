@@ -20,14 +20,13 @@ from neutron._i18n import _
 sriov_driver_opts = [
     cfg.ListOpt('vnic_type_prohibit_list',
                 default=[],
-                deprecated_name='vnic_type_blacklist',
                 help=_("Comma-separated list of VNIC types for which support "
                        "is administratively prohibited by the mechanism "
                        "driver. Please note that the supported vnic_types "
                        "depend on your network interface card, on the kernel "
                        "version of your operating system, and on other "
                        "factors. "
-                       "In case of sriov mechanism driver the valid "
+                       "In the case of SRIOV mechanism drivers the valid "
                        "VNIC types are direct, macvtap and direct-physical.")),
 ]
 

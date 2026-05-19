@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2017 Eayun, Inc.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -18,10 +18,8 @@ import sys
 from oslo_config import cfg  # noqa
 
 from neutron.common import config
-from neutron.common import eventlet_utils
 from neutron.tests.common.agents import l3_agent
 
-eventlet_utils.monkey_patch()
 
 if __name__ == "__main__":
     config.register_common_config_options()

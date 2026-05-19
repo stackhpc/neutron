@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import unittest
+
 from neutron_lib import constants as n_const
 from neutron_lib.plugins.ml2 import ovs_constants
 from oslo_config import cfg
@@ -25,9 +27,10 @@ from neutron.agent.linux import ip_lib
 from neutron.cmd.sanity import checks
 from neutron.common import utils as common_utils
 from neutron.plugins.ml2.drivers.openvswitch.agent \
+    import ovs_dvr_neutron_agent as ovsdvragt
+from neutron.plugins.ml2.drivers.openvswitch.agent \
     import ovs_neutron_agent as ovsagt
 from neutron.tests.common import base as common_base
-from neutron.tests.common import helpers
 from neutron.tests.common import net_helpers
 from neutron.tests.functional.agent.l2 import base as l2_base
 from neutron.tests.functional.agent import test_ovs_lib
@@ -45,8 +48,12 @@ class OVSAgentTestBase(test_ovs_lib.OVSBridgeTestBase,
                        base.BaseSudoTestCase,
                        l2_base.OVSOFControllerHelper):
 
+    # TODO(ralonsoh): refactor this test to make it compatible after the
+    # eventlet removal.
+    @unittest.skip('This test is skipped after the eventlet removal and '
+                   'needs to be refactored')
     def setUp(self):
-        super(OVSAgentTestBase, self).setUp()
+        super().setUp()
         self.br = self.useFixture(net_helpers.OVSBridgeFixture()).bridge
         self.start_of_controller(cfg.CONF)
         self.br_int = self.br_int_cls(self.br.br_name)
@@ -61,14 +68,14 @@ class OVSAgentTestBase(test_ovs_lib.OVSBridgeTestBase,
         trace = {}
         trace_lines = t.splitlines()
         for line in trace_lines:
-            (l, sep, r) = line.partition(':')
+            (b, sep, a) = line.partition(':')
             if not sep:
                 continue
-            elif l in required_keys:
-                trace[l] = r
+            if b in required_keys:
+                trace[b] = a
         for k in required_keys:
             if k not in trace:
-                self.fail("%s not found in trace %s" % (k, trace_lines))
+                self.fail(f"{k} not found in trace {trace_lines}")
 
         return trace
 
@@ -78,7 +85,7 @@ class ARPSpoofTestCase(OVSAgentTestBase):
         # NOTE(kevinbenton): it would be way cooler to use scapy for
         # these but scapy requires the python process to be running as
         # root to bind to the ports.
-        super(ARPSpoofTestCase, self).setUp()
+        super().setUp()
         self.skip_without_arp_support()
         self.src_addr = '192.168.0.1'
         self.dst_addr = '192.168.0.2'
@@ -95,17 +102,28 @@ class ARPSpoofTestCase(OVSAgentTestBase):
         self.addOnException(self.collect_flows_and_ports)
 
     def collect_flows_and_ports(self, exc_info):
-        nicevif = lambda x: ['%s=%s' % (k, getattr(x, k))
-                             for k in ['ofport', 'port_name', 'switch',
-                                       'vif_id', 'vif_mac']]
-        nicedev = lambda x: ['%s=%s' % (k, getattr(x, k))
-                             for k in ['name', 'namespace']] + x.addr.list()
+        def nicevif(x):
+            return [
+                f'{k}={getattr(x, k)}'
+                for k in ['ofport', 'port_name', 'switch', 'vif_id', 'vif_mac']
+            ]
+
+        def nicedev(x):
+            return [
+                f'{k}={getattr(x, k)}' for k in ['name', 'namespace']
+            ] + x.addr.list()
+
         details = {'flows': self.br.dump_all_flows(),
                    'vifs': map(nicevif, self.br.get_vif_ports()),
                    'src_ip': self.src_addr,
-                   'dest_ip': self.dst_addr,
-                   'sourt_port': nicedev(self.src_p),
-                   'dest_port': nicedev(self.dst_p)}
+                   'dst_ip': self.dst_addr,
+                   'src_port': nicedev(self.src_p),
+                   'dst_port': nicedev(self.dst_p),
+                   'src_neigh4': self.src_p.neigh.dump(n_const.IP_VERSION_4),
+                   'src_neigh6': self.src_p.neigh.dump(n_const.IP_VERSION_6),
+                   'dst_neigh4': self.dst_p.neigh.dump(n_const.IP_VERSION_4),
+                   'dst_neigh6': self.dst_p.neigh.dump(n_const.IP_VERSION_6),
+                   }
         self.addDetail('arp-test-state',
                        text_content(jsonutils.dumps(details, indent=5)))
 
@@ -119,18 +137,21 @@ class ARPSpoofTestCase(OVSAgentTestBase):
         self._setup_arp_spoof_for_port(self.dst_p.name, [self.dst_addr])
         self.src_p.addr.add('%s/24' % self.src_addr)
         self.dst_p.addr.add('%s/24' % self.dst_addr)
-        net_helpers.assert_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_ping(self.src_namespace, self.dst_addr,
+                                retry_count=2, device=self.src_addr)
 
     def test_mac_spoof_blocks_wrong_mac(self):
         self._setup_arp_spoof_for_port(self.src_p.name, [self.src_addr])
         self._setup_arp_spoof_for_port(self.dst_p.name, [self.dst_addr])
         self.src_p.addr.add('%s/24' % self.src_addr)
         self.dst_p.addr.add('%s/24' % self.dst_addr)
-        net_helpers.assert_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_ping(self.src_namespace, self.dst_addr,
+                                retry_count=2, device=self.src_addr)
         # changing the allowed mac should stop the port from working
         self._setup_arp_spoof_for_port(self.src_p.name, [self.src_addr],
                                        mac='00:11:22:33:44:55')
-        net_helpers.assert_no_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_no_ping(self.src_namespace, self.dst_addr,
+                                   device=self.src_addr)
 
     def test_arp_spoof_doesnt_block_ipv6(self):
         self.src_addr = '2000::1'
@@ -142,7 +163,8 @@ class ARPSpoofTestCase(OVSAgentTestBase):
         # make sure the IPv6 addresses are ready before pinging
         self.src_p.addr.wait_until_address_ready(self.src_addr)
         self.dst_p.addr.wait_until_address_ready(self.dst_addr)
-        net_helpers.assert_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_ping(self.src_namespace, self.dst_addr,
+                                retry_count=2, device=self.src_addr)
 
     def test_arp_spoof_blocks_response(self):
         # this will prevent the destination from responding to the ARP
@@ -150,7 +172,8 @@ class ARPSpoofTestCase(OVSAgentTestBase):
         self._setup_arp_spoof_for_port(self.dst_p.name, ['192.168.0.3'])
         self.src_p.addr.add('%s/24' % self.src_addr)
         self.dst_p.addr.add('%s/24' % self.dst_addr)
-        net_helpers.assert_no_ping(self.src_namespace, self.dst_addr, count=2)
+        net_helpers.assert_no_ping(self.src_namespace, self.dst_addr, count=2,
+                                   device=self.src_addr)
 
     def test_arp_spoof_blocks_icmpv6_neigh_advt(self):
         self.src_addr = '2000::1'
@@ -165,7 +188,8 @@ class ARPSpoofTestCase(OVSAgentTestBase):
         # make sure the IPv6 addresses are ready before pinging
         self.src_p.addr.wait_until_address_ready(self.src_addr)
         self.dst_p.addr.wait_until_address_ready(self.dst_addr)
-        net_helpers.assert_no_ping(self.src_namespace, self.dst_addr, count=2)
+        net_helpers.assert_no_ping(self.src_namespace, self.dst_addr, count=2,
+                                   device=self.src_addr)
 
     def test_arp_spoof_blocks_request(self):
         # this will prevent the source from sending an ARP
@@ -188,7 +212,8 @@ class ARPSpoofTestCase(OVSAgentTestBase):
                                                          self.dst_addr])
         self.src_p.addr.add('%s/24' % self.src_addr)
         self.dst_p.addr.add('%s/24' % self.dst_addr)
-        net_helpers.assert_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_ping(self.src_namespace, self.dst_addr,
+                                retry_count=2, device=self.src_addr)
 
     def test_arp_spoof_icmpv6_neigh_advt_allowed_address_pairs(self):
         self.src_addr = '2000::1'
@@ -200,14 +225,16 @@ class ARPSpoofTestCase(OVSAgentTestBase):
         # make sure the IPv6 addresses are ready before pinging
         self.src_p.addr.wait_until_address_ready(self.src_addr)
         self.dst_p.addr.wait_until_address_ready(self.dst_addr)
-        net_helpers.assert_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_ping(self.src_namespace, self.dst_addr,
+                                retry_count=2, device=self.src_addr)
 
     def test_arp_spoof_allowed_address_pairs_0cidr(self):
         self._setup_arp_spoof_for_port(self.dst_p.name, ['9.9.9.9/0',
                                                          '1.2.3.4'])
         self.src_p.addr.add('%s/24' % self.src_addr)
         self.dst_p.addr.add('%s/24' % self.dst_addr)
-        net_helpers.assert_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_ping(self.src_namespace, self.dst_addr,
+                                device=self.src_addr)
 
     def test_arp_spoof_disable_port_security(self):
         # block first and then disable port security to make sure old rules
@@ -217,7 +244,8 @@ class ARPSpoofTestCase(OVSAgentTestBase):
                                        psec=False)
         self.src_p.addr.add('%s/24' % self.src_addr)
         self.dst_p.addr.add('%s/24' % self.dst_addr)
-        net_helpers.assert_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_ping(self.src_namespace, self.dst_addr,
+                                retry_count=2, device=self.src_addr)
 
     def test_arp_spoof_disable_network_port(self):
         # block first and then disable port security to make sure old rules
@@ -228,7 +256,8 @@ class ARPSpoofTestCase(OVSAgentTestBase):
             device_owner=n_const.DEVICE_OWNER_ROUTER_GW)
         self.src_p.addr.add('%s/24' % self.src_addr)
         self.dst_p.addr.add('%s/24' % self.dst_addr)
-        net_helpers.assert_ping(self.src_namespace, self.dst_addr)
+        net_helpers.assert_ping(self.src_namespace, self.dst_addr,
+                                retry_count=2, device=self.src_addr)
 
     def _setup_arp_spoof_for_port(self, port, addrs, psec=True,
                                   device_owner='nobody', mac=None):
@@ -299,10 +328,11 @@ class OVSFlowTestCase(OVSAgentTestBase):
     """
 
     def setUp(self):
+        dvr_enabled = True
         cfg.CONF.set_override('enable_distributed_routing',
-                              True,
+                              dvr_enabled,
                               group='AGENT')
-        super(OVSFlowTestCase, self).setUp()
+        super().setUp()
         self.phys_br = self.useFixture(net_helpers.OVSBridgeFixture()).bridge
         self.br_phys = self.br_phys_cls(self.phys_br.br_name)
         self.br_phys.set_secure_mode()
@@ -322,7 +352,9 @@ class OVSFlowTestCase(OVSAgentTestBase):
                 prefix=cfg.CONF.OVS.tun_peer_patch_port),
             common_utils.get_rand_device_name(
                 prefix=cfg.CONF.OVS.int_peer_patch_port))
-        self.br_tun.setup_default_table(self.tun_p, True)
+        self.br_tun.setup_default_table(self.tun_p, True, dvr_enabled)
+        ovsdvragt.OVSDVRNeutronAgent._setup_dvr_flows_on_tun_br(self.br_tun,
+                                                                self.tun_p)
 
     def test_provision_local_vlan(self):
         kwargs = {'port': 123, 'lvid': 888, 'segmentation_id': 777}
@@ -360,7 +392,6 @@ class OVSFlowTestCase(OVSAgentTestBase):
         self.assertIn(("dl_src=%(gateway_mac)s" % kwargs),
                       trace["Final flow"])
 
-    @helpers.skip_if_ovs_older_than("2.5.1")
     def test_install_flood_to_tun(self):
         attrs = {
             'remote_ip': self.get_test_net_address(1),
@@ -386,35 +417,31 @@ class OVSFlowTestCase(OVSAgentTestBase):
         self.assertEqual(" unchanged", trace["Final flow"])
         self.assertIn("drop", trace["Datapath actions"])
 
-    def test_install_instructions_str(self):
-        kwargs = {'in_port': 345, 'vlan_tci': 0x1123}
-        dst_p = self.useFixture(
-            net_helpers.OVSPortFixture(self.br_tun, self.namespace)).port
-        dst_ofp = self.br_tun.get_port_ofport(dst_p.name)
-        self.br_tun.install_instructions("pop_vlan,output:%d" % dst_ofp,
-                                         priority=10, **kwargs)
-        trace = self._run_trace(self.br_tun.br_name,
-                                "in_port=%(in_port)d,dl_src=12:34:56:78:aa:bb,"
-                                "dl_dst=24:12:56:78:aa:bb,dl_type=0x0800,"
-                                "nw_src=192.168.0.1,nw_dst=192.168.0.2,"
-                                "nw_proto=1,nw_tos=0,nw_ttl=128,"
-                                "icmp_type=8,icmp_code=0,vlan_tci=%(vlan_tci)d"
-                                % kwargs)
-        self.assertIn("pop_vlan,", trace["Datapath actions"])
-
     def test_bundled_install(self):
-        kwargs = {'in_port': 345, 'vlan_tci': 0x1321}
-        dst_p = self.useFixture(
-            net_helpers.OVSPortFixture(self.br_tun, self.namespace)).port
-        dst_ofp = self.br_tun.get_port_ofport(dst_p.name)
-        with self.br_tun.bundled() as br:
-            br.install_instructions("pop_vlan,output:%d" % dst_ofp,
-                                    priority=10, **kwargs)
-        trace = self._run_trace(self.br_tun.br_name,
+        kwargs = {'in_port': 345}
+        with self.br_int.bundled() as br:
+            br.install_goto(dest_table_id=ovs_constants.LOCAL_IP_TABLE)
+            br.install_goto(dest_table_id=ovs_constants.TRANSIENT_TABLE,
+                            table_id=ovs_constants.LOCAL_IP_TABLE,
+                            priority=100)
+            br.install_drop(table_id=ovs_constants.TRANSIENT_TABLE,
+                            priority=101, **kwargs)
+            br.install_normal(table_id=ovs_constants.TRANSIENT_TABLE,
+                              priority=10)
+
+        trace = self._run_trace(self.br_int.br_name,
                                 "in_port=%(in_port)d,dl_src=12:34:56:78:aa:bb,"
                                 "dl_dst=24:12:56:78:aa:bb,dl_type=0x0800,"
                                 "nw_src=192.168.0.1,nw_dst=192.168.0.2,"
                                 "nw_proto=1,nw_tos=0,nw_ttl=128,"
-                                "icmp_type=8,icmp_code=0,vlan_tci=%(vlan_tci)d"
+                                "icmp_type=8,icmp_code=0"
                                 % kwargs)
-        self.assertIn("pop_vlan,", trace["Datapath actions"])
+        self.assertIn("drop", trace["Datapath actions"])
+
+        trace = self._run_trace(self.br_int.br_name,
+                                "dl_src=12:34:56:78:aa:bb,"
+                                "dl_dst=24:12:56:78:aa:bb,dl_type=0x0800,"
+                                "nw_src=192.168.0.1,nw_dst=192.168.0.2,"
+                                "nw_proto=1,nw_tos=0,nw_ttl=128,"
+                                "icmp_type=8,icmp_code=0")
+        self.assertNotIn("drop", trace["Datapath actions"])

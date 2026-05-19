@@ -14,6 +14,7 @@
 
 import abc
 import collections
+import itertools
 
 import netaddr
 from neutron_lib import constants as lib_constants
@@ -21,8 +22,7 @@ from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.utils import helpers
 from oslo_log import log as logging
 from oslo_utils import netutils
-from pyroute2.netlink import exceptions \
-    as pyroute2_exc  # pylint: disable=no-name-in-module
+from pyroute2.netlink import exceptions as pyroute2_exc
 
 from neutron._i18n import _
 from neutron.agent.l3 import namespaces
@@ -30,7 +30,6 @@ from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
 from neutron.agent.linux import ra
 from neutron.common import coordination
-from neutron.common import ipv6_utils
 from neutron.common import utils as common_utils
 from neutron.ipam import utils as ipam_utils
 
@@ -45,7 +44,7 @@ ADDRESS_SCOPE_MARK_ID_MAX = 2048
 DEFAULT_ADDRESS_SCOPE = "noscope"
 
 
-class BaseRouterInfo(object, metaclass=abc.ABCMeta):
+class BaseRouterInfo(metaclass=abc.ABCMeta):
 
     def __init__(self,
                  agent,
@@ -63,7 +62,7 @@ class BaseRouterInfo(object, metaclass=abc.ABCMeta):
         self.driver = interface_driver
         self.use_ipv6 = use_ipv6
 
-        self.internal_ports = []
+        self.internal_ports: list[dict] = []
         self.ns_name = None
         self.process_monitor = None
 
@@ -131,12 +130,11 @@ class RouterInfo(BaseRouterInfo):
                  agent_conf,
                  interface_driver,
                  use_ipv6=False):
-        super(RouterInfo, self).__init__(agent, router_id, router, agent_conf,
-                                         interface_driver, use_ipv6)
+        super().__init__(agent, router_id, router, agent_conf,
+                         interface_driver, use_ipv6)
 
         self.ex_gw_port = None
         self.fip_map = {}
-        self.pd_subnets = {}
         self.floating_ips = set()
         ns = self.create_router_namespace_object(
             router_id, agent_conf, interface_driver, use_ipv6)
@@ -159,7 +157,7 @@ class RouterInfo(BaseRouterInfo):
         self.qos_gateway_ips = set()
 
     def initialize(self, process_monitor):
-        super(RouterInfo, self).initialize(process_monitor)
+        super().initialize(process_monitor)
         self.radvd = ra.DaemonMonitor(self.router_id,
                                       self.ns_name,
                                       process_monitor,
@@ -187,14 +185,17 @@ class RouterInfo(BaseRouterInfo):
     def update_routing_table(self, operation, route):
         self._update_routing_table(operation, route, self.ns_name)
 
-    def update_routing_table_ecmp(self, route_list):
+    def _update_routing_table_ecmp(self, route_list, namespace):
         multipath = [dict(via=route['nexthop'])
                      for route in route_list]
         try:
-            ip_lib.add_ip_route(self.ns_name, route_list[0]['destination'],
+            ip_lib.add_ip_route(namespace, route_list[0]['destination'],
                                 via=multipath)
         except (RuntimeError, OSError, pyroute2_exc.NetlinkError):
             pass
+
+    def update_routing_table_ecmp(self, route_list):
+        self._update_routing_table_ecmp(route_list, self.ns_name)
 
     def check_and_remove_ecmp_route(self, old_routes, remove_route):
         route_list = []
@@ -264,7 +265,8 @@ class RouterInfo(BaseRouterInfo):
     def floating_forward_rules(self, fip):
         fixed_ip = fip['fixed_ip_address']
         floating_ip = fip['floating_ip_address']
-        to_source = '-s %s/32 -j SNAT --to-source %s' % (fixed_ip, floating_ip)
+        to_source = '-s {}/32 -j SNAT --to-source {}'.format(
+            fixed_ip, floating_ip)
         if self.iptables_manager.random_fully:
             to_source += ' --random-fully'
         return [('PREROUTING', '-d %s/32 -j DNAT --to-destination %s' %
@@ -275,7 +277,7 @@ class RouterInfo(BaseRouterInfo):
 
     def floating_mangle_rules(self, floating_ip, fixed_ip, internal_mark):
         mark_traffic_to_floating_ip = (
-            'floatingip', '-d %s/32 -j MARK --set-xmark %s' % (
+            'floatingip', '-d {}/32 -j MARK --set-xmark {}'.format(
                 floating_ip, internal_mark))
         mark_traffic_from_fixed_ip = (
             'FORWARD', '-s %s/32 -j $float-snat' % fixed_ip)
@@ -291,7 +293,7 @@ class RouterInfo(BaseRouterInfo):
 
         mark_id = self._address_scope_to_mark_id[address_scope]
         # NOTE: Address scopes use only the upper 16 bits of the 32 fwmark
-        return "%s/%s" % (hex(mark_id << 16), ADDRESS_SCOPE_MARK_MASK)
+        return f"{hex(mark_id << 16)}/{ADDRESS_SCOPE_MARK_MASK}"
 
     def get_port_address_scope_mark(self, port):
         """Get the IP version 4 and 6 address scope mark for the port
@@ -324,19 +326,6 @@ class RouterInfo(BaseRouterInfo):
                                                            tag='floating_ip')
 
         self.iptables_manager.apply()
-
-    def _process_pd_iptables_rules(self, prefix, subnet_id):
-        """Configure iptables rules for prefix delegated subnets"""
-        ext_scope = self._get_external_address_scope()
-        ext_scope_mark = self.get_address_scope_mark_mask(ext_scope)
-        ex_gw_device = self.get_external_device_name(
-            self.get_ex_gw_port()['id'])
-        scope_rule = self.address_scope_mangle_rule(ex_gw_device,
-                                                    ext_scope_mark)
-        self.iptables_manager.ipv6['mangle'].add_rule(
-            'scope',
-            '-d %s ' % prefix + scope_rule,
-            tag=('prefix_delegation_%s' % subnet_id))
 
     def process_floating_ip_address_scope_rules(self):
         """Configure address scope related iptables rules for the router's
@@ -425,7 +414,7 @@ class RouterInfo(BaseRouterInfo):
         device.delete_addr_and_conntrack_state(ip_cidr)
 
     def get_router_cidrs(self, device):
-        return set([addr['cidr'] for addr in device.addr.list()])
+        return {addr['cidr'] for addr in device.addr.list()}
 
     def get_centralized_fip_cidr_set(self):
         return set()
@@ -625,7 +614,7 @@ class RouterInfo(BaseRouterInfo):
         if 'subnets' in port:
             for subnet in port['subnets']:
                 if (netaddr.IPNetwork(subnet['cidr']).version == 6 and
-                    subnet['cidr'] !=
+                        subnet['cidr'] !=
                         lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
                     return True
 
@@ -653,18 +642,18 @@ class RouterInfo(BaseRouterInfo):
             namespace=self.ns_name)
 
     def address_scope_mangle_rule(self, device_name, mark_mask):
-        return '-i %s -j MARK --set-xmark %s' % (device_name, mark_mask)
+        return f'-i {device_name} -j MARK --set-xmark {mark_mask}'
 
     def address_scope_filter_rule(self, device_name, mark_mask):
-        return '-o %s -m mark ! --mark %s -j DROP' % (
+        return '-o {} -m mark ! --mark {} -j DROP'.format(
             device_name, mark_mask)
 
     def _process_internal_ports(self):
-        existing_port_ids = set(p['id'] for p in self.internal_ports)
+        existing_port_ids = {p['id'] for p in self.internal_ports}
 
         internal_ports = self.router.get(lib_constants.INTERFACE_KEY, [])
-        current_port_ids = set(p['id'] for p in internal_ports
-                               if p['admin_state_up'])
+        current_port_ids = {p['id'] for p in internal_ports
+                            if p['admin_state_up']}
 
         new_port_ids = current_port_ids - existing_port_ids
         new_ports = [p for p in internal_ports if p['id'] in new_port_ids]
@@ -673,71 +662,39 @@ class RouterInfo(BaseRouterInfo):
         updated_ports = self._get_updated_ports(self.internal_ports,
                                                 internal_ports)
 
-        enable_ra = False
         for p in old_ports:
             self.internal_network_removed(p)
             LOG.debug("removing port %s from internal_ports cache", p)
             self.internal_ports.remove(p)
-            enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
-            for subnet in p['subnets']:
-                if ipv6_utils.is_ipv6_pd_enabled(subnet):
-                    self.agent.pd.disable_subnet(self.router_id, subnet['id'])
-                    self.pd_subnets.pop(subnet['id'], None)
 
         for p in new_ports:
             self.internal_network_added(p)
             LOG.debug("appending port %s to internal_ports cache", p)
             self._update_internal_ports_cache(p)
-            enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
-            for subnet in p['subnets']:
-                if ipv6_utils.is_ipv6_pd_enabled(subnet):
-                    interface_name = self.get_internal_device_name(p['id'])
-                    self.agent.pd.enable_subnet(self.router_id, subnet['id'],
-                                                subnet['cidr'],
-                                                interface_name,
-                                                p['mac_address'])
-                    if (subnet['cidr'] !=
-                            lib_constants.PROVISIONAL_IPV6_PD_PREFIX):
-                        self.pd_subnets[subnet['id']] = subnet['cidr']
 
         updated_cidrs = []
         for p in updated_ports:
             self._update_internal_ports_cache(p)
             updated_cidrs += common_utils.fixed_ip_cidrs(p['fixed_ips'])
             self.internal_network_updated(p)
-            enable_ra = enable_ra or self._port_has_ipv6_subnet(p)
 
-        # Check if there is any pd prefix update
-        for p in internal_ports:
-            if p['id'] in (set(current_port_ids) & set(existing_port_ids)):
-                for subnet in p.get('subnets', []):
-                    if ipv6_utils.is_ipv6_pd_enabled(subnet):
-                        old_prefix = self.agent.pd.update_subnet(
-                                                      self.router_id,
-                                                      subnet['id'],
-                                                      subnet['cidr'])
-                        if old_prefix:
-                            self._internal_network_updated(p, subnet['id'],
-                                                           subnet['cidr'],
-                                                           old_prefix,
-                                                           updated_cidrs)
-                            self.pd_subnets[subnet['id']] = subnet['cidr']
-                            enable_ra = True
+        enable_ra = any(
+            self._port_has_ipv6_subnet(p)
+            for p in itertools.chain(new_ports, old_ports, updated_ports))
 
         # Enable RA
         if enable_ra:
             self.enable_radvd(internal_ports)
 
         existing_devices = self._get_existing_devices()
-        current_internal_devs = set(n for n in existing_devices
-                                    if n.startswith(INTERNAL_DEV_PREFIX))
-        current_port_devs = set(self.get_internal_device_name(port_id)
-                                for port_id in current_port_ids)
+        current_internal_devs = {n for n in existing_devices
+                                 if n.startswith(INTERNAL_DEV_PREFIX)}
+        current_port_devs = {self.get_internal_device_name(port_id)
+                             for port_id in current_port_ids}
         stale_devs = current_internal_devs - current_port_devs
         for stale_dev in stale_devs:
             LOG.debug('Deleting stale internal router device: %s',
                       stale_dev)
-            self.agent.pd.remove_stale_ri_ifname(self.router_id, stale_dev)
             self.driver.unplug(stale_dev,
                                namespace=self.ns_name,
                                prefix=INTERNAL_DEV_PREFIX)
@@ -779,8 +736,8 @@ class RouterInfo(BaseRouterInfo):
         for subnet in ex_gw_port.get('subnets', []):
             is_gateway_not_in_subnet = (subnet['gateway_ip'] and
                                         not ipam_utils.check_subnet_ip(
-                                                subnet['cidr'],
-                                                subnet['gateway_ip']))
+                                            subnet['cidr'],
+                                            subnet['gateway_ip']))
             if is_gateway_not_in_subnet:
                 preserve_ips.append(subnet['gateway_ip'])
                 device = ip_lib.IPDevice(device_name, namespace=namespace)
@@ -865,14 +822,12 @@ class RouterInfo(BaseRouterInfo):
     def external_gateway_added(self, ex_gw_port, interface_name):
         preserve_ips = self._list_floating_ip_cidrs() + list(
             self.centralized_port_forwarding_fip_set)
-        preserve_ips.extend(self.agent.pd.get_preserve_ips(self.router_id))
         self._external_gateway_added(
             ex_gw_port, interface_name, self.ns_name, preserve_ips)
 
     def external_gateway_updated(self, ex_gw_port, interface_name):
         preserve_ips = self._list_floating_ip_cidrs() + list(
             self.centralized_port_forwarding_fip_set)
-        preserve_ips.extend(self.agent.pd.get_preserve_ips(self.router_id))
         self._external_gateway_added(
             ex_gw_port, interface_name, self.ns_name, preserve_ips)
 
@@ -901,7 +856,6 @@ class RouterInfo(BaseRouterInfo):
                       dev != interface_name]
         for stale_dev in stale_devs:
             LOG.debug('Deleting stale external router device: %s', stale_dev)
-            self.agent.pd.remove_gw_interface(self.router['id'])
             self.driver.unplug(stale_dev,
                                namespace=self.ns_name,
                                prefix=EXTERNAL_DEV_PREFIX)
@@ -917,13 +871,10 @@ class RouterInfo(BaseRouterInfo):
         if ex_gw_port:
             if not self.ex_gw_port:
                 self.external_gateway_added(ex_gw_port, interface_name)
-                self.agent.pd.add_gw_interface(self.router['id'],
-                                               interface_name)
             elif not self._gateway_ports_equal(ex_gw_port, self.ex_gw_port):
                 self.external_gateway_updated(ex_gw_port, interface_name)
         elif not ex_gw_port and self.ex_gw_port:
             self.external_gateway_removed(self.ex_gw_port, interface_name)
-            self.agent.pd.remove_gw_interface(self.router['id'])
         elif not ex_gw_port and not self.ex_gw_port:
             for p in self.internal_ports:
                 interface_name = self.get_internal_device_name(p['id'])
@@ -939,7 +890,7 @@ class RouterInfo(BaseRouterInfo):
         return (
             'POSTROUTING', '! -o %(interface_name)s -m conntrack '
                            '! --ctstate DNAT -j ACCEPT' %
-                           {'interface_name': interface_name})
+            {'interface_name': interface_name})
 
     def external_gateway_nat_fip_rules(self, ex_gw_ip, interface_name):
         dont_snat_traffic_to_internal_ports_if_not_to_floating_ip = (
@@ -957,7 +908,8 @@ class RouterInfo(BaseRouterInfo):
                 snat_internal_traffic_to_floating_ip]
 
     def external_gateway_nat_snat_rules(self, ex_gw_ip, interface_name):
-        to_source = '-o %s -j SNAT --to-source %s' % (interface_name, ex_gw_ip)
+        to_source = '-o {} -j SNAT --to-source {}'.format(
+            interface_name, ex_gw_ip)
         if self.iptables_manager.random_fully:
             to_source += ' --random-fully'
         return [('snat', to_source)]
@@ -966,7 +918,7 @@ class RouterInfo(BaseRouterInfo):
         mark = self.agent_conf.external_ingress_mark
         mark_packets_entering_external_gateway_port = (
             'mark', '-i %s -j MARK --set-xmark %s/%s' %
-                    (interface_name, mark, lib_constants.ROUTER_MARK_MASK))
+            (interface_name, mark, lib_constants.ROUTER_MARK_MASK))
         return [mark_packets_entering_external_gateway_port]
 
     def _empty_snat_chains(self, iptables_manager):
@@ -1133,7 +1085,7 @@ class RouterInfo(BaseRouterInfo):
              'value': self.agent_conf.metadata_access_mark,
              'mask': lib_constants.ROUTER_MARK_MASK})
         drop_non_local_metadata = (
-            '-m mark --mark %s/%s -j DROP' % (
+            '-m mark --mark {}/{} -j DROP'.format(
                 self.agent_conf.metadata_access_mark,
                 lib_constants.ROUTER_MARK_MASK))
         self.iptables_manager.ipv4['mangle'].add_rule(
@@ -1152,7 +1104,7 @@ class RouterInfo(BaseRouterInfo):
                  'value': self.agent_conf.metadata_access_mark,
                  'mask': lib_constants.ROUTER_MARK_MASK})
             drop_non_local_v6_metadata = (
-                '-m mark --mark %s/%s -j DROP' % (
+                '-m mark --mark {}/{} -j DROP'.format(
                     self.agent_conf.metadata_access_mark,
                     lib_constants.ROUTER_MARK_MASK))
             self.iptables_manager.ipv6['mangle'].add_rule(
@@ -1221,9 +1173,6 @@ class RouterInfo(BaseRouterInfo):
                 iptables['filter'].add_rule(
                     'scope',
                     self.address_scope_filter_rule(device_name, mark))
-        for subnet_id, prefix in self.pd_subnets.items():
-            if prefix != lib_constants.PROVISIONAL_IPV6_PD_PREFIX:
-                self._process_pd_iptables_rules(prefix, subnet_id)
 
     def process_ports_address_scope_iptables(self):
         ports_scopemark = self._get_address_scope_mark()
@@ -1263,7 +1212,7 @@ class RouterInfo(BaseRouterInfo):
             return
 
         # Prevents snat within the same address scope
-        rule = '-o %s -m connmark --mark %s -j ACCEPT' % (
+        rule = '-o {} -m connmark --mark {} -j ACCEPT'.format(
             external_devicename,
             self.get_address_scope_mark_mask(address_scope))
         iptables_manager.ipv4['nat'].add_rule('snat', rule)
@@ -1288,7 +1237,6 @@ class RouterInfo(BaseRouterInfo):
         LOG.debug("Process delete, router %s", self.router['id'])
         if self.router_namespace.exists():
             self._process_internal_ports()
-            self.agent.pd.sync_router(self.router['id'])
             self._process_external_on_delete()
         else:
             LOG.warning("Can't gracefully delete the router %s: "
@@ -1300,7 +1248,6 @@ class RouterInfo(BaseRouterInfo):
         self.centralized_port_forwarding_fip_set = set(self.router.get(
             'port_forwardings_fip_set', set()))
         self._process_internal_ports()
-        self.agent.pd.sync_router(self.router['id'])
         self.process_external()
         self.process_address_scope()
         # Process static routes for router
@@ -1309,8 +1256,8 @@ class RouterInfo(BaseRouterInfo):
 
         # Update ex_gw_port on the router info cache
         self.ex_gw_port = self.get_ex_gw_port()
-        self.fip_map = dict((fip['floating_ip_address'],
-                             fip['fixed_ip_address'])
-                            for fip in self.get_floating_ips())
+        self.fip_map = {fip['floating_ip_address']:
+                        fip['fixed_ip_address']
+                        for fip in self.get_floating_ips()}
         self.fip_managed_by_port_forwardings = self.router.get(
             'fip_managed_by_port_forwardings')

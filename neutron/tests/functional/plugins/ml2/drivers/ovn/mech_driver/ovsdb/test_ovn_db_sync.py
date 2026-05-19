@@ -12,18 +12,24 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from collections import defaultdict
 from collections import namedtuple
+from unittest import mock
 
 import netaddr
 from neutron_lib.api.definitions import dns as dns_apidef
 from neutron_lib.api.definitions import fip_pf_description as ext_pf_def
 from neutron_lib.api.definitions import fip_pf_port_range as ranges_pf_def
 from neutron_lib.api.definitions import floating_ip_port_forwarding as pf_def
-from neutron_lib.api.definitions import l3
 from neutron_lib.api.definitions import port_security as ps
 from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib.db import api as db_api
+from neutron_lib.ovn import constants as n_lib_ovn_const
+from neutron_lib.services.logapi import constants as log_const
 from neutron_lib.services.qos import constants as qos_const
+from oslo_config import cfg
+from oslo_utils import strutils
 from oslo_utils import uuidutils
 from ovsdbapp.backend.ovs_idl import idlutils
 from ovsdbapp import constants as ovsdbapp_const
@@ -32,9 +38,12 @@ from neutron.common.ovn import acl as acl_utils
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf as ovn_config
+from neutron.plugins.ml2.drivers.ovn.agent import neutron_agent
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions \
     import qos as qos_extension
+from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import maintenance
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
+from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovsdb_monitor
 from neutron.services.portforwarding.drivers.ovn.driver import \
     OVNPortForwarding as ovn_pf
 from neutron.services.revisions import revision_plugin
@@ -50,8 +59,16 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
     _extension_drivers = ['port_security', 'dns', 'qos', 'revision_plugin']
 
     def setUp(self, *args):
+        self._mock_has_lock = mock.patch.object(
+            maintenance.DBInconsistenciesPeriodics, 'has_lock',
+            mock.PropertyMock(return_value=True))
+        self.mock_has_lock = self._mock_has_lock.start()
+        self._mock_set_lock = mock.patch.object(
+            ovsdb_monitor.BaseOvnIdl, 'set_lock')
+        self.mock_set_lock = self._mock_set_lock.start()
+        super().setUp(maintenance_worker=True)
         ovn_config.cfg.CONF.set_override('dns_domain', 'ovn.test')
-        super(TestOvnNbSync, self).setUp(maintenance_worker=True)
+        cfg.CONF.set_override('quota_security_group_rule', -1, group='QUOTAS')
         ext_mgr = test_extraroute.ExtraRouteTestExtensionManager()
         self.ext_api = test_extensions.setup_extensions_middleware(ext_mgr)
         sg_mgr = test_securitygroup.SecurityGroupTestExtensionManager()
@@ -90,6 +107,12 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         self.expected_dns_records = []
         self.expected_ports_with_unknown_addr = []
         self.expected_qos_records = []
+        # Set of externally managed resources that should not
+        # be cleaned up by the sync_db
+        self.create_ext_port_groups = []
+        self.create_ext_lrouter_ports = []
+        self.create_ext_lrouter_routes = []
+
         self.ctx = context.get_admin_context()
         ovn_config.cfg.CONF.set_override('ovn_metadata_enabled', True,
                                          group='ovn')
@@ -100,13 +123,12 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
             nb_idl=self.nb_api)
 
     def get_additional_service_plugins(self):
-        return {'qos': 'qos', 'segments': 'segments'}
+        return {'qos': 'qos', 'segments': 'segments', 'log': 'log'}
 
     def _api_for_resource(self, resource):
         if resource in ['security-groups']:
             return self._sg_api
-        else:
-            return super(TestOvnNbSync, self)._api_for_resource(resource)
+        return super()._api_for_resource(resource)
 
     def _create_resources(self, restart_ovsdb_processes=False):
         net_kwargs = {dns_apidef.DNSDOMAIN: 'ovn.test.'}
@@ -133,8 +155,10 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         n1_s3 = self.deserialize(self.fmt, res)
         self.expected_dhcp_options_rows.append({
             'cidr': '10.0.0.0/24',
-            'external_ids': {'subnet_id': n1_s1['subnet']['id'],
-                             ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
+            'external_ids': {
+                'subnet_id': n1_s1['subnet']['id'],
+                ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n1['network']['id'],
+                ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
             'options': {'classless_static_route':
                         '{169.254.169.254/32,10.0.0.2, 0.0.0.0/0,10.0.0.1}',
                         'server_id': '10.0.0.1',
@@ -146,8 +170,10 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                         'router': n1_s1['subnet']['gateway_ip']}})
         self.expected_dhcp_options_rows.append({
             'cidr': '2001:dba::/64',
-            'external_ids': {'subnet_id': n1_s2['subnet']['id'],
-                             ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
+            'external_ids': {
+                'subnet_id': n1_s2['subnet']['id'],
+                ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n1['network']['id'],
+                ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
             'options': {'server_id': '01:02:03:04:05:06'}})
 
         n1_s1_dhcp_options_uuid = (
@@ -198,9 +224,12 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 update_port_ids_v6.append(port['port']['id'])
                 self.expected_dhcp_options_rows.append({
                     'cidr': '10.0.0.0/24',
-                    'external_ids': {'subnet_id': n1_s1['subnet']['id'],
-                                     ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
-                                     'port_id': port['port']['id']},
+                    'external_ids': {
+                        'subnet_id': n1_s1['subnet']['id'],
+                        ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n1[
+                            'network']['id'],
+                        ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
+                        'port_id': port['port']['id']},
                     'options': {
                         'classless_static_route':
                         '{169.254.169.254/32,10.0.0.2, 0.0.0.0/0,10.0.0.1}',
@@ -214,9 +243,12 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                         'dns_server': '8.8.8.8'}})
                 self.expected_dhcp_options_rows.append({
                     'cidr': '2001:dba::/64',
-                    'external_ids': {'subnet_id': n1_s2['subnet']['id'],
-                                     ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
-                                     'port_id': port['port']['id']},
+                    'external_ids': {
+                        'subnet_id': n1_s2['subnet']['id'],
+                        ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n1[
+                            'network']['id'],
+                        ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
+                        'port_id': port['port']['id']},
                     'options': {'server_id': '01:02:03:04:05:06',
                                 'domain_search': 'foo-domain'}})
                 self.dirty_dhcp_options.append({
@@ -259,8 +291,11 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                                 'tftp_server': '"20.0.0.234"',
                                 'domain_name': '"ovn.test"',
                                 'dns_server': '8.8.8.8'},
-                    'external_ids': {'subnet_id': n1_s1['subnet']['id'],
-                                     'port_id': port['port']['id']}})
+                    'external_ids': {
+                        'subnet_id': n1_s1['subnet']['id'],
+                        ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n1[
+                            'network']['id'],
+                        'port_id': port['port']['id']}})
             elif p == 'p6':
                 self.delete_lswitch_ports.append((lport_name, lswitch_name))
             elif p == 'p7':
@@ -268,9 +303,12 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 update_port_ids_v6.append(port['port']['id'])
                 self.expected_dhcp_options_rows.append({
                     'cidr': '10.0.0.0/24',
-                    'external_ids': {'subnet_id': n1_s1['subnet']['id'],
-                                     ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
-                                     'port_id': port['port']['id']},
+                    'external_ids': {
+                        'subnet_id': n1_s1['subnet']['id'],
+                        ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n1[
+                            'network']['id'],
+                        ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
+                        'port_id': port['port']['id']},
                     'options': {
                         'classless_static_route':
                         '{169.254.169.254/32,10.0.0.2, 0.0.0.0/0,10.0.0.1}',
@@ -284,9 +322,12 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                         'dns_server': '8.8.8.8'}})
                 self.expected_dhcp_options_rows.append({
                     'cidr': '2001:dba::/64',
-                    'external_ids': {'subnet_id': n1_s2['subnet']['id'],
-                                     ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
-                                     'port_id': port['port']['id']},
+                    'external_ids': {
+                        'subnet_id': n1_s2['subnet']['id'],
+                        ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n1[
+                            'network']['id'],
+                        ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
+                        'port_id': port['port']['id']},
                     'options': {'server_id': '01:02:03:04:05:06',
                                 'domain_search': 'foo-domain'}})
                 self.reset_lport_dhcpv4_options.append(lport_name)
@@ -304,8 +345,10 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         n2_s2 = self.deserialize(self.fmt, res)
         self.expected_dhcp_options_rows.append({
             'cidr': '20.0.0.0/24',
-            'external_ids': {'subnet_id': n2_s1['subnet']['id'],
-                             ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
+            'external_ids': {
+                'subnet_id': n2_s1['subnet']['id'],
+                ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n2['network']['id'],
+                ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
             'options': {'classless_static_route':
                         '{169.254.169.254/32,20.0.0.2, 0.0.0.0/0,20.0.0.1}',
                         'server_id': '20.0.0.1',
@@ -317,8 +360,10 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                         'router': n2_s1['subnet']['gateway_ip']}})
         self.expected_dhcp_options_rows.append({
             'cidr': '2001:dbd::/64',
-            'external_ids': {'subnet_id': n2_s2['subnet']['id'],
-                             ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
+            'external_ids': {
+                'subnet_id': n2_s2['subnet']['id'],
+                ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n2['network']['id'],
+                ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
             'options': {'server_id': '01:02:03:04:05:06'}})
 
         for p in ['p1', 'p2']:
@@ -330,6 +375,8 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 self.expected_dhcp_options_rows.append({
                     'cidr': '20.0.0.0/24',
                     'external_ids': {'subnet_id': n2_s1['subnet']['id'],
+                                     ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n2[
+                                        'network']['id'],
                                      ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0',
                                      'port_id': port['port']['id']},
                     'options': {
@@ -365,7 +412,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
             port_req.get_response(self.api)
 
         # External network and subnet
-        e1 = self._make_network(self.fmt, 'e1', True,
+        e1 = self._make_network(self.fmt, 'e1', True, as_admin=True,
                                 arg_list=('router:external',
                                           'provider:network_type',
                                           'provider:physical_network'),
@@ -408,7 +455,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
             self.context,
             {'router': {
                 'name': 'r1', 'admin_state_up': True,
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'external_gateway_info': {
                     'enable_snat': True,
                     'network_id': e1['network']['id'],
@@ -440,14 +487,14 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                                     'nexthop': '20.0.0.11'}]}})
         r1_f1 = self.l3_plugin.create_floatingip(
             self.context, {'floatingip': {
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'floating_network_id': e1['network']['id'],
                 'floating_ip_address': '100.0.0.20',
                 'subnet_id': None,
                 'port_id': n1_port_dict['p1']}})
         r1_f2 = self.l3_plugin.create_floatingip(
             self.context, {'floatingip': {
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'floating_network_id': e1['network']['id'],
                 'subnet_id': None,
                 'floating_ip_address': '100.0.0.21'}})
@@ -458,7 +505,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         # Floating ip used for exercising port forwarding (via ovn lb)
         r1_f3 = self.l3_plugin.create_floatingip(
             self.context, {'floatingip': {
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'floating_network_id': e1['network']['id'],
                 'floating_ip_address': '100.0.0.22',
                 'subnet_id': None,
@@ -508,6 +555,9 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         self.create_lrouter_routes.append(('neutron-' + r1['id'],
                                            '10.13.0.0/24',
                                            '20.0.0.13'))
+        self.create_ext_lrouter_routes.append(('neutron-' + r1['id'],
+                                               '10.14.0.0/24',
+                                               '20.0.0.14'))
         self.delete_lrouter_routes.append(('neutron-' + r1['id'],
                                            '10.10.0.0/24',
                                            '20.0.0.10'))
@@ -546,7 +596,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         self.create_fip_fws.append(('pf-floatingip-{}-tcp'.format(r1_f3['id']),
                                     {'vip': '{}:8080'.format(
                                         r1_f3['floating_ip_address']),
-                                     'ips': ['{}:80'.format(p5_ip)],
+                                     'ips': [f'{p5_ip}:80'],
                                      'protocol': 'tcp',
                                      'may_exist': False},
                                     'neutron-' + r1['id'],))
@@ -599,7 +649,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         r2 = self.l3_plugin.create_router(
             self.context,
             {'router': {'name': 'r2', 'admin_state_up': True,
-                        'tenant_id': self._tenant_id}})
+                        'project_id': self._project_id}})
         n1_prtr = self._make_port(self.fmt, n1['network']['id'],
                                   name='n1-p-rtr')
         self.l3_plugin.add_router_interface(
@@ -627,14 +677,14 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                              'subnet_id': e1_s1['subnet']['id']}]}}})
         self.l3_plugin.create_floatingip(
             self.context, {'floatingip': {
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'floating_network_id': e1['network']['id'],
                 'floating_ip_address': '100.0.0.30',
                 'subnet_id': None,
                 'port_id': n4_port_dict['p1']}})
         self.l3_plugin.create_floatingip(
             self.context, {'floatingip': {
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'floating_network_id': e1['network']['id'],
                 'floating_ip_address': '100.0.0.31',
                 'subnet_id': None,
@@ -643,7 +693,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         # to port p3 and then deleting p3.
         self.l3_plugin.create_floatingip(
             self.context, {'floatingip': {
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'floating_network_id': e1['network']['id'],
                 'floating_ip_address': '100.0.0.32',
                 'subnet_id': None,
@@ -655,10 +705,18 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                                           'neutron-' + r1['id']))
         self.create_lrouter_ports.append(('lrp-' + uuidutils.generate_uuid(),
                                           'neutron-' + r1['id']))
+        self.create_ext_lrouter_ports.append(
+            ('ext-lrp-' + uuidutils.generate_uuid(), 'neutron-' + r1['id'])
+        )
+        self.create_ext_lrouter_ports.append(
+            ('ext-lrp-' + uuidutils.generate_uuid(), 'neutron-' + r1['id'])
+        )
         self.delete_lrouters.append('neutron-' + r2['id'])
 
         self.create_port_groups.extend([{'name': 'pg1', 'acls': []},
                                         {'name': 'pg2', 'acls': []}])
+        self.create_ext_port_groups.extend([{'name': 'ext-pg1', 'acls': []},
+                                            {'name': 'ext-pg2', 'acls': []}])
         self.delete_port_groups.append(
             utils.ovn_port_group_name(n1_prtr['port']['security_groups'][0]))
         # Create a network and subnet with orphaned OVN resources.
@@ -686,8 +744,10 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
             dhcp_mac_v6 = '01:02:03:04:05:06'
         self.expected_dhcp_options_rows.append({
             'cidr': '30.0.0.0/24',
-            'external_ids': {'subnet_id': n3_s1['subnet']['id'],
-                             ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
+            'external_ids': {
+                'subnet_id': n3_s1['subnet']['id'],
+                ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n3['network']['id'],
+                ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
             'options': {'classless_static_route':
                         '{169.254.169.254/32,30.0.0.2, 0.0.0.0/0,30.0.0.1}',
                         'server_id': '30.0.0.1',
@@ -699,8 +759,10 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                         'router': n3_s1['subnet']['gateway_ip']}})
         self.expected_dhcp_options_rows.append({
             'cidr': '2001:dbc::/64',
-            'external_ids': {'subnet_id': n3_s2['subnet']['id'],
-                             ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
+            'external_ids': {
+                'subnet_id': n3_s2['subnet']['id'],
+                ovn_const.OVN_NETWORK_ID_EXT_ID_KEY: n3['network']['id'],
+                ovn_const.OVN_REV_NUM_EXT_ID_KEY: '0'},
             'options': {'server_id': dhcp_mac_v6}})
         fake_port_id1 = uuidutils.generate_uuid()
         fake_port_id2 = uuidutils.generate_uuid()
@@ -776,14 +838,21 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
             for lrouter_name in self.create_lrouters:
                 external_ids = {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
                                 lrouter_name}
-                txn.add(self.nb_api.create_lrouter(lrouter_name, True,
-                                                   external_ids=external_ids))
+                txn.add(self.nb_api.lr_add(router=lrouter_name, may_exist=True,
+                                           external_ids=external_ids))
 
             for lrouter_name in self.delete_lrouters:
-                txn.add(self.nb_api.delete_lrouter(lrouter_name, True))
+                txn.add(self.nb_api.lr_del(lrouter_name, if_exists=True))
 
             for lrport, lrouter_name in self.create_lrouter_ports:
-                txn.add(self.nb_api.add_lrouter_port(lrport, lrouter_name))
+                external_ids = {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                                lrouter_name}
+                txn.add(self.nb_api.add_lrouter_port(
+                    lrport, lrouter_name, True, external_ids=external_ids))
+
+            for lrport, lrouter_name in self.create_ext_lrouter_ports:
+                txn.add(self.nb_api.add_lrouter_port(
+                    lrport, lrouter_name, True))
 
             for lrport, lrouter_name, networks in self.update_lrouter_ports:
                 txn.add(self.nb_api.update_lrouter_port(
@@ -794,15 +863,24 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 txn.add(self.nb_api.delete_lrouter_port(lrport,
                                                         lrouter_name, True))
 
+            columns = {'external_ids': {ovn_const.OVN_LRSR_EXT_ID_KEY: 'true'}}
             for lrouter_name, ip_prefix, nexthop in self.create_lrouter_routes:
                 txn.add(self.nb_api.add_static_route(lrouter_name,
                                                      ip_prefix=ip_prefix,
+                                                     nexthop=nexthop,
+                                                     **columns))
+            for lr_name, ip_prefix, nexthop in self.create_ext_lrouter_routes:
+                txn.add(self.nb_api.add_static_route(lr_name,
+                                                     ip_prefix=ip_prefix,
                                                      nexthop=nexthop))
-
+            routers = defaultdict(list)
             for lrouter_name, ip_prefix, nexthop in self.delete_lrouter_routes:
-                txn.add(self.nb_api.delete_static_route(lrouter_name,
-                                                        ip_prefix, nexthop,
-                                                        True))
+                routers[lrouter_name].append((ip_prefix, nexthop))
+
+            for lrouter_name, routes_to_delete in routers.items():
+                txn.add(self.nb_api.delete_static_routes(lrouter_name,
+                                                         routes_to_delete,
+                                                         True))
 
             for lrouter_name, nat_dict in self.create_lrouter_nats:
                 txn.add(self.nb_api.add_nat_rule_in_lrouter(
@@ -827,18 +905,23 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 txn.add(self.nb_api.delete_acl(lswitch_name,
                                                lport_name, True))
 
+            columns = {
+                'external_ids': {ovn_const.OVN_SG_EXT_ID_KEY: 'sg_uuid'},
+            }
             for pg in self.create_port_groups:
+                txn.add(self.nb_api.pg_add(**pg, **columns))
+            for pg in self.create_ext_port_groups:
                 txn.add(self.nb_api.pg_add(**pg))
             for pg in self.delete_port_groups:
                 txn.add(self.nb_api.pg_del(pg))
 
             for lport_name in self.reset_lport_dhcpv4_options:
-                txn.add(self.nb_api.set_lswitch_port(lport_name, True,
-                                                     dhcpv4_options=[]))
+                txn.add(self.nb_api.set_lswitch_port(
+                    lport_name, if_exists=True, dhcpv4_options=[]))
 
             for lport_name in self.reset_lport_dhcpv6_options:
-                txn.add(self.nb_api.set_lswitch_port(lport_name, True,
-                                                     dhcpv6_options=[]))
+                txn.add(self.nb_api.set_lswitch_port(
+                    lport_name, if_exists=True, dhcpv6_options=[]))
 
             for dhcp_opts in self.stale_lport_dhcpv4_options:
                 dhcpv4_opts = txn.add(self.nb_api.add_dhcp_options(
@@ -851,7 +934,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 if dhcp_opts['port_id'] in self.orphaned_lport_dhcp_options:
                     continue
                 txn.add(self.nb_api.set_lswitch_port(
-                    lport_name, True, dhcpv4_options=dhcpv4_opts))
+                    lport_name, if_exists=True, dhcpv4_options=dhcpv4_opts))
 
             for dhcp_opts in self.stale_lport_dhcpv6_options:
                 dhcpv6_opts = txn.add(self.nb_api.add_dhcp_options(
@@ -864,7 +947,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 if dhcp_opts['port_id'] in self.orphaned_lport_dhcp_options:
                     continue
                 txn.add(self.nb_api.set_lswitch_port(
-                    lport_name, True, dhcpv6_options=dhcpv6_opts))
+                    lport_name, if_exists=True, dhcpv6_options=dhcpv6_opts))
 
             for row_uuid in self.missed_dhcp_options:
                 txn.add(self.nb_api.delete_dhcp_options(row_uuid))
@@ -881,12 +964,12 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
 
             for port_id in self.lport_dhcpv4_disabled:
                 txn.add(self.nb_api.set_lswitch_port(
-                    port_id, True,
+                    port_id, if_exists=True,
                     dhcpv4_options=[self.lport_dhcpv4_disabled[port_id]]))
 
             for port_id in self.lport_dhcpv6_disabled:
                 txn.add(self.nb_api.set_lswitch_port(
-                    port_id, True,
+                    port_id, if_exists=True,
                     dhcpv6_options=[self.lport_dhcpv6_disabled[port_id]]))
 
             # Delete the first DNS record and clear the second row records
@@ -913,12 +996,12 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         # Get the list of lswitch ids stored in the OVN plugin IDL
         _plugin_nb_ovn = self.mech_driver.nb_ovn
         plugin_lswitch_ids = [
-            row.name.replace('neutron-', '') for row in (
+            utils.get_neutron_name(row.name) for row in (
                 _plugin_nb_ovn._tables['Logical_Switch'].rows.values())]
 
         # Get the list of lswitch ids stored in the monitor IDL connection
         monitor_lswitch_ids = [
-            row.name.replace('neutron-', '') for row in (
+            utils.get_neutron_name(row.name) for row in (
                 self.nb_api.tables['Logical_Switch'].rows.values())]
 
         # Get the list of provnet ports stored in the OVN plugin IDL
@@ -963,8 +1046,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         db_metadata_ports_ids = set()
         db_metadata_ports_nets = set()
         for port in db_ports['ports']:
-            if (port['device_owner'] == constants.DEVICE_OWNER_DISTRIBUTED and
-                    port['device_id'].startswith('ovnmeta')):
+            if utils.is_ovn_metadata_port(port):
                 db_metadata_ports_ids.add(port['id'])
                 db_metadata_ports_nets.add(port['network_id'])
         db_networks = self._list('networks')
@@ -992,10 +1074,10 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         db_ports = self._list('ports')
         db_port_ids = [port['id'] for port in db_ports['ports'] if
                        not utils.is_lsp_ignored(port)]
-        db_port_ids_dhcp_valid = set(
+        db_port_ids_dhcp_valid = {
             port['id'] for port in db_ports['ports']
             if not utils.is_network_device_port(port) and
-            port['id'] not in self.lport_dhcp_ignored)
+            port['id'] not in self.lport_dhcp_ignored}
 
         _plugin_nb_ovn = self.mech_driver.nb_ovn
         plugin_lport_ids = [
@@ -1070,7 +1152,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
 
     @staticmethod
     def _build_acl_for_pgs(priority, direction, log, name, action,
-                           severity, match, port_group, **kwargs):
+                           severity, match, meter, port_group, **kwargs):
         return {
             'priority': priority,
             'direction': direction,
@@ -1079,6 +1161,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
             'action': action,
             'severity': severity,
             'match': match,
+            'meter': meter,
             'external_ids': kwargs}
 
     def _validate_dhcp_opts(self, should_match=True):
@@ -1134,7 +1217,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 pass
         return acl_utils.filter_acl_dict(acl_to_compare, extra_fields)
 
-    def _validate_acls(self, should_match=True):
+    def _validate_acls(self, should_match=True, db_duplicate_port=None):
         # Get the neutron DB ACLs.
         db_acls = []
 
@@ -1150,6 +1233,9 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         for acl in acl_utils.add_acls_for_drop_port_group(
                 ovn_const.OVN_DROP_PORT_GROUP_NAME):
             db_acls.append(TestOvnNbSync._build_acl_for_pgs(**acl))
+
+        self.ovn_log_driver.add_logging_options_to_acls(db_acls,
+                                                        self.ctx)
 
         # Get the list of ACLs stored in the OVN plugin IDL.
         plugin_acls = []
@@ -1171,7 +1257,37 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
             for acl in getattr(row, 'acls', []):
                 monitor_acls.append(self._build_acl_to_compare(acl))
 
+        self.ovn_log_driver.add_logging_options_to_acls(monitor_acls,
+                                                        self.ctx)
+        self.ovn_log_driver.add_logging_options_to_acls(plugin_acls,
+                                                        self.ctx)
+
+        # Values taken out from list for comparison, since ACLs from OVN DB
+        # have certain values on a list of just one object
         if should_match:
+            if db_duplicate_port:
+                # If we have a duplicate port, that indicates there are two
+                # DB entries that map to the same ACL. Remove the extra from
+                # our comparison.
+                dup_acl = None
+                for acl in db_acls:
+                    if (str(db_duplicate_port) in acl['match'] and
+                            acl not in plugin_acls):
+                        dup_acl = acl
+                        break
+                # There should have been a duplicate
+                self.assertIsNotNone(dup_acl)
+                db_acls.remove(dup_acl)
+            for acl in plugin_acls:
+                if isinstance(acl['severity'], list) and acl['severity']:
+                    acl['severity'] = acl['severity'][0]
+                    acl['name'] = acl['name'][0]
+                    acl['meter'] = acl['meter'][0]
+            for acl in monitor_acls:
+                if isinstance(acl['severity'], list) and acl['severity']:
+                    acl['severity'] = acl['severity'][0]
+                    acl['name'] = acl['name'][0]
+                    acl['meter'] = acl['meter'][0]
             self.assertCountEqual(db_acls, plugin_acls)
             self.assertCountEqual(db_acls, monitor_acls)
         else:
@@ -1193,10 +1309,10 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                                           db_route['nexthop']
                                           for db_route in db_router['routes']]
             db_nats[db_router['id']] = []
-            if db_router.get(l3.EXTERNAL_GW_INFO):
-                gateways = self.l3_plugin._ovn_client._get_gw_info(
-                    self.context, db_router)
-                for gw_info in gateways:
+            for gw_port in self.l3_plugin._ovn_client._get_router_gw_ports(
+                    self.context, db_router['id']):
+                for gw_info in self.l3_plugin._ovn_client._get_gw_info(
+                        self.context, gw_port):
                     # Add gateway default route and snats
                     if gw_info.gateway_ip:
                         db_routes[db_router['id']].append(gw_info.ip_prefix +
@@ -1232,11 +1348,11 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
 
         _plugin_nb_ovn = self.mech_driver.nb_ovn
         plugin_lrouter_ids = [
-            row.name.replace('neutron-', '') for row in (
+            utils.get_neutron_name(row.name) for row in (
                 _plugin_nb_ovn._tables['Logical_Router'].rows.values())]
 
         monitor_lrouter_ids = [
-            row.name.replace('neutron-', '') for row in (
+            utils.get_neutron_name(row.name) for row in (
                 self.nb_api.tables['Logical_Router'].rows.values())]
 
         if should_match:
@@ -1265,6 +1381,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                     self.ctx, port))
             return ipv6_ra_configs
 
+        neutron_prefix = constants.DEVICE_OWNER_NEUTRON_PREFIX
         for router_id in db_router_ids:
             r_ports = self._list('ports',
                                  query_params='device_id=%s' % (router_id))
@@ -1283,18 +1400,27 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 lrouter = idlutils.row_by_value(
                     self.mech_driver.nb_ovn.idl, 'Logical_Router', 'name',
                     'neutron-' + str(router_id), None)
-                lports = getattr(lrouter, 'ports', [])
+                all_lports = getattr(lrouter, 'ports', [])
+                managed_lports = [
+                    lport for lport in all_lports
+                    if (ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY in
+                        lport.external_ids)
+                ]
+
                 plugin_lrouter_port_ids = [lport.name.replace('lrp-', '')
-                                           for lport in lports]
+                                           for lport in managed_lports]
                 plugin_lport_networks = {
                     lport.name.replace('lrp-', ''): lport.networks
-                    for lport in lports}
+                    for lport in managed_lports}
                 plugin_lport_ra_configs = {
                     lport.name.replace('lrp-', ''): lport.ipv6_ra_configs
-                    for lport in lports}
+                    for lport in managed_lports}
                 sroutes = getattr(lrouter, 'static_routes', [])
-                plugin_routes = [sroute.ip_prefix + sroute.nexthop
-                                 for sroute in sroutes]
+                plugin_routes = []
+                for sroute in sroutes:
+                    if any(e_id.startswith(neutron_prefix)
+                           for e_id in sroute.external_ids):
+                        plugin_routes.append(sroute.ip_prefix + sroute.nexthop)
                 nats = getattr(lrouter, 'nat', [])
                 plugin_nats = [
                     nat.external_ip + nat.logical_ip + nat.type +
@@ -1310,18 +1436,29 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 lrouter = idlutils.row_by_value(
                     self.nb_api.idl, 'Logical_Router', 'name',
                     'neutron-' + router_id, None)
-                lports = getattr(lrouter, 'ports', [])
+                all_lports = getattr(lrouter, 'ports', [])
+                managed_lports = [
+                    lport for lport in all_lports
+                    if (ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY in
+                        lport.external_ids)
+                ]
                 monitor_lrouter_port_ids = [lport.name.replace('lrp-', '')
-                                            for lport in lports]
+                                            for lport in managed_lports]
                 monitor_lport_networks = {
                     lport.name.replace('lrp-', ''): lport.networks
-                    for lport in lports}
+                    for lport in managed_lports}
                 monitor_lport_ra_configs = {
                     lport.name.replace('lrp-', ''): lport.ipv6_ra_configs
-                    for lport in lports}
+                    for lport in managed_lports}
                 sroutes = getattr(lrouter, 'static_routes', [])
-                monitor_routes = [sroute.ip_prefix + sroute.nexthop
-                                  for sroute in sroutes]
+                monitor_routes = []
+                for sroute in sroutes:
+                    if any(e_id.startswith(neutron_prefix)
+                           for e_id in sroute.external_ids):
+                        monitor_routes.append(
+                            sroute.ip_prefix + sroute.nexthop
+                        )
+
                 nats = getattr(lrouter, 'nat', [])
                 monitor_nats = [
                     nat.external_ip + nat.logical_ip + nat.type +
@@ -1474,17 +1611,19 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         db_pgs = []
         for sg in self._list('security-groups')['security_groups']:
             db_pgs.append(utils.ovn_port_group_name(sg['id']))
-        db_pgs.append(ovn_const.OVN_DROP_PORT_GROUP_NAME)
 
         nb_pgs = _plugin_nb_ovn.get_sg_port_groups()
 
         mn_pgs = []
         for row in self.nb_api.tables['Port_Group'].rows.values():
-            mn_pgs.append(getattr(row, 'name', ''))
+            if (ovn_const.OVN_SG_EXT_ID_KEY in row.external_ids or
+                    row.name == ovn_const.OVN_DROP_PORT_GROUP_NAME):
+                mn_pgs.append(getattr(row, 'name', ''))
 
         if should_match:
             self.assertCountEqual(nb_pgs, db_pgs)
-            self.assertCountEqual(mn_pgs, db_pgs)
+            # pg_drop port group doesn't have corresponding neutron sg
+            self.assertEqual(len(mn_pgs), len(db_pgs) + 1)
         else:
             self.assertRaises(AssertionError, self.assertCountEqual,
                               nb_pgs, db_pgs)
@@ -1501,9 +1640,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         """
         db_ports = self._list('ports')
         db_metadata_ports = [port for port in db_ports['ports'] if
-                             port['device_owner'] ==
-                             constants.DEVICE_OWNER_DISTRIBUTED and
-                             port['device_id'].startswith('ovnmeta')]
+                             utils.is_ovn_metadata_port(port)]
         lswitches = {}
         ports_to_delete = len(db_metadata_ports) / 2
         for port in db_metadata_ports:
@@ -1562,8 +1699,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
 
     def _sync_resources(self, mode):
         nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
-            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
-            mode, self.mech_driver)
+            self.plugin, self.mech_driver, mode)
         self.addCleanup(nb_synchronizer.stop)
         nb_synchronizer.do_sync()
 
@@ -1587,41 +1723,87 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
 
         self._sync_resources(mode)
         self._validate_resources(should_match=should_match_after_sync)
+        if not restart_ovsdb_processes:
+            # Restarting ovsdb-server removes all its previous content.
+            # We can not expect to find external resources in the DB
+            # if it was wiped out.
+            self._validate_external_resources()
+
+    def _validate_external_resources(self):
+        """Ensure that resources not owned by Neutron are in the OVN DB.
+
+        This function is useful to validate that external resources survived
+        ovn_db_sync.
+        """
+        db_routers = self._list('routers')
+        db_router_ids = [router['id'] for router in db_routers['routers']]
+
+        pgs = []
+        for pg in self.nb_api.tables['Port_Group'].rows.values():
+            pgs.append(pg.name)
+
+        lrports = []
+        sroutes = []
+        for router_id in db_router_ids:
+            lrouter = idlutils.row_by_value(
+                self.mech_driver.nb_ovn.idl, 'Logical_Router', 'name',
+                'neutron-' + str(router_id), None)
+
+            for lrport in getattr(lrouter, 'ports', []):
+                lrports.append(lrport.name)
+
+            for route in getattr(lrouter, 'static_routes', []):
+                sroutes.append(route.ip_prefix + route.nexthop)
+
+        for port_name, _ in self.create_ext_lrouter_ports:
+            self.assertIn(port_name, lrports)
+
+        for _, prefix, next_hop in self.create_ext_lrouter_routes:
+            self.assertIn(prefix + next_hop, sroutes)
+
+        for ext_pg in self.create_ext_port_groups:
+            self.assertIn(ext_pg['name'], pgs)
 
     def test_ovn_nb_sync_repair(self):
-        self._test_ovn_nb_sync_helper('repair')
+        self._test_ovn_nb_sync_helper(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
 
     def test_ovn_nb_sync_repair_delete_ovn_nb_db(self):
         # In this test case, the ovsdb-server for OVN NB DB is restarted
         # with empty OVN NB DB.
-        self._test_ovn_nb_sync_helper('repair', modify_resources=False,
+        self._test_ovn_nb_sync_helper(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR,
+                                      modify_resources=False,
                                       restart_ovsdb_processes=True)
 
     def test_ovn_nb_sync_log(self):
-        self._test_ovn_nb_sync_helper('log', should_match_after_sync=False)
+        self._test_ovn_nb_sync_helper(n_lib_ovn_const.OVN_DB_SYNC_MODE_LOG,
+                                      should_match_after_sync=False)
 
     def test_ovn_nb_sync_off(self):
-        self._test_ovn_nb_sync_helper('off', should_match_after_sync=False)
+        self._test_ovn_nb_sync_helper(n_lib_ovn_const.OVN_DB_SYNC_MODE_OFF,
+                                      should_match_after_sync=False)
 
     def test_sync_port_qos_policies(self):
         res = self._create_network(self.fmt, 'n1', True)
         net = self.deserialize(self.fmt, res)['network']
         self._create_subnet(self.fmt, net['id'], '10.0.0.0/24')
 
-        res = self._create_qos_policy(self.fmt, 'qos_maxbw')
+        res = self._create_qos_policy(self.fmt, 'qos_maxbw', is_admin=True)
         qos_maxbw = self.deserialize(self.fmt, res)['policy']
         self._create_qos_rule(self.fmt, qos_maxbw['id'],
                               qos_const.RULE_TYPE_BANDWIDTH_LIMIT,
-                              max_kbps=1000, max_burst_kbps=800)
+                              max_kbps=1000, max_burst_kbps=800,
+                              is_admin=True)
         self._create_qos_rule(self.fmt, qos_maxbw['id'],
                               qos_const.RULE_TYPE_BANDWIDTH_LIMIT,
                               direction=constants.INGRESS_DIRECTION,
-                              max_kbps=700, max_burst_kbps=600)
+                              max_kbps=700, max_burst_kbps=600,
+                              is_admin=True)
 
-        res = self._create_qos_policy(self.fmt, 'qos_maxbw')
+        res = self._create_qos_policy(self.fmt, 'qos_maxbw', is_admin=True)
         qos_dscp = self.deserialize(self.fmt, res)['policy']
         self._create_qos_rule(self.fmt, qos_dscp['id'],
-                              qos_const.RULE_TYPE_DSCP_MARKING, dscp_mark=14)
+                              qos_const.RULE_TYPE_DSCP_MARKING, dscp_mark=14,
+                              is_admin=True)
 
         res = self._create_port(
             self.fmt, net['id'], arg_list=('qos_policy_id', ),
@@ -1654,30 +1836,32 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         with self.nb_api.transaction(check_error=True) as txn:
             for port in (port_1, port_2):
                 for ovn_rule in [self.qos_driver._ovn_qos_rule(
-                        direction, {}, port['id'], port['network_id'],
-                        delete=True)
+                        direction, {}, port['id'], port['network_id'])
                         for direction in constants.VALID_DIRECTIONS]:
                     txn.add(self.nb_api.qos_del(**ovn_rule))
         self._validate_qos_records(should_match=False)
 
         # Manually sync port QoS registers.
         nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
-            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
-            'log', self.mech_driver)
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_LOG, is_maintenance=True)
         ctx = context.get_admin_context()
         nb_synchronizer.sync_port_qos_policies(ctx)
         self._validate_qos_records()
 
-    def _create_floatingip(self, fip_network_id, port_id, qos_policy_id):
-        body = {'tenant_id': self._tenant_id,
+    def _create_floatingip(self, fip_network_id, port_id, qos_policy_id=None):
+        body = {'project_id': self._project_id,
                 'floating_network_id': fip_network_id,
                 'port_id': port_id,
-                'qos_policy_id': qos_policy_id}
+                }
+        if qos_policy_id:
+            body['qos_policy_id'] = qos_policy_id
+
         return self.l3_plugin.create_floatingip(self.context,
                                                 {'floatingip': body})
 
     def test_sync_fip_qos_policies(self):
-        res = self._create_network(self.fmt, 'n1_ext', True,
+        res = self._create_network(self.fmt, 'n1_ext', True, as_admin=True,
                                    arg_list=('router:external', ),
                                    **{'router:external': True})
         net_ext = self.deserialize(self.fmt, res)['network']
@@ -1687,20 +1871,22 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         net_int = self.deserialize(self.fmt, res)['network']
         self._create_subnet(self.fmt, net_int['id'], '10.10.0.0/24')
 
-        res = self._create_qos_policy(self.fmt, 'qos_maxbw')
+        res = self._create_qos_policy(self.fmt, 'qos_maxbw', is_admin=True)
         qos_maxbw = self.deserialize(self.fmt, res)['policy']
         self._create_qos_rule(self.fmt, qos_maxbw['id'],
                               qos_const.RULE_TYPE_BANDWIDTH_LIMIT,
-                              max_kbps=1000, max_burst_kbps=800)
+                              max_kbps=1000, max_burst_kbps=800,
+                              is_admin=True)
         self._create_qos_rule(self.fmt, qos_maxbw['id'],
                               qos_const.RULE_TYPE_BANDWIDTH_LIMIT,
                               direction=constants.INGRESS_DIRECTION,
-                              max_kbps=700, max_burst_kbps=600)
+                              max_kbps=700, max_burst_kbps=600,
+                              is_admin=True)
 
         # Create a router with net_ext as GW network and net_int as internal
         # one, and a floating IP on the external network.
         data = {'name': 'r1', 'admin_state_up': True,
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'external_gateway_info': {
                     'enable_snat': True,
                     'network_id': net_ext['id'],
@@ -1743,29 +1929,121 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
 
         # Manually sync port QoS registers.
         nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
-            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
-            'log', self.mech_driver)
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_LOG, is_maintenance=True)
         ctx = context.get_admin_context()
         nb_synchronizer.sync_fip_qos_policies(ctx)
         self._validate_qos_records()
 
-    def test_fip_nat_revert_to_stateful(self):
-        res = self._create_network(self.fmt, 'n1_ext', True,
-                                   arg_list=('router:external', ),
+    def _create_security_group_rule(self, sg_id, direction, tcp_port,
+                                    remote_ip_prefix=None):
+        data = {'security_group_rule': {'security_group_id': sg_id,
+                                        'direction': direction,
+                                        'protocol': constants.PROTO_NAME_TCP,
+                                        'ethertype': constants.IPv4,
+                                        'port_range_min': tcp_port,
+                                        'port_range_max': tcp_port}}
+        if remote_ip_prefix:
+            data['security_group_rule']['remote_ip_prefix'] = remote_ip_prefix
+        req = self.new_create_request('security-group-rules', data, self.fmt)
+        res = req.get_response(self.api)
+        sgr = self.deserialize(self.fmt, res)
+        self.assertIn('security_group_rule', sgr)
+        return sgr['security_group_rule']['id']
+
+    def _test_sync_acls_helper(self, test_log=False,
+                               log_event=log_const.ALL_EVENT):
+        data = {'security_group': {'name': 'sg1'}}
+        sg_req = self.new_create_request('security-groups', data)
+        res = sg_req.get_response(self.api)
+        sg = self.deserialize(self.fmt, res)['security_group']
+
+        sgr_ids = []
+
+        # If we are going to test ACLs with log enabled, set up a log object
+        if test_log:
+            log_data = {'log': {'project_id': self.ctx.project_id,
+            'resource_type': 'security_group',
+            'description': 'test net log',
+            'name': 'logme',
+            'enabled': True,
+            'event': log_event}}
+            log_obj = self.log_plugin.create_log(self.ctx, log_data)
+
+        for tcp_port in range(8050, 8055):
+            sgr_ids.append(self._create_security_group_rule(
+                sg['id'], 'ingress', tcp_port))
+        for tcp_port in range(10000, 10005):
+            sgr_ids.append(self._create_security_group_rule(
+                sg['id'], 'egress', tcp_port))
+        self._validate_acls()
+
+        # Delete ACLs from the OVN DB.
+        with self.nb_api.transaction(check_error=True) as txn:
+            pg_name = utils.ovn_port_group_name(sg['id'])
+            txn.add(self.nb_api.pg_acl_del(pg_name, direction='to-lport'))
+        self._validate_acls(should_match=False)
+
+        nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+        ctx = context.get_admin_context()
+        nb_synchronizer.sync_acls(ctx)
+        self._validate_acls()
+        # Delete Security Group Rules from Neutron DB.
+        for i in range(5):
+            with db_api.CONTEXT_WRITER.using(context):
+                sgr = self.plugin._get_security_group_rule(
+                    self.ctx, sgr_ids[i])
+                sgr.delete()
+        self._validate_acls(should_match=False)
+        nb_synchronizer.sync_acls(ctx)
+        self._validate_acls()
+
+        # Remove log object to avoid overlapping
+        if test_log:
+            log_obj = self.log_plugin.delete_log(self.ctx, log_obj['id'])
+
+    def test_sync_acls(self):
+        self._test_sync_acls_helper()
+
+    def test_sync_acls_with_logging(self):
+        self._test_sync_acls_helper(test_log=True,
+                                    log_event=log_const.ACCEPT_EVENT)
+        self._test_sync_acls_helper(test_log=True,
+                                    log_event=log_const.ALL_EVENT)
+        self._test_sync_acls_helper(test_log=True,
+                                    log_event=log_const.DROP_EVENT)
+
+    def test_sync_acls_overlapping_cidr(self):
+        data = {'security_group': {'name': 'sgdup'}}
+        sg_req = self.new_create_request('security-groups', data)
+        res = sg_req.get_response(self.api)
+        sg = self.deserialize(self.fmt, res)['security_group']
+
+        # Add SG rules that map to the same ACL due to normalizing the cidr
+        for ip_suffix in range(10, 12):
+            remote_ip_prefix = '192.168.0.' + str(ip_suffix) + '/24'
+            self._create_security_group_rule(
+                sg['id'], 'ingress', 9000, remote_ip_prefix=remote_ip_prefix)
+
+        self._validate_acls(db_duplicate_port=9000)
+
+    def test_sync_fip_dnat_rules(self):
+        res = self._create_network(self.fmt, 'n1_ext', True, as_admin=True,
+                                   arg_list=('router:external',),
                                    **{'router:external': True})
         net_ext = self.deserialize(self.fmt, res)['network']
         res = self._create_subnet(self.fmt, net_ext['id'], '10.0.0.0/24')
         subnet_ext = self.deserialize(self.fmt, res)['subnet']
-
         res = self._create_network(self.fmt, 'n1_int', True)
         net_int = self.deserialize(self.fmt, res)['network']
         self._create_subnet(self.fmt, net_int['id'], '10.10.0.0/24')
 
-        port = self._make_port(self.fmt, net_int['id'],
-                               name='test-port')['port']
-
+        # Create a router with net_ext as GW network and net_int as internal
+        # one, and a floating IP on the external network.
         data = {'name': 'r1', 'admin_state_up': True,
-                'tenant_id': self._tenant_id,
+                'project_id': self._project_id,
                 'external_gateway_info': {
                     'enable_snat': True,
                     'network_id': net_ext['id'],
@@ -1773,50 +2051,59 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                                             'subnet_id': subnet_ext['id']}]}
                 }
         router = self.l3_plugin.create_router(self.context, {'router': data})
+        net_int_prtr = self._make_port(self.fmt, net_int['id'],
+                                       name='n1_int-p-rtr')['port']
         self.l3_plugin.add_router_interface(
-            self.context, router['id'], {'port_id': port['id']})
+            self.context, router['id'], {'port_id': net_int_prtr['id']})
 
-        body = {'tenant_id': self._tenant_id,
-                'floating_network_id': net_ext['id'],
-                'port_id': port['id']}
-        self.l3_plugin.create_floatingip(self.context, {'floatingip': body})
+        ovn_config.cfg.CONF.set_override('stateless_nat_enabled', True,
+                                         group='ovn')
+        fip = self._create_floatingip(net_ext['id'], net_int_prtr['id'])
+        nat = self.nb_api.get_floatingip(fip['id'])
+        stateless = strutils.bool_from_string(nat['options']['stateless'])
+        self.assertTrue(stateless)
 
-        self.assertEqual(0, len(self.nb_api.get_all_stateless_fip_nats()))
-
-        def get_all_stateful_fip_nats():
-            cmd = self.nb_api.db_find('NAT',
-                ('external_ids', '!=', {ovn_const.OVN_FIP_EXT_ID_KEY: ''}),
-                ('options', '=', {}),
-                ('type', '=', 'dnat_and_snat'))
-            return cmd.execute(check_error=True)
-
-        with self.nb_api.transaction(check_error=True) as txn:
-            for nat in get_all_stateful_fip_nats():
-                txn.add(self.nb_api.db_set(
-                    'NAT', nat['_uuid'],
-                    ('options', {'stateless': 'true'})))
-
-        self.assertEqual(1, len(self.nb_api.get_all_stateless_fip_nats()))
-
-        nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
-            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
-            'repair', self.mech_driver)
-        nb_synchronizer.migrate_to_stateful_fips(self.context)
-
-        self.assertEqual(0, len(self.nb_api.get_all_stateless_fip_nats()))
+        for value in (False, True):
+            ovn_config.cfg.CONF.set_override('stateless_nat_enabled', value,
+                                             group='ovn')
+            nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
+                self.plugin, self.mech_driver,
+                n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+            nb_synchronizer.sync_fip_dnat_rules()
+            nat = self.nb_api.get_floatingip(fip['id'])
+            stateless = strutils.bool_from_string(nat['options']['stateless'])
+            self.assertEqual(value, stateless)
 
 
 class TestOvnSbSync(base.TestOVNFunctionalBase):
 
     def setUp(self):
-        super(TestOvnSbSync, self).setUp(maintenance_worker=True)
+        self._mock_has_lock = mock.patch.object(
+            maintenance.DBInconsistenciesPeriodics, 'has_lock',
+            mock.PropertyMock(return_value=True))
+        self.mock_has_lock = self._mock_has_lock.start()
+        self._mock_set_lock = mock.patch.object(
+            ovsdb_monitor.BaseOvnIdl, 'set_lock')
+        self.mock_set_lock = self._mock_set_lock.start()
+        super().setUp(maintenance_worker=True)
         self.sb_synchronizer = ovn_db_sync.OvnSbSynchronizer(
-            self.plugin, self.mech_driver.sb_ovn, self.mech_driver)
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
         self.addCleanup(self.sb_synchronizer.stop)
+        self.addCleanup(self._clean_agent_cache)
         self.ctx = context.get_admin_context()
+        self.host1 = uuidutils.generate_uuid()
+        self.sb_api.idl.notify_handler.watch_events([
+            ovsdb_monitor.ChassisAgentWriteEvent(self),
+            ovsdb_monitor.ChassisAgentDownEvent(self),
+            ovsdb_monitor.ChassisAgentDeleteEvent(self),
+        ])
 
     def _sync_resources(self):
         self.sb_synchronizer.sync_hostname_and_physical_networks(self.ctx)
+
+    def _clean_agent_cache(self):
+        del self.sb_synchronizer.agent_cache
 
     def create_segment(self, network_id, physical_network, segmentation_id):
         segment_data = {'network_id': network_id,
@@ -1831,79 +2118,138 @@ class TestOvnSbSync(base.TestOVNFunctionalBase):
     def test_ovn_sb_sync_add_new_host(self):
         with self.network() as network:
             network_id = network['network']['id']
-        self.create_segment(network_id, 'physnet1', 50)
-        self.add_fake_chassis('host1', ['physnet1'])
+        self.create_segment(network_id, self.physnet, 50)
+        self.add_fake_chassis(self.host1, [self.physnet])
         segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
         self.assertFalse(segment_hosts)
         self._sync_resources()
         segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
-        self.assertEqual({'host1'}, segment_hosts)
+        self.assertEqual({self.host1}, segment_hosts)
 
     def test_ovn_sb_sync_update_existing_host(self):
         with self.network() as network:
             network_id = network['network']['id']
-        segment = self.create_segment(network_id, 'physnet1', 50)
+        segment = self.create_segment(network_id, self.physnet, 50)
         segments_db.update_segment_host_mapping(
-            self.ctx, 'host1', {segment['id']})
+            self.ctx, self.host1, {segment['id']})
         segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
-        self.assertEqual({'host1'}, segment_hosts)
-        self.add_fake_chassis('host1', ['physnet2'])
+        self.assertEqual({self.host1}, segment_hosts)
+        self.add_fake_chassis(self.host1, [self.physnet2])
         self._sync_resources()
         segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
         self.assertFalse(segment_hosts)
 
     def test_ovn_sb_sync_delete_stale_host(self):
+        # A stale host implies the presence of an OVN agent related to a
+        # chassis register that has been destroyed (deleted).
         with self.network() as network:
             network_id = network['network']['id']
-        segment = self.create_segment(network_id, 'physnet1', 50)
-        segments_db.update_segment_host_mapping(
-            self.ctx, 'host1', {segment['id']})
+
+        # A chassis mapped to phsynet is created. A segment on this physnet
+        # is created too. The sync call will craete the corresponding segment
+        # mapping.
+        self.create_segment(network_id, self.physnet, 50)
+        ch1 = self.add_fake_chassis(self.host1, [self.physnet])
+        self._sync_resources()
         segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
-        self.assertEqual({'host1'}, segment_hosts)
-        # Since there is no chassis in the sb DB, host1 is the stale host
-        # recorded in neutron DB. It should be deleted after sync.
+        self.assertEqual({self.host1}, segment_hosts)
+
+        # The chassis is deleted but the OVN agent is still present in the
+        # local cache.
+        self.del_fake_chassis(ch1)
         self._sync_resources()
         segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
         self.assertFalse(segment_hosts)
 
-    def test_ovn_sb_sync(self):
+    def test_ovn_sb_sync_host_with_ovn_agent_deleted(self):
+        # If the OVN agent (ovn-controller) of a host (chassis) is deleted,
+        # Neutron considers the host mapping as external; for example, a
+        # baremetal node.
         with self.network() as network:
             network_id = network['network']['id']
-        seg1 = self.create_segment(network_id, 'physnet1', 50)
-        self.create_segment(network_id, 'physnet2', 51)
-        segments_db.update_segment_host_mapping(
-            self.ctx, 'host1', {seg1['id']})
-        segments_db.update_segment_host_mapping(
-            self.ctx, 'host2', {seg1['id']})
-        segments_db.update_segment_host_mapping(
-            self.ctx, 'host3', {seg1['id']})
-        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
-        self.assertEqual({'host1', 'host2', 'host3'}, segment_hosts)
-        self.add_fake_chassis('host2', ['physnet2'])
-        self.add_fake_chassis('host3', ['physnet3'])
-        self.add_fake_chassis('host4', ['physnet1'])
+        self.create_segment(network_id, self.physnet, 50)
+        ch1 = self.add_fake_chassis(self.host1, [self.physnet])
         self._sync_resources()
         segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
-        # host1 should be cleared since it is not in the chassis DB. host3
-        # should be cleared since there is no segment for mapping.
-        self.assertEqual({'host2', 'host4'}, segment_hosts)
+        self.assertEqual({self.host1}, segment_hosts)
 
+        # Delete the chassis and the local cache OVN agent register. The
+        # existing host mapping is considered by Neutron as an external
+        # mapping, not related to an OVN controller agent.
+        self.del_fake_chassis(ch1)
+        neutron_agent.AgentCache().delete(ch1)
+        self._sync_resources()
+        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
+        self.assertEqual({self.host1}, segment_hosts)
 
-class TestOvnNbSyncOverTcp(TestOvnNbSync):
-    def get_ovsdb_server_protocol(self):
-        return 'tcp'
+    def test_ovn_sb_sync_host_with_other_agent_type_not_deleted(self):
+        with self.network() as network:
+            network_id = network['network']['id']
+        segment = self.create_segment(network_id, self.physnet, 50)
+        segments_db.update_segment_host_mapping(
+            self.ctx, self.host1, {segment['id']})
+        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
+        self.assertEqual({self.host1}, segment_hosts)
+        # There is no chassis in the sb DB, self.host1 does not have an agent
+        # so it is not deleted.
+        self._sync_resources()
+        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
+        self.assertEqual({self.host1}, segment_hosts)
 
+    def test_ovn_sb_sync(self):
+        host2 = uuidutils.generate_uuid()
+        host3 = uuidutils.generate_uuid()
+        host4 = uuidutils.generate_uuid()
+        with self.network() as network:
+            network_id = network['network']['id']
+        seg1 = self.create_segment(network_id, self.physnet, 50)
+        self.create_segment(network_id, self.physnet2, 51)
+        segments_db.update_segment_host_mapping(
+            self.ctx, self.host1, {seg1['id']})
+        segments_db.update_segment_host_mapping(
+            self.ctx, host2, {seg1['id']})
+        segments_db.update_segment_host_mapping(
+            self.ctx, host3, {seg1['id']})
+        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
+        self.assertEqual({self.host1, host2, host3}, segment_hosts)
 
-class TestOvnSbSyncOverTcp(TestOvnSbSync):
-    def get_ovsdb_server_protocol(self):
-        return 'tcp'
+        # The `Private_Chassis` register events are monitored by the SB IDL.
+        # Each register is stored as an OVN controller agent in the agent
+        # local cache singleton.
+        # self.sb_api.idl.notify_handler.watch_events([
+        #     ovsdb_monitor.ChassisAgentWriteEvent(self),
+        #     ovsdb_monitor.ChassisAgentDownEvent(self),
+        #     ovsdb_monitor.ChassisAgentDeleteEvent(self),
+        # ])
+        self.add_fake_chassis(host2, [self.physnet2])
+        self.add_fake_chassis(host3, [self.physnet3])
+        ch4 = self.add_fake_chassis(host4, [self.physnet])
 
+        # host1 must be kept because this mapping doesn't belong to an OVN
+        # controller host (could be a baremetal host mapping). Check
+        # LP#2040172.
+        # host3 should be cleared since there is no segment for mapping
+        # (physnet3 doesn't have a related segment created).
+        self._sync_resources()
+        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
+        self.assertEqual({self.host1, host2, host4}, segment_hosts)
 
-class TestOvnNbSyncOverSsl(TestOvnNbSync):
-    def get_ovsdb_server_protocol(self):
-        return 'ssl'
+        # Chassis4 has been removed; during the sync call the host mapping
+        # should be removed too.
+        self.del_fake_chassis(ch4)
+        self._sync_resources()
+        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
+        self.assertEqual({self.host1, host2}, segment_hosts)
 
+        # If chassis4 is added again; the mapping should be re-added too.
+        self.add_fake_chassis(host4, [self.physnet])
+        self._sync_resources()
+        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
+        self.assertEqual({self.host1, host2, host4}, segment_hosts)
 
-class TestOvnSbSyncOverSsl(TestOvnSbSync):
-    def get_ovsdb_server_protocol(self):
-        return 'ssl'
+        # If a new segment is created for physnet3, now chassis3 should be
+        # mapped because this chassis has physnet3 in the bridge mappings.
+        self.create_segment(network_id, self.physnet3, 52)
+        self._sync_resources()
+        segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
+        self.assertEqual({self.host1, host2, host3, host4}, segment_hosts)

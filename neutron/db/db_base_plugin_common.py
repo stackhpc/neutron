@@ -34,6 +34,7 @@ from oslo_log import log as logging
 from sqlalchemy.orm import exc
 
 from neutron.db import models_v2
+from neutron.db import rbac_db_models
 from neutron.objects import base as base_obj
 from neutron.objects import ports as port_obj
 from neutron.objects import subnet as subnet_obj
@@ -49,10 +50,9 @@ def convert_result_to_dict(f):
 
         if result is None:
             return None
-        elif isinstance(result, list):
+        if isinstance(result, list):
             return [r.to_dict() for r in result]
-        else:
-            return result.to_dict()
+        return result.to_dict()
     return inner
 
 
@@ -68,11 +68,12 @@ def filter_fields(f):
             except (IndexError, ValueError):
                 return result
 
-        do_filter = lambda d: {k: v for k, v in d.items() if k in fields}
+        def _do_filter(d):
+            return {k: v for k, v in d.items() if k in fields}
+
         if isinstance(result, list):
-            return [do_filter(obj) for obj in result]
-        else:
-            return do_filter(result)
+            return [_do_filter(obj) for obj in result]
+        return _do_filter(result)
     return inner_filter
 
 
@@ -83,15 +84,14 @@ def make_result_with_fields(f):
         result = f(*args, **kwargs)
         if fields is None:
             return result
-        elif isinstance(result, list):
+        if isinstance(result, list):
             return [db_utils.resource_fields(r, fields) for r in result]
-        else:
-            return db_utils.resource_fields(result, fields)
+        return db_utils.resource_fields(result, fields)
 
     return inner
 
 
-class DbBasePluginCommon(object):
+class DbBasePluginCommon:
     """Stores getters and helper methods for db_base_plugin_v2
 
     All private getters and simple helpers like _make_*_dict were moved from
@@ -144,13 +144,19 @@ class DbBasePluginCommon(object):
 
     def _make_subnet_dict(self, subnet, fields=None, context=None):
         if isinstance(subnet, subnet_obj.Subnet):
-            standard_attr_id = subnet.db_obj.standard_attr.id
+            standard_attr_id = subnet.db_obj.standard_attr_id
         else:
-            standard_attr_id = subnet.standard_attr.id
+            standard_attr_id = subnet.standard_attr_id
 
+        # TODO(haleyb): migrate "tenant_id" to "project_id", remove in G+2
+        if subnet.get('tenant_id') and subnet.get('project_id') is None:
+            subnet['project_id'] = subnet['tenant_id']
+            LOG.warning('project_id key not found in subnet dictionary, using '
+                        'tenant_id instead. This support has been deprecated '
+                        'and will be removed in a future release.')
         res = {'id': subnet['id'],
                'name': subnet['name'],
-               'tenant_id': subnet['tenant_id'],
+               'project_id': subnet['project_id'],
                'network_id': subnet['network_id'],
                'ip_version': subnet['ip_version'],
                'subnetpool_id': subnet['subnetpool_id'],
@@ -168,7 +174,7 @@ class DbBasePluginCommon(object):
         if isinstance(subnet, subnet_obj.Subnet):
             res['cidr'] = str(subnet.cidr)
             res['allocation_pools'] = [{'start': str(pool.start),
-                                       'end': str(pool.end)}
+                                        'end': str(pool.end)}
                                        for pool in subnet.allocation_pools]
             res['host_routes'] = [{'destination': str(route.destination),
                                    'nexthop': str(route.nexthop)}
@@ -182,7 +188,7 @@ class DbBasePluginCommon(object):
         else:
             res['cidr'] = subnet['cidr']
             res['allocation_pools'] = [{'start': pool['first_ip'],
-                                       'end': pool['last_ip']}
+                                        'end': pool['last_ip']}
                                        for pool in subnet['allocation_pools']]
             res['host_routes'] = [{'destination': route['destination'],
                                    'nexthop': route['nexthop']}
@@ -206,7 +212,7 @@ class DbBasePluginCommon(object):
         max_prefixlen = str(subnetpool['max_prefixlen'])
         res = {'id': subnetpool['id'],
                'name': subnetpool['name'],
-               'tenant_id': subnetpool['tenant_id'],
+               'project_id': subnetpool['project_id'],
                'default_prefixlen': default_prefixlen,
                'min_prefixlen': min_prefixlen,
                'max_prefixlen': max_prefixlen,
@@ -227,10 +233,10 @@ class DbBasePluginCommon(object):
                         bulk=False):
         if isinstance(port, port_obj.Port):
             port_data = port.db_obj
-            standard_attr_id = port.db_obj.standard_attr.id
+            standard_attr_id = port.db_obj.standard_attr_id
         else:
             port_data = port
-            standard_attr_id = port.standard_attr.id
+            standard_attr_id = port.standard_attr_id
 
         mac = port["mac_address"]
         if isinstance(mac, netaddr.EUI):
@@ -238,7 +244,7 @@ class DbBasePluginCommon(object):
         res = {"id": port["id"],
                'name': port['name'],
                "network_id": port["network_id"],
-               'tenant_id': port['tenant_id'],
+               'project_id': port['project_id'],
                "mac_address": str(mac),
                "admin_state_up": port["admin_state_up"],
                "status": port["status"],
@@ -299,11 +305,6 @@ class DbBasePluginCommon(object):
         return subnet_obj.Route.get_objects(context,
                                             subnet_id=subnet_id)
 
-    def _get_router_gw_ports_by_network(self, context, network_id):
-        return port_obj.Port.get_objects(
-            context, network_id=network_id,
-            device_owner=constants.DEVICE_OWNER_ROUTER_GW)
-
     @db_api.CONTEXT_READER
     def _get_subnets_by_network(self, context, network_id):
         return subnet_obj.Subnet.get_objects(context, network_id=network_id)
@@ -327,15 +328,18 @@ class DbBasePluginCommon(object):
 
     def _make_network_dict(self, network, fields=None,
                            process_extensions=True, context=None):
+        # TODO(slaweq): Remove 'tenant_id' in the 2027.1 cycle, when it will
+        # not be registered for OwnerCheck anymore.
         res = {'id': network['id'],
                'name': network['name'],
-               'tenant_id': network['tenant_id'],
+               'tenant_id': network['project_id'],
+               'project_id': network['project_id'],
                'admin_state_up': network['admin_state_up'],
                'mtu': network.get('mtu', constants.DEFAULT_NETWORK_MTU),
                'status': network['status'],
                'subnets': [subnet['id']
                            for subnet in network['subnets']],
-               'standard_attr_id': network.standard_attr.id}
+               'standard_attr_id': network.standard_attr_id}
         res['shared'] = self._is_network_shared(context, network.rbac_entries)
         # Call auxiliary extend functions, if any
         if process_extensions:
@@ -344,16 +348,16 @@ class DbBasePluginCommon(object):
 
     def _is_network_shared(self, context, rbac_entries):
         # The shared attribute for a network now reflects if the network
-        # is shared to the calling tenant via an RBAC entry.
-        matches = ('*',) + ((context.tenant_id,) if context else ())
+        # is shared to the calling project via an RBAC entry.
+        matches = ('*',) + ((context.project_id,) if context else ())
         for entry in rbac_entries:
-            if (entry.action == 'access_as_shared' and
+            if (entry.action == rbac_db_models.ACCESS_SHARED and
                     entry.target_project in matches):
                 return True
         return False
 
     def _make_subnet_args(self, detail, subnet, subnetpool_id):
-        args = {'project_id': detail.tenant_id,
+        args = {'project_id': detail.project_id,
                 'id': detail.subnet_id,
                 'name': subnet['name'],
                 'network_id': subnet['network_id'],

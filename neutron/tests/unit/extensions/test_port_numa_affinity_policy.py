@@ -20,7 +20,13 @@ from neutron_lib.db import api as db_api
 
 from neutron.db import db_base_plugin_v2
 from neutron.db import port_numa_affinity_policy_db as pnap_db
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
+
+
+TESTED_POLICIES = (constants.PORT_NUMA_POLICY_REQUIRED,
+                   constants.PORT_NUMA_POLICY_PREFERRED,
+                   constants.PORT_NUMA_POLICY_LEGACY,
+                   )
 
 
 class PortNumaAffinityPolicyExtensionTestPlugin(
@@ -32,17 +38,13 @@ class PortNumaAffinityPolicyExtensionTestPlugin(
 
     def create_port(self, context, port):
         with db_api.CONTEXT_WRITER.using(context):
-            new_port = super(
-                PortNumaAffinityPolicyExtensionTestPlugin,
-                self).create_port(context, port)
+            new_port = super().create_port(context, port)
             self._process_create_port(context, port['port'], new_port)
         return new_port
 
     def update_port(self, context, id, port):
         with db_api.CONTEXT_WRITER.using(context):
-            updated_port = super(
-                PortNumaAffinityPolicyExtensionTestPlugin,
-                self).update_port(context, id, port)
+            updated_port = super().update_port(context, id, port)
             updated_port[portbindings.VIF_TYPE] = portbindings.VIF_TYPE_UNBOUND
             self._process_update_port(context, port['port'], updated_port)
         return updated_port
@@ -56,8 +58,7 @@ class PortNumaAffinityPolicyExtensionTestCase(
     def setUp(self, *args):
         plugin = ('neutron.tests.unit.extensions.test_port_numa_affinity_'
                   'policy.PortNumaAffinityPolicyExtensionTestPlugin')
-        super(PortNumaAffinityPolicyExtensionTestCase,
-              self).setUp(plugin=plugin)
+        super().setUp(plugin=plugin)
 
     def _create_and_check_port_nap(self, numa_affinity_policy):
         name = 'numa_affinity_policy'
@@ -78,9 +79,9 @@ class PortNumaAffinityPolicyExtensionTestCase(
         self.assertEqual(numa_affinity_policy,
                          res['port']['numa_affinity_policy'])
 
-    @ddt.data(*constants.PORT_NUMA_POLICIES, None)
+    @ddt.data(*TESTED_POLICIES, None)
     def test_create_and_update_port_numa_affinity_policy(self,
                                                          numa_affinity_policy):
         port = self._create_and_check_port_nap(numa_affinity_policy)
-        for new_nap in (*constants.PORT_NUMA_POLICIES, None):
+        for new_nap in (*TESTED_POLICIES, None):
             self._update_and_check_port_nap(port, new_nap)

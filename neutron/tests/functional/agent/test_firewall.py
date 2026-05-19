@@ -19,6 +19,7 @@
 
 import copy
 import functools
+import unittest
 from unittest import mock
 
 import netaddr
@@ -28,6 +29,7 @@ from oslo_log import log as logging
 from oslo_utils import uuidutils
 import testscenarios
 
+from neutron.agent.linux import ip_conntrack
 from neutron.agent.linux import iptables_firewall
 from neutron.agent.linux import openvswitch_firewall
 from neutron.agent.linux.openvswitch_firewall import constants as ovsfw_consts
@@ -89,7 +91,10 @@ class BaseFirewallTestCase(linux_base.BaseOVSLinuxTestCase):
         [('OVS Firewall Driver', {'initialize': 'initialize_ovs',
                                   'firewall_name': 'openvswitch'})])
 
-    scenarios = scenarios_iptables + scenarios_ovs_fw_interfaces
+    # NOTE(ralonsoh): skip running "scenarios_ovs_fw_interfaces" because of
+    # the usage of ``OVSOFControllerHelper``.
+    # Refactor this tests to make it compatible after the eventlet removal.
+    scenarios = scenarios_iptables
 
     ip_cidr = None
     vlan_range = set(range(1, test_constants.VLAN_COUNT - 1))
@@ -97,7 +102,7 @@ class BaseFirewallTestCase(linux_base.BaseOVSLinuxTestCase):
     def setUp(self):
         security_config.register_securitygroups_opts()
         self.net_id = uuidutils.generate_uuid()
-        super(BaseFirewallTestCase, self).setUp()
+        super().setUp()
         self.tester, self.firewall = getattr(self, self.initialize)()
         if self.firewall_name == "openvswitch":
             self.assign_vlan_to_peers()
@@ -120,8 +125,12 @@ class BaseFirewallTestCase(linux_base.BaseOVSLinuxTestCase):
         tester = self.useFixture(
             conn_testers.LinuxBridgeConnectionTester(self.ip_cidr,
                                                      bridge_name=br_name))
-        firewall_drv = iptables_firewall.IptablesFirewallDriver(
-            namespace=tester.bridge_namespace)
+        with mock.patch.object(ip_conntrack.IpConntrackManager,
+                               '_process_queue_worker'):
+            # NOTE(ralonsoh): it is needed to mock this method to avoid leaving
+            # a forever running thread.
+            firewall_drv = iptables_firewall.IptablesFirewallDriver(
+                namespace=tester.bridge_namespace)
         return tester, firewall_drv
 
     def initialize_ovs(self):
@@ -183,9 +192,11 @@ class FirewallTestCase(BaseFirewallTestCase):
         sg_rules = [{'ethertype': 'IPv4', 'direction': 'egress'},
                     {'ethertype': 'IPv6', 'direction': 'egress'},
                     {'ethertype': 'IPv4', 'direction': 'ingress',
-                     'source_ip_prefix': '0.0.0.0/0', 'protocol': 'icmp'},
+                     'source_ip_prefix': constants.IPv4_ANY,
+                     'protocol': 'icmp'},
                     {'ethertype': 'IPv6', 'direction': 'ingress',
-                     'source_ip_prefix': '0::0/0', 'protocol': 'ipv6-icmp'}]
+                     'source_ip_prefix': constants.IPv6_ANY,
+                     'protocol': 'ipv6-icmp'}]
         # make sure port ranges converge on all protocols with and without
         # port ranges (prevents regression of bug 1502924)
         for proto in ('tcp', 'udp', 'icmp'):
@@ -272,8 +283,9 @@ class FirewallTestCase(BaseFirewallTestCase):
         self._assert_sg_out_tcp_rules_appear_in_order(sg_rules)
 
     def _assert_sg_out_tcp_rules_appear_in_order(self, sg_rules):
-        outgoing_rule_pref = '-A %s-o%s' % (self.firewall.iptables.wrap_name,
-                                            self.src_port_desc['device'][3:13])
+        outgoing_rule_pref = '-A {}-o{}'.format(
+            self.firewall.iptables.wrap_name,
+            self.src_port_desc['device'][3:13])
         rules = [
             r for r in self.firewall.iptables.get_rules_for_table('filter')
             if r.startswith(outgoing_rule_pref)
@@ -560,7 +572,7 @@ class FirewallTestCase(BaseFirewallTestCase):
         self._apply_security_group_rules(self.FAKE_SECURITY_GROUP_ID, sg_rules)
         self.tester.establish_connection(**connection)
 
-        self._apply_security_group_rules(self.FAKE_SECURITY_GROUP_ID, list())
+        self._apply_security_group_rules(self.FAKE_SECURITY_GROUP_ID, [])
         self.tester.assert_no_established_connection(**connection)
 
     def test_preventing_firewall_blink(self):
@@ -662,6 +674,13 @@ class FirewallTestCase(BaseFirewallTestCase):
 class FirewallTestCaseIPv6(BaseFirewallTestCase):
     scenarios = BaseFirewallTestCase.scenarios_ovs_fw_interfaces
     ip_cidr = '2001:db8:aaaa::1/64'
+
+    # TODO(ralonsoh): refactor this test to make it compatible after the
+    # eventlet removal.
+    @unittest.skip('This test is skipped after the eventlet removal and '
+                   'needs to be refactored')
+    def setUp(self):
+        pass
 
     def test_icmp_from_specific_address(self):
         sg_rules = [{'ethertype': constants.IPv6,

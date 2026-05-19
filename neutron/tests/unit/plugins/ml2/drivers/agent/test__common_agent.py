@@ -48,13 +48,12 @@ PORT_DATA = {
 
 class TestCommonAgentLoop(base.BaseTestCase):
     def setUp(self):
-        super(TestCommonAgentLoop, self).setUp()
+        super().setUp()
         # disable setting up periodic state reporting
         cfg.CONF.set_override('report_interval', 0, 'AGENT')
         cfg.CONF.set_default('firewall_driver',
                              'neutron.agent.firewall.NoopFirewallDriver',
                              group='SECURITYGROUP')
-        cfg.CONF.set_override('local_ip', LOCAL_IP, 'VXLAN')
         self.get_bridge_names_p = mock.patch.object(bridge_lib,
                                                     'get_bridge_names')
         self.get_bridge_names = self.get_bridge_names_p.start()
@@ -96,7 +95,7 @@ class TestCommonAgentLoop(base.BaseTestCase):
         agent.plugin_rpc.get_devices_details_list.return_value = [mock_details]
         agent.mgr = mock.Mock()
         agent.mgr.plug_interface.return_value = True
-        agent.treat_devices_added_updated(set(['dev123']))
+        agent.treat_devices_added_updated({'dev123'})
         handler.assert_called_once_with(mock.ANY, mock.ANY, self.agent,
                                         payload=mock.ANY)
 
@@ -204,7 +203,7 @@ class TestCommonAgentLoop(base.BaseTestCase):
         # 3 and 4 are not returned because 3 is a new device and 4 is a
         # removed device
         self.assertEqual(
-            set([1]),
+            {1},
             self.agent._get_devices_locally_modified(new_ts, old_ts))
 
     def _test_scan_devices(self, previous, updated,
@@ -221,14 +220,14 @@ class TestCommonAgentLoop(base.BaseTestCase):
         self.assertEqual(expected, results)
 
     def test_scan_devices_no_changes(self):
-        previous = {'current': set([1, 2]),
+        previous = {'current': {1, 2},
                     'updated': set(),
                     'added': set(),
                     'removed': set(),
                     'timestamps': {}}
-        fake_current = set([1, 2])
+        fake_current = {1, 2}
         updated = set()
-        expected = {'current': set([1, 2]),
+        expected = {'current': {1, 2},
                     'updated': set(),
                     'added': set(),
                     'removed': set(),
@@ -238,15 +237,15 @@ class TestCommonAgentLoop(base.BaseTestCase):
                                 sync=False)
 
     def test_scan_devices_timestamp_triggers_updated_None_to_something(self):
-        previous = {'current': set([1, 2]),
+        previous = {'current': {1, 2},
                     'updated': set(),
                     'added': set(),
                     'removed': set(),
                     'timestamps': {2: None}}
-        fake_current = set([1, 2])
+        fake_current = {1, 2}
         updated = set()
-        expected = {'current': set([1, 2]),
-                    'updated': set([2]),
+        expected = {'current': {1, 2},
+                    'updated': {2},
                     'added': set(),
                     'removed': set(),
                     'timestamps': {2: 1000}}
@@ -255,15 +254,15 @@ class TestCommonAgentLoop(base.BaseTestCase):
                                 sync=False, fake_ts_current={2: 1000})
 
     def test_scan_devices_timestamp_triggers_updated(self):
-        previous = {'current': set([1, 2]),
+        previous = {'current': {1, 2},
                     'updated': set(),
                     'added': set(),
                     'removed': set(),
                     'timestamps': {2: 600}}
-        fake_current = set([1, 2])
+        fake_current = {1, 2}
         updated = set()
-        expected = {'current': set([1, 2]),
-                    'updated': set([2]),
+        expected = {'current': {1, 2},
+                    'updated': {2},
                     'added': set(),
                     'removed': set(),
                     'timestamps': {2: 1000}}
@@ -272,68 +271,68 @@ class TestCommonAgentLoop(base.BaseTestCase):
                                 sync=False, fake_ts_current={2: 1000})
 
     def test_scan_devices_added_removed(self):
-        previous = {'current': set([1, 2]),
+        previous = {'current': {1, 2},
                     'updated': set(),
                     'added': set(),
                     'removed': set(),
                     'timestamps': {}}
-        fake_current = set([2, 3])
+        fake_current = {2, 3}
         updated = set()
-        expected = {'current': set([2, 3]),
+        expected = {'current': {2, 3},
                     'updated': set(),
-                    'added': set([3]),
-                    'removed': set([1]),
+                    'added': {3},
+                    'removed': {1},
                     'timestamps': {}}
 
         self._test_scan_devices(previous, updated, fake_current, expected,
                                 sync=False)
 
     def test_scan_devices_removed_retried_on_sync(self):
-        previous = {'current': set([2, 3]),
+        previous = {'current': {2, 3},
                     'updated': set(),
                     'added': set(),
-                    'removed': set([1]),
+                    'removed': {1},
                     'timestamps': {}}
-        fake_current = set([2, 3])
+        fake_current = {2, 3}
         updated = set()
-        expected = {'current': set([2, 3]),
+        expected = {'current': {2, 3},
                     'updated': set(),
-                    'added': set([2, 3]),
-                    'removed': set([1]),
+                    'added': {2, 3},
+                    'removed': {1},
                     'timestamps': {}}
 
         self._test_scan_devices(previous, updated, fake_current, expected,
                                 sync=True)
 
     def test_scan_devices_vanished_removed_on_sync(self):
-        previous = {'current': set([2, 3]),
+        previous = {'current': {2, 3},
                     'updated': set(),
                     'added': set(),
-                    'removed': set([1]),
+                    'removed': {1},
                     'timestamps': {}}
         # Device 2 disappeared.
-        fake_current = set([3])
+        fake_current = {3}
         updated = set()
         # Device 1 should be retried.
-        expected = {'current': set([3]),
+        expected = {'current': {3},
                     'updated': set(),
-                    'added': set([3]),
-                    'removed': set([1, 2]),
+                    'added': {3},
+                    'removed': {1, 2},
                     'timestamps': {}}
 
         self._test_scan_devices(previous, updated, fake_current, expected,
                                 sync=True)
 
     def test_scan_devices_updated(self):
-        previous = {'current': set([1, 2]),
+        previous = {'current': {1, 2},
                     'updated': set(),
                     'added': set(),
                     'removed': set(),
                     'timestamps': {}}
-        fake_current = set([1, 2])
-        updated = set([1])
-        expected = {'current': set([1, 2]),
-                    'updated': set([1]),
+        fake_current = {1, 2}
+        updated = {1}
+        expected = {'current': {1, 2},
+                    'updated': {1},
                     'added': set(),
                     'removed': set(),
                     'timestamps': {}}
@@ -342,14 +341,14 @@ class TestCommonAgentLoop(base.BaseTestCase):
                                 sync=False)
 
     def test_scan_devices_updated_non_existing(self):
-        previous = {'current': set([1, 2]),
+        previous = {'current': {1, 2},
                     'updated': set(),
                     'added': set(),
                     'removed': set(),
                     'timestamps': {}}
-        fake_current = set([1, 2])
-        updated = set([3])
-        expected = {'current': set([1, 2]),
+        fake_current = {1, 2}
+        updated = {3}
+        expected = {'current': {1, 2},
                     'updated': set(),
                     'added': set(),
                     'removed': set(),
@@ -360,21 +359,21 @@ class TestCommonAgentLoop(base.BaseTestCase):
 
     def test_scan_devices_updated_deleted_concurrently(self):
         previous = {
-            'current': set([1, 2]),
+            'current': {1, 2},
             'updated': set(),
             'added': set(),
             'removed': set(),
             'timestamps': {}
         }
         # Device 2 disappeared.
-        fake_current = set([1])
+        fake_current = {1}
         # Device 2 got an concurrent update via network_update
-        updated = set([2])
+        updated = {2}
         expected = {
-            'current': set([1]),
+            'current': {1},
             'updated': set(),
             'added': set(),
-            'removed': set([2]),
+            'removed': {2},
             'timestamps': {}
         }
         self._test_scan_devices(
@@ -382,16 +381,16 @@ class TestCommonAgentLoop(base.BaseTestCase):
         )
 
     def test_scan_devices_updated_on_sync(self):
-        previous = {'current': set([1, 2]),
-                    'updated': set([1]),
+        previous = {'current': {1, 2},
+                    'updated': {1},
                     'added': set(),
                     'removed': set(),
                     'timestamps': {}}
-        fake_current = set([1, 2])
-        updated = set([2])
-        expected = {'current': set([1, 2]),
-                    'updated': set([1, 2]),
-                    'added': set([1, 2]),
+        fake_current = {1, 2}
+        updated = {2}
+        expected = {'current': {1, 2},
+                    'updated': {1, 2},
+                    'added': {1, 2},
                     'removed': set(),
                     'timestamps': {}}
 
@@ -400,11 +399,11 @@ class TestCommonAgentLoop(base.BaseTestCase):
 
     def test_scan_devices_with_delete_arp_protection(self):
         previous = None
-        fake_current = set([1, 2])
+        fake_current = {1, 2}
         updated = set()
-        expected = {'current': set([1, 2]),
+        expected = {'current': {1, 2},
                     'updated': set(),
-                    'added': set([1, 2]),
+                    'added': {1, 2},
                     'removed': set(),
                     'timestamps': {}}
         self._test_scan_devices(previous, updated, fake_current, expected,
@@ -415,9 +414,9 @@ class TestCommonAgentLoop(base.BaseTestCase):
     def test_process_network_devices(self):
         agent = self.agent
         device_info = {'current': set(),
-                       'added': set(['tap3', 'tap4']),
-                       'updated': set(['tap2', 'tap3']),
-                       'removed': set(['tap1'])}
+                       'added': {'tap3', 'tap4'},
+                       'updated': {'tap2', 'tap3'},
+                       'removed': {'tap1'}}
         agent.sg_agent.setup_port_filters = mock.Mock()
         agent.treat_devices_added_updated = mock.Mock(return_value=False)
         agent.treat_devices_removed = mock.Mock(return_value=False)
@@ -427,10 +426,10 @@ class TestCommonAgentLoop(base.BaseTestCase):
         agent.sg_agent.setup_port_filters.assert_called_with(
                 device_info['added'],
                 device_info['updated'])
-        agent.treat_devices_added_updated.assert_called_with(set(['tap2',
-                                                                  'tap3',
-                                                                  'tap4']))
-        agent.treat_devices_removed.assert_called_with(set(['tap1']))
+        agent.treat_devices_added_updated.assert_called_with({'tap2',
+                                                              'tap3',
+                                                              'tap4'})
+        agent.treat_devices_removed.assert_called_with({'tap1'})
 
     def test_treat_devices_added_updated_no_local_interface(self):
         agent = self.agent
@@ -448,7 +447,7 @@ class TestCommonAgentLoop(base.BaseTestCase):
         agent.mgr = mock.Mock()
         agent.mgr.plug_interface.return_value = False
         agent.mgr.ensure_port_admin_state = mock.Mock()
-        agent.treat_devices_added_updated(set(['tap1']))
+        agent.treat_devices_added_updated({'tap1'})
         self.assertFalse(agent.mgr.ensure_port_admin_state.called)
 
     def test_treat_devices_added_updated_admin_state_up_true(self):
@@ -478,7 +477,7 @@ class TestCommonAgentLoop(base.BaseTestCase):
         with mock.patch('neutron.plugins.ml2.drivers.agent.'
                         '_agent_manager_base.NetworkSegment',
                         return_value=mock_segment):
-            resync_needed = agent.treat_devices_added_updated(set(['tap1']))
+            resync_needed = agent.treat_devices_added_updated({'tap1'})
 
             self.assertFalse(resync_needed)
             agent.rpc_callbacks.add_network.assert_called_with('net123',
@@ -508,7 +507,7 @@ class TestCommonAgentLoop(base.BaseTestCase):
         agent.mgr.plug_interface.return_value = True
         with mock.patch.object(agent.mgr,
                                'setup_arp_spoofing_protection') as set_arp:
-            agent.treat_devices_added_updated(set(['tap1']))
+            agent.treat_devices_added_updated({'tap1'})
             set_arp.assert_called_with(mock_details['device'], mock_details)
 
     def test__process_device_if_exists_missing_intf(self):
@@ -613,3 +612,10 @@ class TestCommonAgentLoop(base.BaseTestCase):
         )
         self.assertNotIn(NETWORK_ID, self.agent.network_ports.keys())
         self.assertEqual(port_2_data['port_id'], cleaned_port_id)
+
+    def test_stop(self):
+        mock_connection = mock.Mock()
+        self.agent.connection = mock_connection
+        with mock.patch.object(self.agent, 'set_rpc_timeout'):
+            self.agent.stop()
+            mock_connection.close.assert_called_once()

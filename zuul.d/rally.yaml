@@ -4,13 +4,13 @@
     timeout: 10800
     vars:
       devstack_localrc:
-        USE_PYTHON3: true
         OSPROFILER_COLLECTOR: redis
         OSPROFILER_HMAC_KEYS: "neutron-hmac-key-used-in-zuul-ci"
         Q_ML2_TENANT_NETWORK_TYPE: vxlan
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
         Q_AGENT: openvswitch
         KEYSTONE_ADMIN_ENDPOINT: true
+        NEUTRON_DEPLOY_MOD_WSGI: true
       rally_task: rally-jobs/task-neutron.yaml
       devstack_plugins:
         osprofiler: https://opendev.org/openstack/osprofiler
@@ -52,35 +52,44 @@
       - openstack/rally-openstack
       - openstack/osprofiler
     irrelevant-files:
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^releasenotes/.*$
       - ^doc/.*$
       - ^setup.cfg$
+      - ^pyproject.toml$
       - ^.*\.conf\.sample$
       - ^.*\.rst$
       - ^neutron/locale/.*$
       - ^neutron/tests/.*$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^tools/ovn_migration/.*$
       - ^neutron/agent/ovn/.*$
-      - ^neutron/agent/windows/.*$
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
       - ^neutron/plugins/ml2/drivers/ovn/.*$
+      - ^neutron/scheduler/l3_ovn_scheduler.py
       - ^neutron/services/ovn_l3/.*$
       - ^neutron/services/logapi/drivers/ovn/.*$
       - ^neutron/services/portforwarding/drivers/ovn/.*$
-      - ^neutron/services/qos/drivers/linuxbridge/.*$
       - ^neutron/services/qos/drivers/ovn/.*$
-      - ^neutron/services/trunk/drivers/linuxbridge/.*$
       - ^neutron/services/trunk/drivers/ovn/.*$
       - ^neutron/cmd/ovn/.*$
       - ^neutron/common/ovn/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
 
 - job:
     name: neutron-ovn-rally-task
@@ -90,40 +99,48 @@
       - name: openstack/rally
       - name: openstack/rally-openstack
     irrelevant-files:
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^releasenotes/.*$
       - ^doc/.*$
       - ^setup.cfg$
+      - ^pyproject.toml$
       - ^.*\.conf\.sample$
       - ^.*\.rst$
       - ^neutron/locale/.*$
       - ^neutron/tests/.*$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^tools/ovn_migration/.*$
       - ^neutron/agent/dhcp/.*$
       - ^neutron/agent/l2/.*$
       - ^neutron/agent/l3/.*$
       - ^neutron/agent/metadata/.*$
-      - ^neutron/agent/windows/.*$
       - ^neutron/agent/dhcp_agent.py
       - ^neutron/agent/l3_agent.py
       - ^neutron/agent/metadata_agent.py
       - ^neutron/agent/resource_cache.py
       - ^neutron/agent/rpc.py
       - ^neutron/agent/securitygroup_rpc.py
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/openvswitch/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
-      - ^neutron/services/qos/drivers/linuxbridge/.*$
       - ^neutron/services/qos/drivers/openvswitch/.*$
-      - ^neutron/services/trunk/drivers/linuxbridge/.*$
       - ^neutron/services/trunk/drivers/openvswitch/.*$
       - ^neutron/scheduler/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
     vars:
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron
@@ -137,7 +154,8 @@
         ovn-controller: true
         ovs-vswitchd: true
         ovsdb-server: true
-        q-ovn-metadata-agent: true
+        q-ovn-metadata-agent: false
+        q-ovn-agent: true
         br-ex-tcpdump: true
         br-int-flows: true
         q-dhcp: false
@@ -159,23 +177,24 @@
         s-proxy: false
       devstack_localrc:
         Q_AGENT: ovn
+        OVN_AGENT_EXTENSIONS: 'metadata'
         ML2_L3_PLUGIN: ovn-router,trunk
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
         Q_ML2_TENANT_NETWORK_TYPE: geneve
-        USE_PYTHON3: true
         PHYSICAL_NETWORK: public
         Q_USE_PROVIDERNET_FOR_PUBLIC: true
         ENABLE_CHASSIS_AS_GW: true
         OVN_L3_CREATE_PUBLIC_NETWORK: true
         KEYSTONE_ADMIN_ENDPOINT: true
         OVN_BUILD_FROM_SOURCE: True
-        OVN_BRANCH: "v21.06.0"
-        OVS_BRANCH: "a4b04276ab5934d087669ff2d191a23931335c87"
+        OVN_BRANCH: "branch-24.03"
+        OVS_BRANCH: "branch-3.3"
+        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_local_conf:
         post-config:
           "${RALLY_CONF_DIR}/${RALLY_CONF_FILE}":
             openstack:
               neutron_bind_l2_agent_types: "OVN Controller Gateway agent"
       rally_task: rally-jobs/task-neutron.yaml
-    timeout: 7800
+    timeout: 9000
 

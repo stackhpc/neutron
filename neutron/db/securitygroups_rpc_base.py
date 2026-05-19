@@ -37,13 +37,17 @@ DIRECTION_IP_PREFIX = {'ingress': 'source_ip_prefix',
 DHCP_RULE_PORT = {4: (67, 68, const.IPv4), 6: (547, 546, const.IPv6)}
 
 
-@registry.has_registry_receivers
 class SecurityGroupServerNotifierRpcMixin(sg_db.SecurityGroupDbMixin):
     """Mixin class to add agent-based security group implementation."""
 
-    @registry.receives(resources.PORT, [events.AFTER_CREATE,
-                                        events.AFTER_UPDATE,
-                                        events.AFTER_DELETE])
+    def register_sg_notifier(self):
+        registry.subscribe(self._notify_sg_on_port_change, resources.PORT,
+                           events.AFTER_CREATE)
+        registry.subscribe(self._notify_sg_on_port_change, resources.PORT,
+                           events.AFTER_UPDATE)
+        registry.subscribe(self._notify_sg_on_port_change, resources.PORT,
+                           events.AFTER_DELETE)
+
     def _notify_sg_on_port_change(self, resource, event, trigger, payload):
         """Trigger notification to other SG members on port changes."""
 
@@ -57,25 +61,22 @@ class SecurityGroupServerNotifierRpcMixin(sg_db.SecurityGroupDbMixin):
             self.notify_security_groups_member_updated(context, port)
 
     def create_security_group_rule(self, context, security_group_rule):
-        rule = super(SecurityGroupServerNotifierRpcMixin,
-                     self).create_security_group_rule(context,
-                                                      security_group_rule)
+        rule = super().create_security_group_rule(context,
+                                                  security_group_rule)
         sgids = [rule['security_group_id']]
         self.notifier.security_groups_rule_updated(context, sgids)
         return rule
 
     def create_security_group_rule_bulk(self, context, security_group_rules):
-        rules = super(SecurityGroupServerNotifierRpcMixin,
-                      self).create_security_group_rule_bulk_native(
+        rules = super().create_security_group_rule_bulk_native(
                           context, security_group_rules)
-        sgids = set([r['security_group_id'] for r in rules])
+        sgids = {r['security_group_id'] for r in rules}
         self.notifier.security_groups_rule_updated(context, list(sgids))
         return rules
 
     def delete_security_group_rule(self, context, sgrid):
         rule = self.get_security_group_rule(context, sgrid)
-        super(SecurityGroupServerNotifierRpcMixin,
-              self).delete_security_group_rule(context, sgrid)
+        super().delete_security_group_rule(context, sgrid)
         self.notifier.security_groups_rule_updated(context,
                                                    [rule['security_group_id']])
 
@@ -100,10 +101,10 @@ class SecurityGroupServerNotifierRpcMixin(sg_db.SecurityGroupDbMixin):
         """
         need_notify = False
         if (original_port['fixed_ips'] != updated_port['fixed_ips'] or
-            original_port['mac_address'] != updated_port['mac_address'] or
-            not helpers.compare_elements(
-                original_port.get(ext_sg.SECURITYGROUPS),
-                updated_port.get(ext_sg.SECURITYGROUPS))):
+                original_port['mac_address'] != updated_port['mac_address'] or
+                not helpers.compare_elements(
+                    original_port.get(ext_sg.SECURITYGROUPS),
+                    updated_port.get(ext_sg.SECURITYGROUPS))):
             need_notify = True
         return need_notify
 
@@ -132,7 +133,7 @@ class SecurityGroupServerNotifierRpcMixin(sg_db.SecurityGroupDbMixin):
         self.notify_security_groups_member_updated_bulk(context, [port])
 
 
-class SecurityGroupInfoAPIMixin(object):
+class SecurityGroupInfoAPIMixin:
     """API for retrieving security group info for SG agent code."""
 
     def get_port_from_device(self, context, device):
@@ -189,8 +190,8 @@ class SecurityGroupInfoAPIMixin(object):
 
             if remote_gid:
                 if (remote_gid
-                    not in sg_info['devices'][port_id][
-                        'security_group_source_groups']):
+                        not in sg_info['devices'][port_id][
+                            'security_group_source_groups']):
                     sg_info['devices'][port_id][
                         'security_group_source_groups'].append(remote_gid)
                 if remote_gid not in remote_security_group_info:
@@ -200,23 +201,21 @@ class SecurityGroupInfoAPIMixin(object):
                     remote_security_group_info[remote_gid][ethertype] = set()
             elif remote_ag_id:
                 if (remote_ag_id
-                    not in sg_info['devices'][port_id][
-                        'security_group_remote_address_groups']):
+                        not in sg_info['devices'][port_id][
+                            'security_group_remote_address_groups']):
                     sg_info['devices'][port_id][
                         'security_group_remote_address_groups'].append(
-                        remote_ag_id)
+                            remote_ag_id)
                 if remote_ag_id not in remote_address_group_info:
                     remote_address_group_info[remote_ag_id] = {}
                 if ethertype not in remote_address_group_info[remote_ag_id]:
                     # this set will be serialized into a list by rpc code
                     remote_address_group_info[remote_ag_id][ethertype] = set()
             direction = rule_in_db['direction']
-            stateful = self._is_security_group_stateful(context,
-                                                        security_group_id)
             rule_dict = {
                 'direction': direction,
                 'ethertype': ethertype,
-                'stateful': stateful}
+            }
 
             for key in ('protocol', 'port_range_min', 'port_range_max',
                         'remote_ip_prefix', 'remote_group_id',
@@ -234,6 +233,13 @@ class SecurityGroupInfoAPIMixin(object):
             if rule_dict not in sg_info['security_groups'][security_group_id]:
                 sg_info['security_groups'][security_group_id].append(
                     rule_dict)
+
+        # Populate the security group "stateful" flag in the SGs list of rules.
+        for sg_id, stateful in self._get_sgs_stateful_flag(
+                context, sg_info['security_groups'].keys()).items():
+            for rule in sg_info['security_groups'][sg_id]:
+                rule['stateful'] = stateful
+
         # Update the security groups info if they don't have any rules
         sg_ids = self._select_sg_ids_for_ports(context, ports)
         for (sg_id, ) in sg_ids:
@@ -337,7 +343,7 @@ class SecurityGroupInfoAPIMixin(object):
             # only allow DHCP servers to talk to the appropriate IP address
             # to avoid getting leases that don't match the Neutron IPs
             prefix = '32' if ip_version == 4 else '128'
-            dests = ['%s/%s' % (ip, prefix) for ip in port['fixed_ips']
+            dests = [f'{ip}/{prefix}' for ip in port['fixed_ips']
                      if netaddr.IPNetwork(ip).version == ip_version]
             if ip_version == 4:
                 # v4 dhcp servers can also talk to broadcast
@@ -427,13 +433,13 @@ class SecurityGroupInfoAPIMixin(object):
         """
         raise NotImplementedError()
 
-    def _is_security_group_stateful(self, context, sg_id):
-        """Return whether the security group is stateful or not.
+    def _get_sgs_stateful_flag(self, context, sg_id):
+        """Return the security groups stateful flag.
 
-        Return True if the security group associated with the given ID
-        is stateful, else False.
+        Returns a dictionary with the SG ID as key and the stateful flag:
+        {sg_1: True, sg_2: False, ...}
         """
-        return True
+        raise NotImplementedError()
 
 
 class SecurityGroupServerRpcMixin(SecurityGroupInfoAPIMixin,
@@ -530,5 +536,5 @@ class SecurityGroupServerRpcMixin(SecurityGroupInfoAPIMixin,
         return ips_by_group
 
     @db_api.retry_if_session_inactive()
-    def _is_security_group_stateful(self, context, sg_id):
-        return sg_obj.SecurityGroup.get_sg_by_id(context, sg_id).stateful
+    def _get_sgs_stateful_flag(self, context, sg_ids):
+        return sg_obj.SecurityGroup.get_sgs_stateful_flag(context, sg_ids)

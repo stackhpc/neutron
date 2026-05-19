@@ -23,7 +23,7 @@ from neutron.objects import ports as port_obj
 
 
 @resource_extend.has_resource_extenders
-class ExtraDhcpOptMixin(object):
+class ExtraDhcpOptMixin:
     """Mixin class to add extra options to the DHCP opts file
     and associate them to a port.
     """
@@ -62,7 +62,7 @@ class ExtraDhcpOptMixin(object):
 
     def _get_port_extra_dhcp_opts_binding(self, context, port_id):
         opts = obj_extra_dhcp.ExtraDhcpOpt.get_objects(
-                            context, port_id=port_id)
+            context, port_id=port_id)
         # TODO(mhickey): When port serilization is available then
         # the object list should be returned instead
         return [{'opt_name': r.opt_name, 'opt_value': r.opt_value,

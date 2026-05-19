@@ -27,18 +27,18 @@ from neutron.tests.unit.plugins.ml2 import test_plugin
 _uuid = uuidutils.generate_uuid
 
 
-class SubnetpoolPrefixOpsTestBase(object):
+class SubnetpoolPrefixOpsTestBase:
 
     @contextlib.contextmanager
     def address_scope(self, ip_version, prefixes=None, shared=False,
                       admin=True, name='test-scope', is_default_pool=False,
                       project_id=None, **kwargs):
-        tenant_id = project_id if project_id else kwargs.get(
-            'tenant_id', None)
-        if not tenant_id:
-            tenant_id = _uuid()
+        project_id = project_id if project_id else kwargs.get(
+            'project_id', None)
+        if not project_id:
+            project_id = self._project_id
 
-        scope_data = {'tenant_id': tenant_id, 'ip_version': ip_version,
+        scope_data = {'project_id': project_id, 'ip_version': ip_version,
                       'shared': shared, 'name': name + '-scope'}
         with db_api.CONTEXT_WRITER.using(self.context):
             yield self.driver.create_address_scope(
@@ -49,11 +49,11 @@ class SubnetpoolPrefixOpsTestBase(object):
     def subnetpool(self, ip_version, prefixes=None, shared=False, admin=True,
                    name='test-pool', is_default_pool=False, project_id=None,
                    address_scope_id=None, **kwargs):
-        tenant_id = project_id if project_id else kwargs.get(
-            'tenant_id', None)
-        if not tenant_id:
-            tenant_id = _uuid()
-        pool_data = {'tenant_id': tenant_id, 'shared': shared, 'name': name,
+        project_id = project_id if project_id else kwargs.get(
+            'project_id', None)
+        if not project_id:
+            project_id = self._project_id
+        pool_data = {'project_id': project_id, 'shared': shared, 'name': name,
                      'address_scope_id': address_scope_id,
                      'prefixes': prefixes, 'is_default': is_default_pool}
         for key in kwargs:
@@ -106,12 +106,13 @@ class SubnetpoolPrefixOpsTestBase(object):
 
     def test_add_prefix_with_address_scope_overlapping_cidr(self):
         with self.address_scope(self.ip_version) as addr_scope:
-            with self.subnetpool(self.ip_version,
-                         prefixes=[self.subnetpool_prefixes[0]],
-                         address_scope_id=addr_scope['id']) as sp_to_augment,\
+            with self.subnetpool(
+                    self.ip_version,
+                    prefixes=[self.subnetpool_prefixes[0]],
+                    address_scope_id=addr_scope['id']) as sp_to_augment,\
                 self.subnetpool(self.ip_version,
-                             prefixes=[self.subnetpool_prefixes[1]],
-                             address_scope_id=addr_scope['id']):
+                                prefixes=[self.subnetpool_prefixes[1]],
+                                address_scope_id=addr_scope['id']):
                 prefixes_to_add = [self.cidr_to_add]
                 self.driver.add_prefixes(
                     self.context,
@@ -122,12 +123,13 @@ class SubnetpoolPrefixOpsTestBase(object):
 
     def test_add_prefix_with_address_scope(self):
         with self.address_scope(self.ip_version) as addr_scope:
-            with self.subnetpool(self.ip_version,
-                         prefixes=[self.subnetpool_prefixes[1]],
-                         address_scope_id=addr_scope['id']) as sp_to_augment,\
+            with self.subnetpool(
+                    self.ip_version,
+                    prefixes=[self.subnetpool_prefixes[1]],
+                    address_scope_id=addr_scope['id']) as sp_to_augment,\
                 self.subnetpool(self.ip_version,
-                             prefixes=[self.subnetpool_prefixes[0]],
-                             address_scope_id=addr_scope['id']):
+                                prefixes=[self.subnetpool_prefixes[0]],
+                                address_scope_id=addr_scope['id']):
                 prefixes_to_add = [self.overlapping_cidr]
                 self.assertRaises(exc.AddressScopePrefixConflict,
                                   self.driver.add_prefixes,

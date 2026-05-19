@@ -41,7 +41,7 @@ class TestPciLib(base.BaseTestCase):
     }
 
     def setUp(self):
-        super(TestPciLib, self).setUp()
+        super().setUp()
         self.pci_wrapper = pci_lib.PciDeviceIPWrapper(self.DEV_NAME)
         self.mock_ip_device = mock.Mock()
         self.mock_ip_device.link.get_vfs.return_value = self.VFS_LIST
@@ -67,18 +67,27 @@ class TestPciLib(base.BaseTestCase):
         self.assertEqual(pci_lib.LinkState.disable.name, result)
 
     def test_set_vf_state(self):
+        # state=True, auto=False --> link_state=enable
         self.pci_wrapper.set_vf_state(self.VF_INDEX, True)
         vf = {'vf': self.VF_INDEX, 'link_state': 1}
         self.mock_ip_device.link.set_vf_feature.assert_called_once_with(vf)
 
+        # state=False, auto=False --> link_state=disable
         self.mock_ip_device.link.set_vf_feature.reset_mock()
         self.pci_wrapper.set_vf_state(self.VF_INDEX, False)
         vf = {'vf': self.VF_INDEX, 'link_state': 2}
         self.mock_ip_device.link.set_vf_feature.assert_called_once_with(vf)
 
+        # state=True, auto=True --> link_state=auto
+        self.mock_ip_device.link.set_vf_feature.reset_mock()
+        self.pci_wrapper.set_vf_state(self.VF_INDEX, True, auto=True)
+        vf = {'vf': self.VF_INDEX, 'link_state': 0}
+        self.mock_ip_device.link.set_vf_feature.assert_called_once_with(vf)
+
+        # state=False, auto=True --> link_state=disable
         self.mock_ip_device.link.set_vf_feature.reset_mock()
         self.pci_wrapper.set_vf_state(self.VF_INDEX, False, auto=True)
-        vf = {'vf': self.VF_INDEX, 'link_state': 0}
+        vf = {'vf': self.VF_INDEX, 'link_state': 2}
         self.mock_ip_device.link.set_vf_feature.assert_called_once_with(vf)
 
     def test_set_vf_spoofcheck(self):

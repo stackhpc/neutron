@@ -72,7 +72,7 @@ class SubnetPool(rbac_db.NeutronRbacObject):
     synthetic_fields = ['prefixes']
 
     def from_db_object(self, db_obj):
-        super(SubnetPool, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
         self.prefixes = []
         self.prefixes = [
             prefix.cidr
@@ -94,7 +94,7 @@ class SubnetPool(rbac_db.NeutronRbacObject):
         fields = self.obj_get_changes()
         with self.db_context_writer(self.obj_context):
             prefixes = self.prefixes
-            super(SubnetPool, self).create()
+            super().create()
             if 'prefixes' in fields:
                 self._attach_prefixes(prefixes)
 
@@ -102,7 +102,7 @@ class SubnetPool(rbac_db.NeutronRbacObject):
     def update(self):
         fields = self.obj_get_changes()
         with self.db_context_writer(self.obj_context):
-            super(SubnetPool, self).update()
+            super().update()
             if 'prefixes' in fields:
                 self._attach_prefixes(fields['prefixes'])
 
@@ -137,11 +137,11 @@ class SubnetPool(rbac_db.NeutronRbacObject):
                 )
             )
 
-            matching_policies = model_query.query_with_hooks(
+            no_matching_policies = model_query.query_with_hooks(
                 context, rbac_db_models.AddressScopeRBAC
-            ).filter(shared_to_target_project_or_to_all).count()
+            ).filter(shared_to_target_project_or_to_all).first() is None
 
-        if matching_policies == 0:
+        if no_matching_policies:
             raise ext_rbac.RbacPolicyInitError(
                 object_id=policy['object_id'],
                 reason=_("target project doesn't have access to "
@@ -166,7 +166,7 @@ class SubnetPoolPrefix(base.NeutronDbObject):
     # custom type
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(SubnetPoolPrefix, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'cidr' in result:
             result['cidr'] = cls.filter_to_str(result['cidr'])
         return result
@@ -175,7 +175,7 @@ class SubnetPoolPrefix(base.NeutronDbObject):
     # custom type
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        fields = super(SubnetPoolPrefix, cls).modify_fields_from_db(db_obj)
+        fields = super().modify_fields_from_db(db_obj)
         if 'cidr' in fields:
             fields['cidr'] = netaddr.IPNetwork(fields['cidr'])
         return fields

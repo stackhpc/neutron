@@ -19,12 +19,10 @@ Utility methods for working with WSGI servers redux
 
 from oslo_log import log as logging
 import webob.dec
-import webob.exc
 
 from neutron.api import api_common
+from neutron.api import wsgi
 from neutron.common import utils
-from neutron import wsgi
-
 
 LOG = logging.getLogger(__name__)
 

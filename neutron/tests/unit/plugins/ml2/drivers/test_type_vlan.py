@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import random
 from unittest import mock
 
 from neutron_lib import constants as p_const
@@ -24,17 +25,20 @@ from neutron_lib.plugins import utils as plugin_utils
 from oslo_config import cfg
 from testtools import matchers
 
+from neutron.common import wsgi_utils
+from neutron.conf.plugins.ml2 import config as ml2_config
 from neutron.objects import network_segment_range as obj_network_segment_range
 from neutron.objects.plugins.ml2 import vlanallocation as vlan_alloc_obj
 from neutron.plugins.ml2.drivers import type_vlan
 from neutron.tests.unit import testlib_api
+
 
 PROVIDER_NET = 'phys_net1'
 TENANT_NET = 'phys_net2'
 UNCONFIGURED_NET = 'no_net'
 VLAN_MIN = 200
 VLAN_MAX = 209
-TENANT_VLAN_RANGES = ["%s:%s:%s" % (TENANT_NET, VLAN_MIN, VLAN_MAX)]
+TENANT_VLAN_RANGES = [f"{TENANT_NET}:{VLAN_MIN}:{VLAN_MAX}"]
 NETWORK_VLAN_RANGES = [PROVIDER_NET] + TENANT_VLAN_RANGES
 UPDATED_VLAN_RANGES = {
     PROVIDER_NET: [(p_const.MIN_VLAN_TAG, p_const.MAX_VLAN_TAG)],
@@ -57,16 +61,16 @@ SERVICE_PLUGIN_KLASS = ('neutron.services.network_segment_range.plugin.'
 class VlanTypeTest(testlib_api.SqlTestCase):
 
     def setUp(self):
-        super(VlanTypeTest, self).setUp()
+        super().setUp()
         cfg.CONF.set_override('network_vlan_ranges',
                               NETWORK_VLAN_RANGES,
                               group='ml2_type_vlan')
-        self.network_vlan_ranges = plugin_utils.parse_network_vlan_ranges(
+        self._network_vlan_ranges = plugin_utils.parse_network_vlan_ranges(
             NETWORK_VLAN_RANGES)
         self.driver = type_vlan.VlanTypeDriver()
         self.driver._sync_vlan_allocations()
         self.context = context.Context()
-        self.driver.physnet_mtus = []
+        self.driver.physnet_mtus = {}
         self.setup_coreplugin(CORE_PLUGIN)
 
     def test_parse_network_exception_handling(self):
@@ -171,15 +175,15 @@ class VlanTypeTest(testlib_api.SqlTestCase):
             self.assertFalse(
                 self._get_allocation(self.context, segment).allocated)
 
-        check_in_ranges(self.network_vlan_ranges)
+        check_in_ranges(self._network_vlan_ranges)
 
-        self.driver.network_vlan_ranges = UPDATED_VLAN_RANGES
+        self.driver._network_vlan_ranges = UPDATED_VLAN_RANGES
         self.driver._sync_vlan_allocations()
         check_in_ranges(UPDATED_VLAN_RANGES)
 
-        self.driver.network_vlan_ranges = NETWORK_VLAN_RANGES_WITH_UNCONFIG
+        self.driver._network_vlan_ranges = NETWORK_VLAN_RANGES_WITH_UNCONFIG
         self.driver._sync_vlan_allocations()
-        self.driver.network_vlan_ranges = UPDATED_VLAN_RANGES
+        self.driver._network_vlan_ranges = UPDATED_VLAN_RANGES
         with mock.patch.object(type_vlan.LOG, 'debug') as mock_debug:
             self.driver._sync_vlan_allocations()
             mock_debug.assert_called_once_with(
@@ -187,7 +191,7 @@ class VlanTypeTest(testlib_api.SqlTestCase):
                 {UNCONFIGURED_NET})
         check_in_ranges(UPDATED_VLAN_RANGES)
 
-        self.driver.network_vlan_ranges = EMPTY_VLAN_RANGES
+        self.driver._network_vlan_ranges = EMPTY_VLAN_RANGES
         self.driver._sync_vlan_allocations()
 
         vlan_min, vlan_max = UPDATED_VLAN_RANGES[TENANT_NET][0]
@@ -279,7 +283,7 @@ class VlanTypeTest(testlib_api.SqlTestCase):
         self.driver.physnet_mtus = {}
         self.assertEqual(0, self.driver.get_mtu('physnet1'))
 
-    def test_allocate_tenant_segment(self):
+    def test_allocate_project_segment(self):
         cfg.CONF.set_override('network_vlan_ranges', TENANT_VLAN_RANGES,
                               group='ml2_type_vlan')
         driver = type_vlan.VlanTypeDriver()
@@ -293,7 +297,7 @@ class VlanTypeTest(testlib_api.SqlTestCase):
             self.assertLess(vlan_id, VLAN_MAX + 1)
             self.assertEqual(TENANT_NET, segment[api.PHYSICAL_NETWORK])
 
-    def test_allocate_tenant_segment_no_available(self):
+    def test_allocate_project_segment_no_available(self):
         cfg.CONF.set_override('network_vlan_ranges', TENANT_VLAN_RANGES,
                               group='ml2_type_vlan')
         driver = type_vlan.VlanTypeDriver()
@@ -322,13 +326,13 @@ class VlanTypeTest(testlib_api.SqlTestCase):
 
 class VlanTypeAllocationTest(testlib_api.SqlTestCase):
 
-    def test_allocate_tenant_segment_in_order_of_config(self):
+    def test_allocate_project_segment_in_order_of_config(self):
         ranges = NETWORK_VLAN_RANGES + ['phys_net3:20:30']
         cfg.CONF.set_override('network_vlan_ranges',
                               ranges,
                               group='ml2_type_vlan')
         driver = type_vlan.VlanTypeDriver()
-        driver.physnet_mtus = []
+        driver.physnet_mtus = {}
         driver._sync_vlan_allocations()
         # swap config order from DB order after sync has happened to
         # ensure config order is followed and not DB order
@@ -360,17 +364,21 @@ class VlanTypeAllocationTest(testlib_api.SqlTestCase):
 class VlanTypeTestWithNetworkSegmentRange(testlib_api.SqlTestCase):
 
     def setUp(self):
-        super(VlanTypeTestWithNetworkSegmentRange, self).setUp()
+        ml2_config.register_ml2_plugin_opts()
+        mock.patch.object(wsgi_utils, 'get_api_worker_id',
+                          return_value=wsgi_utils.FIRST_WORKER_ID).start()
+        super().setUp()
         cfg.CONF.set_override('network_vlan_ranges',
                               NETWORK_VLAN_RANGES,
                               group='ml2_type_vlan')
         cfg.CONF.set_override('service_plugins', [SERVICE_PLUGIN_KLASS])
-        self.network_vlan_ranges = plugin_utils.parse_network_vlan_ranges(
+        self._network_vlan_ranges = plugin_utils.parse_network_vlan_ranges(
             NETWORK_VLAN_RANGES)
         self.driver = type_vlan.VlanTypeDriver()
         self.driver._sync_vlan_allocations()
         self.context = context.Context()
         self.setup_coreplugin(CORE_PLUGIN)
+        self.start_time = random.randint(10**5, 10**6)
 
     def test__populate_new_default_network_segment_ranges(self):
         # _populate_new_default_network_segment_ranges will be called when
@@ -397,7 +405,20 @@ class VlanTypeTestWithNetworkSegmentRange(testlib_api.SqlTestCase):
         self.assertEqual(VLAN_MAX, network_segment_range.maximum)
 
     def test__delete_expired_default_network_segment_ranges(self):
-        self.driver._delete_expired_default_network_segment_ranges()
+        self.driver._delete_expired_default_network_segment_ranges(
+            self.context, self.start_time)
+        ret = obj_network_segment_range.NetworkSegmentRange.get_objects(
+            self.context, network_type=self.driver.get_type())
+        self.assertEqual(0, len(ret))
+
+    def test_try_to_create_duplicate_network_segment_ranges(self):
+        self.driver.initialize_network_segment_range_support(self.start_time)
         ret = obj_network_segment_range.NetworkSegmentRange.get_objects(
             self.context)
-        self.assertEqual(0, len(ret))
+        self.assertEqual(2, len(ret))
+
+        self.driver._populate_new_default_network_segment_ranges(
+            self.context, self.start_time)
+        ret = obj_network_segment_range.NetworkSegmentRange.get_objects(
+            self.context)
+        self.assertEqual(2, len(ret))

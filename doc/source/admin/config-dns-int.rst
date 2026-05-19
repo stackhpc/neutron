@@ -1,7 +1,7 @@
 .. _config-dns-int:
 
 ===============
-DNS integration
+DNS Integration
 ===============
 
 This page serves as a guide for how to use the DNS integration functionality of
@@ -47,6 +47,10 @@ following table shows the attributes available for each one of these resources:
    to list the active API extensions. This preserves backwards API
    compatibility.
 
+.. note::
+   For ``Floating IPs`` external DNSaaS is also required as described
+   in :ref:`config-dns-int-ext-serv`.
+
 .. _config-dns-int-dns-resolution:
 
 The Networking service internal DNS resolution
@@ -75,6 +79,13 @@ the internal DNS. To enable this functionality, do the following:
 
 After re-starting the ``neutron-server``, users will be able to assign a
 ``dns_name`` attribute to their ports.
+
+Valid ``extension_drivers`` values related to the DNS integration are:
+
+* ``dns``
+* ``dns_domain_ports``
+* ``subnet_dns_publish_fixed_ip``
+* ``dns_domain_keywords``
 
 .. note::
    The enablement of this functionality is prerequisite for the enablement of
@@ -168,7 +179,7 @@ The following is an example of an instance creation, showing how its
    | progress                             | 0                                                              |
    | security_groups                      | default                                                        |
    | status                               | BUILD                                                          |
-   | tenant_id                            | d5660cb1e6934612a01b4fb2fb630725                               |
+   | project_id                           | d5660cb1e6934612a01b4fb2fb630725                               |
    | updated                              | 2016-02-05T21:35:04Z                                           |
    | user_id                              | 8bb6e578cba24e7db9d3810633124525                               |
    +--------------------------------------+----------------------------------------------------------------+

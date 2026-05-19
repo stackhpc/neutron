@@ -59,7 +59,7 @@ class Extensionattribute(api_extensions.ExtensionDescriptor):
         return "2013-02-05T10:00:00-00:00"
 
     def update_attributes_map(self, attributes):
-        super(Extensionattribute, self).update_attributes_map(
+        super().update_attributes_map(
             attributes, extension_attrs_map=RESOURCE_ATTRIBUTE_MAP)
 
     @classmethod
@@ -88,11 +88,10 @@ class Extensionattribute(api_extensions.ExtensionDescriptor):
     def get_extended_resources(self, version):
         if version == "2.0":
             return RESOURCE_ATTRIBUTE_MAP
-        else:
-            return {}
+        return {}
 
 
-class ExtensionObjectTestPluginBase(object):
+class ExtensionObjectTestPluginBase:
 
     @abc.abstractmethod
     def create_ext_test_resource(self, context, router):

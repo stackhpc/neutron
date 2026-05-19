@@ -13,12 +13,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import sys
+
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from oslo_config import cfg
 from oslo_db import options as db_options
 from oslo_log import log as logging
+from oslo_utils import uuidutils
 
 from neutron.common import config as common_config
 from neutron.objects import ports as ports_obj
@@ -31,17 +34,28 @@ def setup_conf(conf):
     common_config.register_common_config_options()
     db_group, neutron_db_opts = db_options.list_opts()[0]
     conf.register_cli_opts(neutron_db_opts, db_group)
+    conf.register_cli_opts([
+        cfg.StrOpt('port',
+                   help='Remove duplicated port bindings for a specific port '
+                        'ID')
+    ])
     conf()
 
 
 def main():
-    """Main method for removing the duplicated port binding registers.
+    """Main method for removing duplicated port binding and pb level registers.
 
-    This script finds all ``PortBinding`` registers with the same ``port_id``.
+    This script finds all ``PortBinding`` registers with the same ``port_id``,
+    or optionally only the bindings for a specific port when the ``--port``
+    option is provided.
     That happens during the live-migration process. Once finished, the inactive
     port binding register is deleted. However, it could happen that during the
     live-migration, an error occurs and this deletion is not executed. The
     related port cannot be migrated anymore.
+
+    This script removes the inactive ``PortBinding`` referred to a port ID and
+    the corresponding ``PortBindingLevel`` registers associated to this port
+    ID and ``PortBinding.host``.
 
     This script should not be executed during a live migration process. It will
     remove the inactive port binding and will break the migration.
@@ -49,17 +63,25 @@ def main():
     conf = cfg.CONF
     setup_conf(conf)
     _dry_run = conf.cli_script.dry_run
+    _port_id = conf.port
+    if _port_id and not uuidutils.is_uuid_like(_port_id):
+        LOG.error('Invalid port ID: %s. Port ID must be a valid UUID.',
+                  _port_id)
+        sys.exit(1)
     admin_ctx = context.get_admin_context()
     with db_api.CONTEXT_WRITER.using(admin_ctx):
         dup_pbindings = ports_obj.PortBinding.get_duplicated_port_bindings(
-            admin_ctx)
+            admin_ctx, port_id=_port_id)
 
-        # Clean duplicated port bindings that are INACTIVE (if not in dry-run).
+        # Clean duplicated port bindings that are INACTIVE and the
+        # corresponding port binding level registers (if not in dry-run).
         if not _dry_run:
             for pbinding in dup_pbindings:
+                port_id, host = pbinding.port_id, pbinding.host
                 ports_obj.PortBinding.delete_objects(
-                    admin_ctx, status=constants.INACTIVE,
-                    port_id=pbinding.port_id)
+                    admin_ctx, status=constants.INACTIVE, port_id=port_id)
+                ports_obj.PortBindingLevel.delete_objects(
+                    admin_ctx, port_id=port_id, host=host)
 
         if dup_pbindings:
             port_ids = [pbinding.port_id for pbinding in dup_pbindings]

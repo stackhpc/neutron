@@ -35,11 +35,13 @@ def register_opts(conf):
     l3_config.register_l3_agent_config_opts(l3_config.OPTS, conf)
     ha_conf.register_l3_agent_ha_opts(conf)
     meta_conf.register_meta_conf_opts(meta_conf.SHARED_OPTS, conf)
+    meta_conf.register_meta_conf_opts(meta_conf.METADATA_RATE_LIMITING_OPTS,
+                                      cfg=conf,
+                                      group=meta_conf.RATE_LIMITING_GROUP)
     config.register_interface_driver_opts_helper(conf)
     config.register_agent_state_opts_helper(conf)
     config.register_interface_opts(conf)
     config.register_external_process_opts(conf)
-    config.register_pddriver_opts(conf)
     config.register_ra_opts(conf)
     config.register_availability_zone_opts_helper(conf)
     ovs_conf.register_ovs_opts(conf)
@@ -49,6 +51,7 @@ def main(manager='neutron.agent.l3.agent.L3NATAgentWithStateReport'):
     register_opts(cfg.CONF)
     common_config.init(sys.argv[1:])
     config.setup_logging()
+    common_config.setup_gmr()
     config.setup_privsep()
     server = neutron_service.Service.create(
         binary=constants.AGENT_PROCESS_L3,

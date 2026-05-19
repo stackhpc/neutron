@@ -16,6 +16,8 @@
 import collections
 import random
 
+from neutron_lib.api import attributes
+from neutron_lib.api.definitions import network_ha
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.plugins import constants as plugin_constants
@@ -27,7 +29,8 @@ from neutron.objects import network as net_obj
 from neutron.scheduler import l3_agent_scheduler
 from neutron.services.l3_router import l3_router_plugin
 from neutron.tests.common import helpers
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
+from neutron.tests.functional import base
 
 _uuid = uuidutils.generate_uuid
 
@@ -37,19 +40,20 @@ PLUGIN_NAME = 'neutron.plugins.ml2.plugin.Ml2Plugin'
 load_tests = testscenarios.load_tests_apply_scenarios
 
 
-class L3SchedulerBaseTest(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
+class L3SchedulerBaseTest(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
+                          base.BaseLoggingTestCase):
 
     """Base class for functional test of L3 schedulers.
        Provides basic setup and utility functions.
     """
 
     def setUp(self):
-        super(L3SchedulerBaseTest, self).setUp(PLUGIN_NAME)
+        super().setUp(PLUGIN_NAME)
 
         self.l3_plugin = l3_router_plugin.L3RouterPlugin()
         directory.add_plugin(plugin_constants.L3, self.l3_plugin)
         self.adminContext = context.get_admin_context()
-        self.adminContext.tenant_id = _uuid()
+        self.adminContext.project_id = _uuid()
 
     def _create_l3_agent(self, host, context, agent_mode='legacy',
                          state=True, ext_net_id=''):
@@ -59,7 +63,7 @@ class L3SchedulerBaseTest(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
 
     def _create_router(self, name):
         router = {'name': name, 'admin_state_up': True,
-                  'tenant_id': self.adminContext.tenant_id}
+                  'project_id': self.adminContext.project_id}
         return self.l3_plugin.create_router(
             self.adminContext, {'router': router})
 
@@ -67,9 +71,11 @@ class L3SchedulerBaseTest(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         # Creates legacy l3 agents and sets admin state based on
         #  down agent count.
         self.hosts = ['host-%s' % i for i in range(agent_count)]
-        self.l3_agents = [self._create_l3_agent(self.hosts[i],
-               self.adminContext, 'legacy',
-               (i >= down_agent_count)) for i in range(agent_count)]
+        self.l3_agents = [
+            self._create_l3_agent(
+                self.hosts[i],
+                self.adminContext, 'legacy',
+                (i >= down_agent_count)) for i in range(agent_count)]
 
     def _create_routers(self, scheduled_router_count,
                         expected_scheduled_router_count):
@@ -170,10 +176,10 @@ class L3ChanceSchedulerTestCase(L3SchedulerBaseTest):
     ]
 
     def setUp(self):
-        super(L3ChanceSchedulerTestCase, self).setUp()
+        super().setUp()
         self._create_legacy_agents(self.agent_count, self.down_agent_count)
-        self.routers = self._create_routers(self.scheduled_router_count,
-                             self.expected_scheduled_router_count)
+        self.routers = self._create_routers(
+            self.scheduled_router_count, self.expected_scheduled_router_count)
         self.scheduler = l3_agent_scheduler.ChanceScheduler()
 
     def test_chance_schedule_router(self):
@@ -255,16 +261,16 @@ class L3LeastRoutersSchedulerTestCase(L3SchedulerBaseTest):
     ]
 
     def setUp(self):
-        super(L3LeastRoutersSchedulerTestCase, self).setUp()
+        super().setUp()
         self._create_legacy_agents(self.agent_count, self.down_agent_count)
-        self.routers = self._create_routers(self.scheduled_router_count,
-                             self.expected_scheduled_router_count)
+        self.routers = self._create_routers(
+            self.scheduled_router_count, self.expected_scheduled_router_count)
         self.scheduler = l3_agent_scheduler.LeastRoutersScheduler()
 
     def test_least_routers_schedule(self):
         # Pre schedule routers
-        hosting_agents = self._pre_scheduler_routers(self.scheduler,
-                                    self.scheduled_router_count)
+        hosting_agents = self._pre_scheduler_routers(
+            self.scheduler, self.scheduled_router_count)
 
         actual_scheduled_agent = self.scheduler.schedule(
             self.l3_plugin, self.adminContext, self.routers[-1]['id'])
@@ -276,8 +282,9 @@ class L3LeastRoutersSchedulerTestCase(L3SchedulerBaseTest):
                                  self.l3_agents[0].id)
             else:
                 self.assertNotIn(actual_scheduled_agent.id,
-                               [x.id for x in hosting_agents],
-                               message='The expected agent was not scheduled')
+                                 [x.id for x in hosting_agents],
+                                 message='The expected agent was not '
+                                         'scheduled')
         else:
             self.assertIsNone(actual_scheduled_agent,
                               message='Expected no agent to be scheduled,'
@@ -291,17 +298,22 @@ class L3LeastRoutersSchedulerTestCase(L3SchedulerBaseTest):
         self._test_auto_schedule(self.expected_scheduled_router_count)
 
 
-class L3AZSchedulerBaseTest(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
+class L3AZSchedulerBaseTest(test_db_base_plugin_v2.NeutronDbPluginV2TestCase,
+                            base.BaseLoggingTestCase):
 
     def setUp(self):
-        super(L3AZSchedulerBaseTest, self).setUp(plugin='ml2')
+        super().setUp(plugin='ml2')
 
         self.l3_plugin = l3_router_plugin.L3RouterPlugin()
         directory.add_plugin(plugin_constants.L3, self.l3_plugin)
         self.l3_plugin.router_scheduler = None
         directory.add_plugin(plugin_constants.L3, self.l3_plugin)
         self.adminContext = context.get_admin_context()
-        self.adminContext.tenant_id = '_func_test_tenant_'
+        self.adminContext.project_id = '_func_test_project_'
+        # Extend network HA extension.
+        rname = network_ha.COLLECTION_NAME
+        attributes.RESOURCES[rname].update(
+            network_ha.RESOURCE_ATTRIBUTE_MAP[rname])
 
     def _create_l3_agent(self, host, context, agent_mode='legacy', plugin=None,
                          state=True, az='nova'):
@@ -312,7 +324,7 @@ class L3AZSchedulerBaseTest(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
     def _create_legacy_agents(self, agent_count, down_agent_count, az):
         # Creates legacy l3 agents and sets admin state based on
         #  down agent count.
-        hosts = ['%s-host-%s' % (az, i) for i in range(agent_count)]
+        hosts = [f'{az}-host-{i}' for i in range(agent_count)]
         l3_agents = [
             self._create_l3_agent(hosts[i], self.adminContext, 'legacy',
                                   self.l3_plugin, (i >= down_agent_count),
@@ -323,7 +335,7 @@ class L3AZSchedulerBaseTest(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
     def _create_router(self, az_hints, ha):
         router = {'name': 'router1', 'admin_state_up': True,
                   'availability_zone_hints': az_hints,
-                  'tenant_id': self._tenant_id}
+                  'project_id': self._project_id}
         if ha:
             router['ha'] = True
         return self.l3_plugin.create_router(
@@ -381,7 +393,7 @@ class L3AZLeastRoutersSchedulerTestCase(L3AZSchedulerBaseTest):
     ]
 
     def setUp(self):
-        super(L3AZLeastRoutersSchedulerTestCase, self).setUp()
+        super().setUp()
         self.scheduler = l3_agent_scheduler.AZLeastRoutersScheduler()
         self.l3_plugin.router_scheduler = self.scheduler
 
@@ -544,7 +556,7 @@ class L3DVRSchedulerBaseTest(L3SchedulerBaseTest):
     """
 
     def setUp(self):
-        super(L3DVRSchedulerBaseTest, self).setUp()
+        super().setUp()
 
         self.default_ext_net_id = _uuid()
         self.default_ext_subnet_id = _uuid()
@@ -554,7 +566,7 @@ class L3DVRSchedulerBaseTest(L3SchedulerBaseTest):
 
     def _create_router(self, name, distributed, ext_net_id=None):
         router = {'name': name, 'admin_state_up': True,
-                  'tenant_id': self.adminContext.tenant_id,
+                  'project_id': self.adminContext.project_id,
                   'distributed': distributed}
 
         if ext_net_id:
@@ -564,7 +576,7 @@ class L3DVRSchedulerBaseTest(L3SchedulerBaseTest):
                                             {'router': router})
 
     def _create_network(self, net_id, name=None, external=False):
-        network_dict = {'tenant_id': self.adminContext.tenant_id,
+        network_dict = {'project_id': self.adminContext.project_id,
                         'id': net_id,
                         'name': name,
                         'admin_state_up': True,
@@ -580,7 +592,7 @@ class L3DVRSchedulerBaseTest(L3SchedulerBaseTest):
         return network
 
     def _create_subnet(self, sub_id, network_id, cidr, gw_ip, name='test_sub'):
-        subnet = {'tenant_id': self.adminContext.tenant_id,
+        subnet = {'project_id': self.adminContext.project_id,
                   'id': sub_id,
                   'name': name,
                   'network_id': network_id,
@@ -633,7 +645,8 @@ class L3DVRSchedulerTestCase(L3DVRSchedulerBaseTest):
                      router_has_ext_gw=False,
                      router_agent_have_same_ext_net=False,
                      expected_router_scheduled=False):
-        return dict(agent_mode=agent_mode,
+        return dict(
+            agent_mode=agent_mode,
             second_agent_mode=second_agent_mode,
             agent_has_ext_network=agent_has_ext_network,
             router_is_distributed=router_is_distributed,
@@ -696,7 +709,7 @@ class L3DVRSchedulerTestCase(L3DVRSchedulerBaseTest):
     ]
 
     def setUp(self):
-        super(L3DVRSchedulerTestCase, self).setUp()
+        super().setUp()
 
         agent_cnt = 2 if self.second_agent_mode else 1
 
@@ -721,13 +734,18 @@ class L3DVRSchedulerTestCase(L3DVRSchedulerBaseTest):
                                 '10.10.8.0/24', '10.10.8.1',
                                 '_test-ext-net2-subnet')
         # create agents:
-        self.l3_agents = [self._create_l3_agent(self.hosts[0],
-            self.adminContext, self.agent_mode, True,
-            self.default_ext_net_id if self.agent_has_ext_network else '')]
+        self.l3_agents = [
+            self._create_l3_agent(
+                self.hosts[0],
+                self.adminContext, self.agent_mode, True,
+                self.default_ext_net_id if self.agent_has_ext_network else '')]
         if self.second_agent_mode:
-            self.l3_agents.append(self._create_l3_agent(self.hosts[1],
-                self.adminContext, self.second_agent_mode, True,
-                self.default_ext_net_id if self.agent_has_ext_network else ''))
+            self.l3_agents.append(
+                self._create_l3_agent(
+                    self.hosts[1],
+                    self.adminContext, self.second_agent_mode, True,
+                    self.default_ext_net_id if (
+                        self.agent_has_ext_network) else ''))
 
         # The router to schedule:
         self.router_to_schedule = self._create_router_to_schedule()
@@ -737,15 +755,18 @@ class L3DVRSchedulerTestCase(L3DVRSchedulerBaseTest):
 
         if self.router_has_ext_gw:
             if self.router_agent_have_same_ext_net:
-                router_to_schedule = self._create_router('schd_rtr',
+                router_to_schedule = self._create_router(
+                    'schd_rtr',
                     self.router_is_distributed,
                     self.default_ext_net_id)
             else:
-                router_to_schedule = self._create_router('schd_rtr',
+                router_to_schedule = self._create_router(
+                    'schd_rtr',
                     self.router_is_distributed,
                     self.router_ext_net_id)
         else:
-            router_to_schedule = self._create_router('schd_rtr',
+            router_to_schedule = self._create_router(
+                'schd_rtr',
                 self.router_is_distributed)
 
         return router_to_schedule

@@ -34,7 +34,7 @@ from neutron.plugins.ml2.drivers.openvswitch.agent \
 from neutron.tests import base
 
 
-class FakeOF(object):
+class FakeOF:
     OFPR_NO_MATCH = 0
     OFPR_ACTION = 1
     FPR_INVALID_TTL = 2
@@ -42,11 +42,11 @@ class FakeOF(object):
     OFPP_CONTROLLER = 4
 
 
-class FakeDatapath(object):
+class FakeDatapath:
     ofproto = FakeOF()
 
 
-class FakeMsg(object):
+class FakeMsg:
     datapath = FakeDatapath()
     reason = datapath.ofproto.OFPR_ACTION
     match = {'in_port': 1}
@@ -61,41 +61,81 @@ class FakeMsg(object):
         self.data = packet.data
 
 
+IPV4_INFO = {
+    'version': 4,
+    'host_routes': [
+        subnet_obj.Route(
+            destination=netaddr.IPNetwork('1.1.1.0/24'),
+            nexthop='192.168.1.100',
+            subnet_id='daed3c3d-d95a-48a8-a8b1-17d408cd760f'
+        ),
+        subnet_obj.Route(
+            destination=netaddr.IPNetwork('2.2.2.2/32'),
+            nexthop='192.168.1.101',
+            subnet_id='daed3c3d-d95a-48a8-a8b1-17d408cd760f'
+        )
+    ],
+    'subnet_id': 'daed3c3d-d95a-48a8-a8b1-17d408cd760f',
+    'dns_nameservers': [
+        subnet_obj.DNSNameServer(
+            address='8.8.8.8',
+            order=0,
+            subnet_id='daed3c3d-d95a-48a8-a8b1-17d408cd760f'
+        ),
+        subnet_obj.DNSNameServer(
+            address='8.8.4.4',
+            order=1,
+            subnet_id='daed3c3d-d95a-48a8-a8b1-17d408cd760f'
+        )
+    ],
+    'cidr': net_utils.AuthenticIPNetwork('192.168.111.0/24'),
+    'ip_address': '192.168.111.45',
+    'gateway_ip': netaddr.IPAddress('192.168.111.1')
+}
+
+
+IPV6_INFO = {
+    'version': 6,
+    'host_routes': [],
+    'subnet_id': 'bd013460-b05f-4927-a4c6-5127584b2487',
+    'dns_nameservers': [],
+    'cidr': net_utils.AuthenticIPNetwork('fda7:a5cc:3460:1::/64'),
+    'ip_address': 'fda7:a5cc:3460:1::bf',
+    'gateway_ip': netaddr.IPAddress('fda7:a5cc:3460:1::1')
+}
+
+
 PORT_INFO = {
     'device_owner': 'compute:nova',
     'admin_state_up': True,
     'network_id': 'd666ccb3-69e9-46cb-b157-bb3741d87d5a',
     'fixed_ips': [
-        {'version': 4,
-         'host_routes': [
-             subnet_obj.Route(
-                 destination=netaddr.IPNetwork('1.1.1.0/24'),
-                 nexthop='192.168.1.100',
-                 subnet_id='daed3c3d-d95a-48a8-a8b1-17d408cd760f'),
-             subnet_obj.Route(
-                 destination=netaddr.IPNetwork('2.2.2.2/32'),
-                 nexthop='192.168.1.101',
-                 subnet_id='daed3c3d-d95a-48a8-a8b1-17d408cd760f')],
-         'subnet_id': 'daed3c3d-d95a-48a8-a8b1-17d408cd760f',
-         'dns_nameservers': [
-             subnet_obj.DNSNameServer(
-                 address='8.8.8.8',
-                 order=0,
-                 subnet_id='daed3c3d-d95a-48a8-a8b1-17d408cd760f'),
-             subnet_obj.DNSNameServer(
-                 address='8.8.4.4',
-                 order=1,
-                 subnet_id='daed3c3d-d95a-48a8-a8b1-17d408cd760f')],
-         'cidr': net_utils.AuthenticIPNetwork('192.168.111.0/24'),
-         'ip_address': '192.168.111.45',
-         'gateway_ip': netaddr.IPAddress('192.168.111.1')},
-        {'version': 6,
-         'host_routes': [],
-         'subnet_id': 'bd013460-b05f-4927-a4c6-5127584b2487',
-         'dns_nameservers': [],
-         'cidr': net_utils.AuthenticIPNetwork('fda7:a5cc:3460:1::/64'),
-         'ip_address': 'fda7:a5cc:3460:1::bf',
-         'gateway_ip': netaddr.IPAddress('fda7:a5cc:3460:1::1')}
+        IPV4_INFO,
+        IPV6_INFO
+    ],
+    'mac_address': '00:01:02:03:04:05',
+    'port_id': '9a0e1889-f05f-43c7-a319-e1a723ed1587',
+    'mtu': 1450
+}
+
+
+IPV4_INFO_NO_GATEWAY = {
+    **IPV4_INFO,
+    'gateway_ip': netaddr.IPAddress(constants.METADATA_V4_IP)
+}
+IPV6_INFO_NO_GATEWAY = {
+    **IPV6_INFO,
+    'gateway_ip': netaddr.IPAddress(constants.METADATA_V6_IP)
+}
+
+
+NO_GATEWAY_PORT_INFO = {
+    'device_owner': 'compute:nova',
+    'admin_state_up': True,
+    'network_id': 'd666ccb3-69e9-46cb-b157-bb3741d87d5a',
+    'fixed_ips': [
+        IPV4_INFO_NO_GATEWAY,
+        IPV6_INFO_NO_GATEWAY
     ],
     'mac_address': '00:01:02:03:04:05',
     'port_id': '9a0e1889-f05f-43c7-a319-e1a723ed1587',
@@ -106,7 +146,7 @@ PORT_INFO = {
 class DHCPResponderBaseTestCase(base.BaseTestCase):
 
     def setUp(self):
-        super(DHCPResponderBaseTestCase, self).setUp()
+        super().setUp()
         self.int_br = mock.Mock()
         self.tun_br = mock.Mock()
         self.plugin_rpc = mock.Mock()
@@ -128,6 +168,7 @@ class DHCPResponderBaseTestCase(base.BaseTestCase):
         self.base_responer.handle_dhcp = mock.Mock()
 
         self.port_info = PORT_INFO
+        self.no_gateway_port_info = NO_GATEWAY_PORT_INFO
 
     def _create_test_dhcp_request_packet(self):
         option_list = []

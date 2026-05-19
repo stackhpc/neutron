@@ -1,3 +1,9 @@
+- name: Set optional env vars
+  set_fact:
+    override_env:
+      OVN_BRANCH: "{{ OVN_BRANCH | default(omit) }}"
+      OVS_BRANCH: "{{ OVS_BRANCH | default(omit) }}"
+
 - shell:
     cmd: |
         set -e
@@ -13,33 +19,36 @@
         TOP_DIR={{ devstack_dir }}
         VENV={{ tests_venv }}
         STACK_USER=stack
-        OVS_BRANCH={{ OVS_BRANCH }}
-        OVN_BRANCH={{ OVN_BRANCH }}
         Q_BUILD_OVS_FROM_GIT={{ Q_BUILD_OVS_FROM_GIT }}
         MEMORY_TRACKER={{ MEMORY_TRACKER }}
         INSTALL_OVN={{ INSTALL_OVN }}
-        # This is DB USER used in e.g. pgsql db
+        # This is DB USER used in mysql db
         DATABASE_USER=openstack_citest
         MYSQL_GATHER_PERFORMANCE={{ MYSQL_GATHER_PERFORMANCE | default(true) }}
+        PYTHON3_VERSION={{ PYTHON3_VERSION | default('3') }}
 
-        source $DEVSTACK_PATH/functions
-        source $DEVSTACK_PATH/lib/neutron_plugins/ovn_agent
         source $NEUTRON_DIR/tools/configure_for_func_testing.sh
-
         if is_fedora; then
             # NOTE(slqweq) Running functional job e.g. on Centos requires to
             # have repo with rabbitmq-server and some other packages available
-            install_package centos-release-openstack-victoria
+            OPENSTACK_RELEASE=victoria
+            # For CentOS 9-Stream need to setup yoga repos
+            if [[ $os_VENDOR == "CentOSStream" && $os_RELEASE -gt 8 ]]; then
+                OPENSTACK_RELEASE=yoga
+            fi
+            install_package centos-release-openstack-${OPENSTACK_RELEASE}
             install_package iproute-tc haproxy keepalived
 
             # NOTE(slaweq) On Fedora/CentOS systems make sure that SELinux is
             # not in enforcing mode
             sudo setenforce 0
-            if [[ $os_VENDOR == "CentOSStream" && $os_RELEASE -eq 8 ]]; then
-                install_package python3.8 python38-devel
-            fi
         fi
 
         configure_host_for_func_testing
+        echo "$USER soft nofile 4096" | sudo tee /etc/security/limits.d/99-user.conf
 
     executable: /bin/bash
+  environment: "{{ override_env | default({})}}"
+
+- name: Reset ssh connection to pick up limits
+  meta: reset_connection

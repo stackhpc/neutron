@@ -27,19 +27,14 @@ class SanityTestCase(base.BaseLoggingTestCase):
     neutron-sanity-check runs without throwing an exception, as in the case
     where someone modifies the API without updating the check script.
     """
+
     def setUp(self):
-        super(SanityTestCase, self).setUp()
+        super().setUp()
         # needed for test_dnsmasq_version()
         cfg.CONF.register_opts(dhcp_conf.DNSMASQ_OPTS)
 
-    def test_nova_notify_runs(self):
-        checks.nova_notify_supported()
-
     def test_dnsmasq_version(self):
         checks.dnsmasq_version_supported()
-
-    def test_dibbler_version(self):
-        checks.dibbler_version_supported()
 
     def test_ipset_support(self):
         checks.ipset_supported()

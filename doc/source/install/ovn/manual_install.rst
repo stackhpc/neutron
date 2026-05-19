@@ -4,6 +4,16 @@
 Manual install & Configuration
 ==============================
 
+  .. note::
+
+     These instructions are intended for advanced users only, and could
+     be incomplete. Please consult your distro-specific documentation
+     for more details.
+
+     It is also assumed you have already installed neutron components,
+     see the latest `Install Tutorials and Guides <../index.html>`__ for
+     more information.
+
 This document discusses what is required for manual installation or
 integration into a production OpenStack deployment tool of conventional
 architectures that include the following types of nodes:
@@ -26,41 +36,37 @@ architectures that include the following types of nodes:
 Packaging
 ---------
 
-Open vSwitch (OVS) includes OVN beginning with version 2.5 and considers
-it experimental. From version 2.13 OVN has been released as separate project.
 The Networking service integration for OVN is now one of the in-tree Neutron
-drivers so should be delivered with ``neutron`` package, but older versions of
-this integration were delivered with independent package, typically ``networking-ovn``.
+drivers, so should be delivered with the ``neutron`` package, beginning with
+the Ussuri release.
 
-Building OVS from source automatically installs OVN for releases older than 2.13.
-For newer releases it is required to build OVS and OVN separately.
-For deployment tools using distribution packages, the ``openvswitch-ovn``
-package for RHEL/CentOS and compatible distributions automatically installs
-``openvswitch`` as a dependency. Ubuntu/Debian includes ``ovn-central``, ``ovn-host``,
-``ovn-docker``, and ``ovn-common`` packages that pull in the appropriate Open
-vSwitch dependencies as needed.
+For deployment tools using distribution packages, the names of them are
+different depending on the distribution.
 
-A ``python-networking-ovn`` RPM may be obtained for Fedora or CentOS from
-the RDO project.  Since Ussuri release OVN driver is shipped with ``neutron`` package.
-A package based on the older branch of ``networking-ovn`` can be found at
-https://trunk.rdoproject.org/.
+#. RHEL/Fedora and compatible distributions include the ``ovn-central`` and
+   ``ovn-host`` packages, which automatically install ``openvswitch`` as a
+   dependency.
 
-Fedora and CentOS RPM builds of OVS and OVN from the ``master`` branch of
-``ovs`` can be found in this COPR repository:
-https://copr.fedorainfracloud.org/coprs/leifmadsen/ovs-master/.
+#. Ubuntu/Debian distributions include the ``ovn-central``, ``ovn-host``,
+   ``ovn-common`` and ``ovn-docker`` packages, which automatically install
+   the appropriate Open vSwitch dependencies as needed.
 
 Controller nodes
 ----------------
 
-Each controller node runs the OVS service (including dependent services such
-as ``ovsdb-server``) and the ``ovn-northd`` service. However, only a single
-instance of the ``ovsdb-server`` and ``ovn-northd`` services can operate in
-a deployment. However, deployment tools can implement active/passive
-high-availability using a management tool that monitors service health
-and automatically starts these services on another node after failure of the
-primary node. See the :doc:`/ovn/faq/index` for more information.
+Each controller node runs the Open vSwitch (OVS) service (including
+dependent services such as ``ovsdb-server``) and ``ovn-northd``.
+Only a single instance of the ``ovsdb-server`` and ``ovn-northd`` services
+can operate in a deployment. However, deployment tools can implement
+active/passive high-availability using a management tool that monitors
+service health and automatically starts these services on another node after
+failure of the primary node. See the :doc:`/ovn/faq/index` for more
+information.
 
-#. Install the ``openvswitch-ovn`` and ``networking-ovn`` packages.
+#. Install the ``ovn-central`` and ``openvswitch`` packages (RHEL/Fedora).
+
+#. Install the ``ovn-central`` and ``openvswitch-common`` packages
+   (Ubuntu/Debian).
 
 #. Start the OVS service. The central OVS service starts the ``ovsdb-server``
    service that manages OVN databases.
@@ -69,13 +75,8 @@ primary node. See the :doc:`/ovn/faq/index` for more information.
 
    .. code-block:: console
 
-      # systemctl start openvswitch
-
-   Using the ``ovs-ctl`` script:
-
-   .. code-block:: console
-
-      # /usr/share/openvswitch/scripts/ovs-ctl start  --system-id="random"
+      # systemctl start openvswitch (RHEL/Fedora)
+      # systemctl start openvswitch-switch (Ubuntu/Debian)
 
 #. Configure the ``ovsdb-server`` component. By default, the ``ovsdb-server``
    service only permits local access to databases via Unix socket. However,
@@ -97,10 +98,30 @@ primary node. See the :doc:`/ovn/faq/index` for more information.
 
      .. note::
 
-        Permit remote access to TCP ports: 6640 (OVS) to VTEPS (if you use vteps),
-        6642 (SBDB) to hosts running neutron-server, gateway nodes that run ovn-controller,
-        and compute node services like ovn-controller and ovn-metadata-agent. 6641 (NBDB) to
-        hosts running neutron-server.
+        Permit remote access to TCP ports: 6640 (OVS) to VTEPS (if you use
+        vteps), 6642 (SBDB) to hosts running neutron-server, gateway nodes
+        that run ovn-controller, and compute node services like ovn-controller
+        and ovn-metadata-agent. 6641 (NBDB) to hosts running neutron-server.
+
+    * Since we are using ``options:redirect-type`` set to ``bridged`` for Logical
+      Router Ports in VLAN and FLAT networks, OVN redirects packets to the
+      gateway chassis using the localnet port of the  router’s  peer  logical
+      switch, instead of a tunnel. If ``external-ids:ovn-chassis-mac-mappings`` is
+      not configured reply packets from VM on compute node leave physnet with
+      source MAC address of Neutron Logical Router Port. Which cause MAC jump over
+      computes and gateways. To avoid this setting
+      ``external-ids:ovn-chassis-mac-mappings`` for each physnet with unique MAC
+      address on each compute is required.
+
+      Below you can find example how to set ``ovn-chassis-mac-mappings`` for
+      compute host with two physical networks ``physnet1`` and ``physnet2``.
+      For example you can take MAC address from physical interface that is plugged
+      into physnet.
+
+     .. code-block:: console
+
+        # ovs-vsctl set open . external-ids:ovn-chassis-mac-mappings=\
+            physnet1:aa:bb:cc:dd:ee:ff,physnet2:aa:bb:cc:dd:ee:fe
 
 #. Start the ``ovn-northd`` service.
 
@@ -109,24 +130,6 @@ primary node. See the :doc:`/ovn/faq/index` for more information.
    .. code-block:: console
 
       # systemctl start ovn-northd
-
-   Using the ``ovn-ctl`` script:
-
-   .. code-block:: console
-
-      # /usr/share/openvswitch/scripts/ovn-ctl start_northd
-
-   Options for *start_northd*:
-
-   .. code-block:: console
-
-      # /usr/share/openvswitch/scripts/ovn-ctl start_northd --help
-      # ...
-      # DB_NB_SOCK="/usr/local/etc/openvswitch/nb_db.sock"
-      # DB_NB_PID="/usr/local/etc/openvswitch/ovnnb_db.pid"
-      # DB_SB_SOCK="usr/local/etc/openvswitch/sb_db.sock"
-      # DB_SB_PID="/usr/local/etc/openvswitch/ovnsb_db.pid"
-      # ...
 
 #. Configure the Networking server component. The Networking service
    implements OVN as an ML2 driver. Edit the ``/etc/neutron/neutron.conf``
@@ -152,7 +155,7 @@ primary node. See the :doc:`/ovn/faq/index` for more information.
    ``/etc/neutron/plugins/ml2/ml2_conf.ini`` file:
 
    * Configure the OVN mechanism driver, network type drivers, self-service
-     (tenant) network types, and enable the port security extension.
+     (project) network types, and enable the port security extension.
 
      .. code-block:: ini
 
@@ -160,7 +163,7 @@ primary node. See the :doc:`/ovn/faq/index` for more information.
         ...
         mechanism_drivers = ovn
         type_drivers = local,flat,vlan,geneve
-        tenant_network_types = geneve
+        project_network_types = geneve
         extension_drivers = port_security
         overlay_ip_version = 4
 
@@ -168,7 +171,7 @@ primary node. See the :doc:`/ovn/faq/index` for more information.
 
         To enable VLAN self-service networks, make sure that OVN
         version 2.11 (or higher) is used, then add ``vlan`` to the
-        ``tenant_network_types`` option. The first network type in the
+        ``project_network_types`` option. The first network type in the
         list becomes the default self-service network type.
 
         To use IPv6 for all overlay (tunnel) network endpoints,
@@ -200,6 +203,23 @@ primary node. See the :doc:`/ovn/faq/index` for more information.
 
         The default for ``max_header_size``, ``30``, is too low for OVN.
         OVN requires at least ``38``.
+
+   * Optionally, enable support for VXLAN type networks. Because of limited
+     space in VXLAN VNI to pass over the needed information that requires
+     OVN to identify a packet, the header size to contain the segmentation ID
+     is reduced to 12 bits, that allows a maximum number of 4096 networks.
+     The same limitation applies to the number of ports in each network, that
+     are also identified with a 12 bits header chunk, limiting their number
+     to 4096 ports. Please check [1]_ for more information.
+
+     .. code-block:: ini
+
+        [ml2]
+        ...
+        type_drivers = geneve,vxlan
+
+        [ml2_type_vxlan]
+        vni_ranges = 1001:1100
 
    * Optionally, enable support for VLAN provider and self-service
      networks on one or more physical networks. If you specify only
@@ -268,7 +288,13 @@ primary node. See the :doc:`/ovn/faq/index` for more information.
 
         # ovs-vsctl set open . external-ids:ovn-cms-options=enable-chassis-as-gw
 
-#. Start the ``neutron-server`` service.
+#. Start, or restart, the ``neutron-server`` service.
+
+   Using the *systemd* unit:
+
+   .. code-block:: console
+
+      # systemctl start neutron-server
 
 Network nodes
 -------------
@@ -283,7 +309,11 @@ Compute nodes
 Each compute node runs the OVS and ``ovn-controller`` services. The
 ``ovn-controller`` service replaces the conventional OVS layer-2 agent.
 
-#. Install the ``openvswitch-ovn`` and ``networking-ovn`` packages.
+#. Install the ``ovn-host``, ``openvswitch`` and
+   ``neutron-ovn-metadata-agent`` packages (RHEL/Fedora).
+
+#. Install the ``ovn-host``, ``openvswitch-switch`` and
+   ``neutron-ovn-metadata-agent`` packages (Ubuntu/Debian).
 
 #. Start the OVS service.
 
@@ -291,13 +321,8 @@ Each compute node runs the OVS and ``ovn-controller`` services. The
 
    .. code-block:: console
 
-      # systemctl start openvswitch
-
-   Using the ``ovs-ctl`` script:
-
-   .. code-block:: console
-
-      # /usr/share/openvswitch/scripts/ovs-ctl start --system-id="random"
+      # systemctl start openvswitch (RHEL/Fedora)
+      # systemctl start openvswitch-switch (Ubuntu/Debian)
 
 #. Configure the OVS service.
 
@@ -331,19 +356,13 @@ Each compute node runs the OVS and ``ovn-controller`` services. The
      Replace ``IP_ADDRESS`` with the IP address of the overlay network
      interface on the compute node.
 
-#. Start the ``ovn-controller`` service.
+#. Start the ``ovn-controller`` and ``neutron-ovn-metadata-agent`` services.
 
    Using the *systemd* unit:
 
    .. code-block:: console
 
-      # systemctl start ovn-controller
-
-   Using the ``ovn-ctl`` script:
-
-   .. code-block:: console
-
-      # /usr/share/openvswitch/scripts/ovn-ctl start_controller
+      # systemctl start ovn-controller neutron-ovn-metadata-agent
 
 Verify operation
 ----------------
@@ -354,3 +373,8 @@ Verify operation
 
       # ovn-sbctl show
         <output>
+
+References
+----------
+
+.. [1] https://mail.openvswitch.org/pipermail/ovs-dev/2020-September/375189.html

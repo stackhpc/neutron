@@ -17,12 +17,15 @@ from neutron_lib.api.definitions import external_net as extnet_apidef
 from neutron_lib.api.definitions import multiprovidernet as mpnet_apidef
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as provider
+from neutron_lib.api.definitions import qinq as qinq_apidef
+from neutron_lib.api.definitions import vlantransparent as vlan_apidef
 from neutron_lib.api import validators
 from neutron_lib import constants
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions as exc
 from neutron_lib.exceptions import multiprovidernet as mpnet_exc
 from neutron_lib.exceptions import placement as place_exc
+from neutron_lib.exceptions import vlanqinq as qinq_exc
 from neutron_lib.exceptions import vlantransparent as vlan_exc
 from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
@@ -31,6 +34,7 @@ from oslo_utils import excutils
 import stevedore
 
 from neutron._i18n import _
+from neutron.common import wsgi_utils
 from neutron.conf.plugins.ml2 import config
 from neutron.db import segments_db
 from neutron.objects import ports
@@ -51,12 +55,12 @@ class TypeManager(stevedore.named.NamedExtensionManager):
 
         LOG.info("Configured type driver names: %s",
                  cfg.CONF.ml2.type_drivers)
-        super(TypeManager, self).__init__('neutron.ml2.type_drivers',
-                                          cfg.CONF.ml2.type_drivers,
-                                          invoke_on_load=True)
+        super().__init__('neutron.ml2.type_drivers',
+                         cfg.CONF.ml2.type_drivers,
+                         invoke_on_load=True)
         LOG.info("Loaded type driver names: %s", self.names())
         self._register_types()
-        self._check_tenant_network_types(cfg.CONF.ml2.tenant_network_types)
+        self._check_project_network_types(cfg.CONF.ml2.project_network_types)
         self._check_external_network_type(cfg.CONF.ml2.external_network_type)
 
     def _register_types(self):
@@ -73,16 +77,15 @@ class TypeManager(stevedore.named.NamedExtensionManager):
                 self.drivers[network_type] = ext
         LOG.info("Registered types: %s", self.drivers.keys())
 
-    def _check_tenant_network_types(self, types):
-        self.tenant_network_types = []
+    def _check_project_network_types(self, types):
+        self.project_network_types = []
         for network_type in types:
-            if network_type in self.drivers:
-                self.tenant_network_types.append(network_type)
-            else:
-                LOG.error("No type driver for tenant network_type: %s. "
+            if network_type not in self.drivers:
+                LOG.error("No type driver for project network_type: %s. "
                           "Service terminated!", network_type)
                 raise SystemExit(1)
-        LOG.info("Tenant network_types: %s", self.tenant_network_types)
+            self.project_network_types.append(network_type)
+        LOG.info("Project network_types: %s", self.project_network_types)
 
     def _check_external_network_type(self, ext_network_type):
         if ext_network_type and ext_network_type not in self.drivers:
@@ -114,16 +117,12 @@ class TypeManager(stevedore.named.NamedExtensionManager):
                 raise mpnet_exc.SegmentsSetInConjunctionWithProviders()
             segment = self._get_provider_segment(network)
             return [self._process_provider_segment(segment)]
-        elif validators.is_attr_set(network.get(mpnet_apidef.SEGMENTS)):
+        if validators.is_attr_set(network.get(mpnet_apidef.SEGMENTS)):
             segments = [self._process_provider_segment(s)
                         for s in network[mpnet_apidef.SEGMENTS]]
-            mpnet_apidef.check_duplicate_segments(
-                segments, self.is_partial_segment)
+            mpnet_apidef.check_duplicate_segments(segments,
+                                                  self.is_partial_segment)
             return segments
-
-    def _match_segment(self, segment, filters):
-        return all(not filters.get(attr) or segment.get(attr) in filters[attr]
-                   for attr in provider.ATTRIBUTES)
 
     def _get_provider_segment(self, network):
         # TODO(manishg): Placeholder method
@@ -133,18 +132,6 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         # future, network and segment information will be decoupled and
         # here we will do the job of extracting the segment information.
         return network
-
-    def network_matches_filters(self, network, filters):
-        if not filters:
-            return True
-        if any(validators.is_attr_set(network.get(attr))
-               for attr in provider.ATTRIBUTES):
-            segments = [self._get_provider_segment(network)]
-        elif validators.is_attr_set(network.get(mpnet_apidef.SEGMENTS)):
-            segments = self._get_attribute(network, mpnet_apidef.SEGMENTS)
-        else:
-            return True
-        return any(self._match_segment(s, filters) for s in segments)
 
     def _get_attribute(self, attrs, key):
         value = attrs.get(key)
@@ -191,12 +178,12 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         else:
             network_segments = [
                 {provider_key: network.pop(provider_key)
-                for provider_key in provider.ATTRIBUTES}]
+                 for provider_key in provider.ATTRIBUTES}]
 
         return (
             [{api.NETWORK_TYPE: network_segment[provider.NETWORK_TYPE],
-             api.PHYSICAL_NETWORK: network_segment[provider.PHYSICAL_NETWORK],
-             api.SEGMENTATION_ID: network_segment[provider.SEGMENTATION_ID]}
+              api.PHYSICAL_NETWORK: network_segment[provider.PHYSICAL_NETWORK],
+              api.SEGMENTATION_ID: network_segment[provider.SEGMENTATION_ID]}
              for network_segment in network_segments])
 
     def initialize(self):
@@ -204,12 +191,15 @@ class TypeManager(stevedore.named.NamedExtensionManager):
             LOG.info("Initializing driver for type '%s'", network_type)
             driver.obj.initialize()
 
-    def initialize_network_segment_range_support(self):
+    def initialize_network_segment_range_support(self, start_time):
+        if wsgi_utils.get_api_worker_id() != wsgi_utils.FIRST_WORKER_ID:
+            return
+
         for network_type, driver in self.drivers.items():
             if network_type in constants.NETWORK_SEGMENT_RANGE_TYPES:
                 LOG.info("Initializing driver network segment range support "
                          "for type '%s'", network_type)
-                driver.obj.initialize_network_segment_range_support()
+                driver.obj.initialize_network_segment_range_support(start_time)
 
     def _add_network_segment(self, context, network_id, segment,
                              segment_index=0):
@@ -220,10 +210,10 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         segments_db.update_network_segment(
             context, network_id, segmentation_id)
 
-    def create_network_segments(self, context, network, tenant_id):
+    def create_network_segments(self, context, network, project_id):
         """Call type drivers to create network segments."""
         segments = self._process_provider_create(network)
-        filters = {'project_id': tenant_id}
+        filters = {'project_id': project_id}
         with db_api.CONTEXT_WRITER.using(context):
             network_id = network['id']
             if segments:
@@ -238,7 +228,7 @@ class TypeManager(stevedore.named.NamedExtensionManager):
                     context, filters=filters)
                 self._add_network_segment(context, network_id, segment)
             else:
-                segment = self._allocate_tenant_net_segment(
+                segment = self._allocate_project_net_segment(
                     context, filters=filters)
                 self._add_network_segment(context, network_id, segment)
 
@@ -290,20 +280,18 @@ class TypeManager(stevedore.named.NamedExtensionManager):
     def is_partial_segment(self, segment):
         network_type = segment[api.NETWORK_TYPE]
         driver = self.drivers.get(network_type)
-        if driver:
-            return driver.obj.is_partial_segment(segment)
-        else:
+        if not driver:
             msg = _("network_type value '%s' not supported") % network_type
             raise exc.InvalidInput(error_message=msg)
+        return driver.obj.is_partial_segment(segment)
 
     def validate_provider_segment(self, segment):
         network_type = segment[api.NETWORK_TYPE]
         driver = self.drivers.get(network_type)
-        if driver:
-            driver.obj.validate_provider_segment(segment)
-        else:
+        if not driver:
             msg = _("network_type value '%s' not supported") % network_type
             raise exc.InvalidInput(error_message=msg)
+        driver.obj.validate_provider_segment(segment)
 
     def reserve_provider_segment(self, context, segment, filters=None):
         network_type = segment.get(api.NETWORK_TYPE)
@@ -311,19 +299,17 @@ class TypeManager(stevedore.named.NamedExtensionManager):
         if isinstance(driver.obj, api.TypeDriver):
             return driver.obj.reserve_provider_segment(context.session,
                                                        segment, filters)
-        else:
-            return driver.obj.reserve_provider_segment(context,
-                                                       segment, filters)
+        return driver.obj.reserve_provider_segment(context, segment, filters)
 
     def _allocate_segment(self, context, network_type, filters=None):
         driver = self.drivers.get(network_type)
         if isinstance(driver.obj, api.TypeDriver):
-            return driver.obj.allocate_tenant_segment(context.session, filters)
-        else:
-            return driver.obj.allocate_tenant_segment(context, filters)
+            return driver.obj.allocate_tenant_segment(context.session,
+                                                      filters)
+        return driver.obj.allocate_tenant_segment(context, filters)
 
-    def _allocate_tenant_net_segment(self, context, filters=None):
-        for network_type in self.tenant_network_types:
+    def _allocate_project_net_segment(self, context, filters=None):
+        for network_type in self.project_network_types:
             segment = self._allocate_segment(context, network_type, filters)
             if segment:
                 return segment
@@ -417,7 +403,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
 
         LOG.info("Configured mechanism driver names: %s",
                  cfg.CONF.ml2.mechanism_drivers)
-        super(MechanismManager, self).__init__(
+        super().__init__(
             'neutron.ml2.mechanism_drivers',
             cfg.CONF.ml2.mechanism_drivers,
             invoke_on_load=True,
@@ -462,18 +448,73 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
             LOG.info("Initializing mechanism driver '%s'", driver.name)
             driver.obj.initialize()
 
+    def _mech_driver_tri_state_check(self, context, feature_field,
+                                     check_method, error_cls):
+        """Enforce mechanism-driver support for a tri-state capability.
+
+        The driver ``check_method`` return value is interpreted as tri-state:
+        * True: support
+        * False: explicit rejection
+        * None: abstain
+
+        The capability is accepted only if at least one driver returns True
+        and no driver returns False.
+
+        :param context: context parameter to pass to each method call
+        :param feature_field: key in ``context.current`` that enables the check
+        :param check_method: driver method name used for capability validation
+        :param error_cls: exception type raised on unsupported capability
+        :raises: error_cls if no driver reports explicit support or any driver
+            explicitly rejects support.
+        """
+        if not context.current.get(feature_field):
+            return
+
+        if not self.ordered_mech_drivers:
+            # With no mechanism drivers loaded, behave like the legacy check
+            # (the for-loop never ran, so nothing could veto the network).
+            return
+
+        saw_true = False
+        for driver in self.ordered_mech_drivers:
+            result = getattr(driver.obj, check_method)(context)
+            if result is False:
+                raise error_cls()
+            if result is True:
+                saw_true = True
+
+        if not saw_true:
+            raise error_cls()
+
     def _check_vlan_transparency(self, context):
-        """Helper method for checking vlan transparecncy support.
+        """Helper method for checking vlan transparency support.
 
         :param context: context parameter to pass to each method call
         :raises: neutron_lib.exceptions.vlantransparent.
-        VlanTransparencyDriverError if any mechanism driver doesn't
-        support vlan transparency.
+        VlanTransparencyDriverError if mechanism drivers do not collectively
+        support vlan transparency for this network.
         """
-        if context.current.get('vlan_transparent'):
-            for driver in self.ordered_mech_drivers:
-                if not driver.obj.check_vlan_transparency(context):
-                    raise vlan_exc.VlanTransparencyDriverError()
+        self._mech_driver_tri_state_check(
+            context, vlan_apidef.VLANTRANSPARENT, 'check_vlan_transparency',
+            vlan_exc.VlanTransparencyDriverError)
+
+    def _check_vlan_qinq(self, context):
+        """Helper method for checking vlan qinq support.
+
+        :param context: context parameter to pass to each method call
+        :raises: neutron_lib.exceptions.qinq.
+        VlanQinqDriverError if mechanism drivers do not collectively
+        support vlan qinq for this network.
+        """
+        self._mech_driver_tri_state_check(
+            context, qinq_apidef.QINQ_FIELD, 'check_vlan_qinq',
+            qinq_exc.VlanQinqDriverError)
+
+    def start_driver_rpc_listeners(self):
+        servers = []
+        for driver in self.ordered_mech_drivers:
+            servers.extend(driver.obj.start_rpc_listeners())
+        return servers
 
     def _call_on_drivers(self, method_name, context,
                          continue_on_failure=False, raise_db_retriable=False):
@@ -529,6 +570,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
         that all mechanism drivers are called in this case.
         """
         self._check_vlan_transparency(context)
+        self._check_vlan_qinq(context)
         self._call_on_drivers("create_network_precommit", context,
                               raise_db_retriable=True)
 
@@ -867,7 +909,7 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                 segment = context._new_bound_segment
                 if segment:
                     pbl_obj = ports.PortBindingLevel(
-                        context._plugin_context,
+                        context.plugin_context,
                         port_id=port_id,
                         host=context.host,
                         level=level,
@@ -881,13 +923,12 @@ class MechanismManager(stevedore.named.NamedExtensionManager):
                         if self._bind_port_level(context, level + 1,
                                                  next_segments):
                             return True
-                        else:
-                            LOG.warning("Failed to bind port %(port)s on "
-                                        "host %(host)s at level %(lvl)s",
-                                        {'port': context.current['id'],
-                                         'host': context.host,
-                                         'lvl': level + 1})
-                            context._pop_binding_level()
+                        LOG.warning("Failed to bind port %(port)s on "
+                                    "host %(host)s at level %(lvl)s",
+                                    {'port': context.current['id'],
+                                     'host': context.host,
+                                     'lvl': level + 1})
+                        context._pop_binding_level()
                     else:
                         # NOTE(bence romsics): Consider: "In case of
                         # hierarchical port binding binding_profile.allocation
@@ -1089,10 +1130,10 @@ class ExtensionManager(stevedore.named.NamedExtensionManager):
 
         LOG.info("Configured extension driver names: %s",
                  cfg.CONF.ml2.extension_drivers)
-        super(ExtensionManager, self).__init__('neutron.ml2.extension_drivers',
-                                               cfg.CONF.ml2.extension_drivers,
-                                               invoke_on_load=True,
-                                               name_order=True)
+        super().__init__('neutron.ml2.extension_drivers',
+                         cfg.CONF.ml2.extension_drivers,
+                         invoke_on_load=True,
+                         name_order=True)
         LOG.info("Loaded extension driver names: %s", self.names())
         self._register_drivers()
 

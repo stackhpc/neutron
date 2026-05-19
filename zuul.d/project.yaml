@@ -1,9 +1,6 @@
-# NOTE: In doc/source/contributor/testing/ci_scenario_jobs.rst file there is
-# document with summary of all tempest, neutron-tempest-plugin and grenade jobs
-# summary.
-# Please update this document always when any changes to jobs are made.
 - project:
     templates:
+      - integrated-gate-networking
       - neutron-tempest-plugin-jobs
       - openstack-cover-jobs
       - openstack-python3-jobs
@@ -15,16 +12,15 @@
       - neutron-experimental-jobs
       - neutron-periodic-jobs
       - neutron-tox-override-jobs
+      - neutron-skip-level-jobs
+      - periodic-jobs-with-neutron-lib-master
+      - periodic-jobs-with-oslo-master
+      - periodic-jobs-with-ovsdbapp-master
     check:
       jobs:
-        - neutron-functional-with-uwsgi
-        - neutron-fullstack-with-uwsgi
+        - neutron-functional
         - neutron-ovs-grenade-multinode
-        - neutron-ovs-grenade-multinode-skip-level:
-            voting: false
-        - neutron-ovn-grenade-multinode-skip-level:
-            voting: false
-        - neutron-ovs-grenade-dvr-multinode
+        - neutron-ovn-grenade-multinode
         - neutron-ovs-tempest-multinode-full
         - neutron-ovs-tempest-dvr-ha-multinode-full
         - neutron-ovn-tempest-ipv6-only-ovs-release
@@ -32,11 +28,13 @@
         - neutron-ovn-rally-task
         - tempest-integrated-networking:
             irrelevant-files: &ovn-irrelevant-files
+              - ^\.pre-commit-config\.yaml$
               - ^\.pylintrc$
               - ^test-requirements.txt$
               - ^releasenotes/.*$
               - ^doc/.*$
               - ^setup.cfg$
+              - ^pyproject.toml$
               - ^.*\.conf\.sample$
               - ^.*\.rst$
               - ^neutron/locale/.*$
@@ -47,33 +45,41 @@
               - ^neutron/agent/l2/.*$
               - ^neutron/agent/l3/.*$
               - ^neutron/agent/metadata/.*$
-              - ^neutron/agent/windows/.*$
               - ^neutron/agent/dhcp_agent.py
               - ^neutron/agent/l3_agent.py
               - ^neutron/agent/metadata_agent.py
               - ^neutron/agent/resource_cache.py
               - ^neutron/agent/rpc.py
               - ^neutron/agent/securitygroup_rpc.py
-              - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
               - ^neutron/plugins/ml2/drivers/openvswitch/.*$
               - ^neutron/plugins/ml2/drivers/macvtap/.*$
               - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
-              - ^neutron/services/qos/drivers/linuxbridge/.*$
               - ^neutron/services/qos/drivers/openvswitch/.*$
-              - ^neutron/services/trunk/drivers/linuxbridge/.*$
               - ^neutron/services/trunk/drivers/openvswitch/.*$
               - ^neutron/scheduler/.*$
               - ^roles/.*functional.*$
               - ^playbooks/.*functional.*$
-              - ^zuul.d/(?!(project)).*\.yaml
+              # Ignore everything except for zuul.d/project.yaml
+              - ^zuul.d/base.yaml
+              - ^zuul.d/grenade.yaml
+              - ^zuul.d/job-templates.yaml
+              - ^zuul.d/rally.yaml
+              - ^zuul.d/tempest-multinode.yaml
+              - ^zuul.d/tempest-singlenode.yaml
+        - neutron-ovn-bgp-tempest-multinode:
+            # neutron-ovn-bgp-tempest-multinode inherits irrelevant-files from
+            # its parent job neutron-tempest-plugin-ovn, defined in
+            # neutron-tempest-plugin, which are identical to this file's
+            # ovn-irrelevant-files
+            voting: false
+            attempts: 1
 
     gate:
       jobs:
-        - neutron-functional-with-uwsgi
-        - neutron-fullstack-with-uwsgi
+        - neutron-functional
         - neutron-ovs-tempest-multinode-full
+        - neutron-ovn-grenade-multinode
         - neutron-ovs-grenade-multinode
-        - neutron-ovs-grenade-dvr-multinode
         - neutron-ovn-tempest-ipv6-only-ovs-release
         - tempest-integrated-networking:
             irrelevant-files: *ovn-irrelevant-files

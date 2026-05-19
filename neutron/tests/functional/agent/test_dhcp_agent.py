@@ -14,15 +14,21 @@
 #    under the License.
 
 import copy
+import functools
 import os.path
+import time
+import unittest
 from unittest import mock
 
-import eventlet
 import fixtures
 import netaddr
+from neutron_lib.api import converters
 from neutron_lib import constants as lib_const
 from oslo_config import fixture as fixture_config
 from oslo_log import log as logging
+# NOTE(ralonsoh): [eventlet-removal] change back to
+# ``oslo_service.loopingcall`` when the removal is completed.
+from oslo_service.backend._threading import loopingcall
 from oslo_utils import uuidutils
 
 from neutron.agent.common import ovs_lib
@@ -33,7 +39,7 @@ from neutron.agent.linux import external_process
 from neutron.agent.linux import interface
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import utils
-from neutron.agent.metadata import driver as metadata_driver
+from neutron.agent.metadata import driver_base
 from neutron.common import utils as common_utils
 from neutron.conf.agent import common as config
 from neutron.tests.common import net_helpers
@@ -45,10 +51,10 @@ LOG = logging.getLogger(__name__)
 
 class DHCPAgentOVSTestFramework(base.BaseSudoTestCase):
 
-    _DHCP_PORT_MAC_ADDRESS = netaddr.EUI("24:77:03:7d:00:4c")
-    _DHCP_PORT_MAC_ADDRESS.dialect = netaddr.mac_unix
-    _TENANT_PORT_MAC_ADDRESS = netaddr.EUI("24:77:03:7d:00:3a")
-    _TENANT_PORT_MAC_ADDRESS.dialect = netaddr.mac_unix
+    _DHCP_PORT_MAC_ADDRESS = converters.convert_to_sanitized_mac_address(
+        '24:77:03:7d:00:4c')
+    _TENANT_PORT_MAC_ADDRESS = converters.convert_to_sanitized_mac_address(
+        '24:77:03:7d:00:3a')
 
     _IP_ADDRS = {
         4: {'addr': '192.168.10.11',
@@ -59,7 +65,7 @@ class DHCPAgentOVSTestFramework(base.BaseSudoTestCase):
             'gateway': '2001:db8:0:1::c0a8:a01'}, }
 
     def setUp(self):
-        super(DHCPAgentOVSTestFramework, self).setUp()
+        super().setUp()
         config.setup_logging()
         self.conf_fixture = self.useFixture(fixture_config.Config())
         self.conf = self.conf_fixture.conf
@@ -76,20 +82,27 @@ class DHCPAgentOVSTestFramework(base.BaseSudoTestCase):
             'interface_driver',
             'neutron.agent.linux.interface.OVSInterfaceDriver')
         self.conf.set_override('report_interval', 0, 'AGENT')
-        br_int = self.useFixture(net_helpers.OVSBridgeFixture()).bridge
-        self.conf.set_override('integration_bridge', br_int.br_name, 'OVS')
+        self.br_int = self.useFixture(net_helpers.OVSBridgeFixture()).bridge
+        self.conf.set_override('integration_bridge', self.br_int.br_name,
+                               'OVS')
 
         self.mock_plugin_api = mock.patch(
             'neutron.agent.dhcp.agent.DhcpPluginApi').start().return_value
         mock.patch('neutron.agent.rpc.PluginReportStateAPI').start()
-        self.agent = agent.DhcpAgentWithStateReport('localhost')
+        self.conf.set_override('check_child_processes_interval', 0, 'AGENT')
+        with mock.patch.object(loopingcall, 'FixedIntervalLoopingCall'):
+            # NOTE(ralonsoh): prevent the ``FixedIntervalLoopingCall`` process
+            # to start to avoid an endless thread.
+            self.agent = agent.DhcpAgentWithStateReport('localhost')
+        self.agent.init_host()
+        self.addCleanup(self._stop_agent, self.agent)
 
         self.ovs_driver = interface.OVSInterfaceDriver(self.conf)
-
-        self.conf.set_override('check_child_processes_interval', 1, 'AGENT')
-
         mock.patch('neutron.agent.common.ovs_lib.'
                    'OVSBridge._set_port_dead').start()
+
+    def _stop_agent(self, _agent):
+        _agent.cache.cleanup_loop.stop()
 
     def network_dict_for_dhcp(self, dhcp_enabled=True,
                               ip_version=lib_const.IP_VERSION_4,
@@ -133,7 +146,7 @@ class DHCPAgentOVSTestFramework(base.BaseSudoTestCase):
     def create_port_dict(self, network_id, subnet_id, mac_address,
                          ip_version=lib_const.IP_VERSION_4, ip_address=None):
         ip_address = (self._IP_ADDRS[ip_version]['addr']
-            if not ip_address else ip_address)
+                      if not ip_address else ip_address)
         port_dict = dhcp.DictModel(id=uuidutils.generate_uuid(),
                                    name="foo",
                                    mac_address=mac_address,
@@ -163,6 +176,7 @@ class DHCPAgentOVSTestFramework(base.BaseSudoTestCase):
         return device_manager.get_interface_name(network, port)
 
     def configure_dhcp_for_network(self, network, dhcp_enabled=True):
+        self.mock_plugin_api.get_network_info.return_value = network
         self.agent.configure_dhcp_for_network(network)
         self.addCleanup(self._cleanup_network, network, dhcp_enabled)
 
@@ -222,10 +236,15 @@ class DHCPAgentOVSTestFramework(base.BaseSudoTestCase):
 
     def assert_good_allocation_for_port(self, network, port):
         vif_name = self.get_interface_name(network.id, port)
+        tag = self.br_int.ovsdb.db_get('Port', vif_name, 'tag').execute(
+            check_error=True)
+        self.assertEqual([], tag)
+
         self._run_dhclient(vif_name, network)
 
-        predicate = lambda: len(
-            self._ip_list_for_vif(vif_name, network.namespace))
+        def predicate():
+            return len(self._ip_list_for_vif(vif_name, network.namespace))
+
         common_utils.wait_until_true(predicate, 10)
 
         ip_list = self._ip_list_for_vif(vif_name, network.namespace)
@@ -238,7 +257,7 @@ class DHCPAgentOVSTestFramework(base.BaseSudoTestCase):
         self._run_dhclient(vif_name, network)
         # we need wait some time (10 seconds is enough) and check
         # that dhclient not configured ip-address for interface
-        eventlet.sleep(10)
+        time.sleep(10)
 
         ip_list = self._ip_list_for_vif(vif_name, network.namespace)
         self.assertEqual([], ip_list)
@@ -266,7 +285,14 @@ class DHCPAgentOVSTestFramework(base.BaseSudoTestCase):
             self.conf,
             network.id,
             network.namespace,
-            service=metadata_driver.HAPROXY_SERVICE)
+            service=driver_base.HAPROXY_SERVICE)
+
+    def resolve_txt_record(self, namespace, server_address, record):
+        actual = ip_lib.IPWrapper(namespace=namespace).netns.execute(
+            ["dig", "+short", "+timeout=1", "-t", "txt", record,
+             f"@{server_address}"],
+            privsep_exec=True)
+        return actual.strip().strip('"')
 
 
 class DHCPAgentOVSTestCase(DHCPAgentOVSTestFramework):
@@ -312,9 +338,8 @@ class DHCPAgentOVSTestCase(DHCPAgentOVSTestFramework):
         network, port = self._get_network_port_for_allocation_test()
         network.ports.append(port)
         self.configure_dhcp_for_network(network=network)
-        bad_mac_address = netaddr.EUI(self._TENANT_PORT_MAC_ADDRESS.value + 1)
-        bad_mac_address.dialect = netaddr.mac_unix
-        port.mac_address = str(bad_mac_address)
+        port.mac_address = converters.convert_to_sanitized_mac_address(
+            '24:77:03:7d:00:4d')
         self._plug_port_for_dhcp_request(network, port)
         self.assert_bad_allocation_for_port(network, port)
 
@@ -331,6 +356,10 @@ class DHCPAgentOVSTestCase(DHCPAgentOVSTestFramework):
             exception=RuntimeError("Metadata proxy didn't spawn"))
         return (pm, network)
 
+    # TODO(ralonsoh): refactor this test to make it compatible after the
+    # eventlet removal.
+    @unittest.skip('This test is skipped after the eventlet removal and '
+                   'needs to be refactored')
     def test_metadata_proxy_respawned(self):
         pm, network = self._spawn_network_metadata_proxy()
         old_pid = pm.pid
@@ -401,6 +430,10 @@ class DHCPAgentOVSTestCase(DHCPAgentOVSTestFramework):
         self.conf.set_override('enable_isolated_metadata', False)
         self._test_metadata_proxy_spawn_kill_with_subnet_create_delete()
 
+    # TODO(ralonsoh): refactor this test to make it compatible after the
+    # eventlet removal.
+    @unittest.skip('This test is skipped after the eventlet removal and '
+                   'needs to be refactored')
     def test_notify_port_ready_after_enable_dhcp(self):
         network = self.network_dict_for_dhcp()
         dhcp_port = self.create_port_dict(
@@ -419,42 +452,31 @@ class DHCPAgentOVSTestCase(DHCPAgentOVSTestFramework):
         self.mock_plugin_api.dhcp_ready_on_ports.assert_called_with(
             ports_to_send)
 
-    def test_dhcp_processing_pool_size(self):
-        mock.patch.object(self.agent, 'call_driver').start().return_value = (
-            True)
-        self.agent.update_isolated_metadata_proxy = mock.Mock()
-        self.agent.disable_isolated_metadata_proxy = mock.Mock()
+    def test_dnsmasq_local_txt_record(self):
+        txt_record = "record.example.com"
+        txt_value = "txt_value"
+        self.conf.set_override(
+                "dnsmasq_txt_record", f"{txt_record},{txt_value}")
+        dhcp_enabled = True
+        predicates = []
 
-        network_info_1 = self.network_dict_for_dhcp()
-        self.configure_dhcp_for_network(network=network_info_1)
-        self.assertEqual(agent.DHCP_PROCESS_GREENLET_MIN,
-                         self.agent._pool.size)
+        for ip_version in [4, 6]:
+            network = self.network_dict_for_dhcp(
+                dhcp_enabled, ip_version=ip_version)
+            self.configure_dhcp_for_network(network=network,
+                                            dhcp_enabled=dhcp_enabled)
+            server_address = self._IP_ADDRS[ip_version]["addr"]
+            predicates.append(functools.partial(
+                self.resolve_txt_record,
+                network.namespace, server_address, txt_record
+            ))
 
-        network_info_2 = self.network_dict_for_dhcp()
-        self.configure_dhcp_for_network(network=network_info_2)
-        self.assertEqual(agent.DHCP_PROCESS_GREENLET_MIN,
-                         self.agent._pool.size)
-
-        network_info_list = [network_info_1, network_info_2]
-        for _i in range(agent.DHCP_PROCESS_GREENLET_MAX + 1):
-            ni = self.network_dict_for_dhcp()
-            self.configure_dhcp_for_network(network=ni)
-            network_info_list.append(ni)
-
-        self.assertEqual(agent.DHCP_PROCESS_GREENLET_MAX,
-                         self.agent._pool.size)
-
-        for network in network_info_list:
-            self.agent.disable_dhcp_helper(network.id)
-
-        agent_network_info_len = len(self.agent.cache.get_network_ids())
-        if agent_network_info_len < agent.DHCP_PROCESS_GREENLET_MIN:
-            self.assertEqual(agent.DHCP_PROCESS_GREENLET_MIN,
-                             self.agent._pool.size)
-        elif (agent.DHCP_PROCESS_GREENLET_MIN <= agent_network_info_len <=
-              agent.DHCP_PROCESS_GREENLET_MAX):
-            self.assertEqual(agent_network_info_len,
-                             self.agent._pool.size)
-        else:
-            self.assertEqual(agent.DHCP_PROCESS_GREENLET_MAX,
-                             self.agent._pool.size)
+        for predicate in predicates:
+            # The resolver might not be available right away, retry a few times
+            common_utils.wait_until_true(
+                predicate,
+                timeout=5,
+                sleep=1,
+                exception=RuntimeError("Failed to resolve a TXT value")
+            )
+            self.assertEqual(txt_value, predicate())

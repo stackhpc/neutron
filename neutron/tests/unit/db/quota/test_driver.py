@@ -41,7 +41,7 @@ class FakePlugin(base_plugin.NeutronDbPluginV2, driver.DbQuotaDriver):
     """A fake plugin class containing all DB methods."""
 
 
-class TestResource(object):
+class TestResource:
     """Describe a test resource for quota checking."""
 
     def __init__(self, name, default, fake_count=0):
@@ -59,9 +59,10 @@ class TestResource(object):
 
 class TestTrackedResource(resource.TrackedResource):
     """Describes a test tracked resource for detailed quota checking"""
+
     def __init__(self, name, model_class, flag=None,
                  plural_name=None):
-        super(TestTrackedResource, self).__init__(
+        super().__init__(
             name, model_class, flag=flag, plural_name=None)
 
     @property
@@ -71,8 +72,9 @@ class TestTrackedResource(resource.TrackedResource):
 
 class TestCountableResource(resource.CountableResource):
     """Describes a test countable resource for detailed quota checking"""
+
     def __init__(self, name, count, flag=-1, plural_name=None):
-        super(TestCountableResource, self).__init__(
+        super().__init__(
             name, count, flag=flag, plural_name=None)
 
     @property
@@ -88,7 +90,7 @@ ALT_RESOURCE = 'res_test_meh'
 class TestDbQuotaDriver(testlib_api.SqlTestCase,
                         base.BaseTestCase):
     def setUp(self):
-        super(TestDbQuotaDriver, self).setUp()
+        super().setUp()
         self.plugin = FakePlugin()
         self.context = context.get_admin_context()
         self.setup_coreplugin(core_plugin=DB_PLUGIN_KLASS)
@@ -126,20 +128,20 @@ class TestDbQuotaDriver(testlib_api.SqlTestCase,
 
     def test_get_default_quotas(self):
         defaults = {RESOURCE: TestResource(RESOURCE, 4)}
-        user_ctx = context.Context(user_id=PROJECT, tenant_id=PROJECT)
+        user_ctx = context.Context(user_id=PROJECT, project_id=PROJECT)
         self.plugin.update_quota_limit(self.context, PROJECT, RESOURCE, 2)
         quotas = self.plugin.get_default_quotas(user_ctx, defaults, PROJECT)
         self.assertEqual(4, quotas[RESOURCE])
 
     def test_get_project_quotas(self):
-        user_ctx = context.Context(user_id=PROJECT, tenant_id=PROJECT)
+        user_ctx = context.Context(user_id=PROJECT, project_id=PROJECT)
         self.plugin.update_quota_limit(self.context, PROJECT, RESOURCE, 2)
         quotas = self.plugin.get_project_quotas(user_ctx, {}, PROJECT)
         self.assertEqual(2, quotas[RESOURCE])
 
     def test_get_project_quotas_different_project(self):
         user_ctx = context.Context(user_id=PROJECT,
-                                   tenant_id='another_project')
+                                   project_id='another_project')
         self.plugin.update_quota_limit(self.context, PROJECT, RESOURCE, 2)
         # It is appropriate to use assertFalse here as the expected return
         # value is an empty dict (the defaults passed in the statement below
@@ -336,10 +338,12 @@ class TestDbQuotaDriver(testlib_api.SqlTestCase,
 
     def test_quota_limit_check_unlimited(self):
         resources = self._create_resources()
-        self.plugin.update_quota_limit(self.context, self.project_1,
-                                       self.resource_1, -1)
-        self.plugin.update_quota_limit(self.context, self.project_1,
-                                       self.resource_2, -1)
+        self.plugin.update_quota_limit(
+            self.context, self.project_1, self.resource_1,
+            quota_api.UNLIMITED_QUOTA)
+        self.plugin.update_quota_limit(
+            self.context, self.project_1, self.resource_2,
+            quota_api.UNLIMITED_QUOTA)
         reservations = {self.resource_1: 8}
         self.quota_driver.make_reservation(
             self.context, self.project_1, resources, reservations, self.plugin)

@@ -24,9 +24,9 @@ from neutron_lib import exceptions
 from oslo_utils import netutils
 from oslo_utils import uuidutils
 import pyroute2
+from pyroute2.netlink import exceptions as netlink_exceptions
 from pyroute2.netlink.rtnl import ifinfmsg
 from pyroute2.netlink.rtnl import ndmsg
-from pyroute2 import NetlinkError
 from pyroute2 import netns
 import testtools
 
@@ -36,6 +36,7 @@ from neutron.common import utils as common_utils
 from neutron import privileged
 from neutron.privileged.agent.linux import ip_lib as priv_lib
 from neutron.tests import base
+
 
 NETNS_SAMPLE = [
     '12345678-1234-5678-abcd-1234567890ab',
@@ -112,7 +113,7 @@ VXLAN6_LOCAL_SAMPLE = "fd00::1"
 
 class TestSubProcessBase(base.BaseTestCase):
     def setUp(self):
-        super(TestSubProcessBase, self).setUp()
+        super().setUp()
         self.execute_p = mock.patch('neutron.agent.common.utils.execute')
         self.execute = self.execute_p.start()
 
@@ -172,7 +173,7 @@ class TestSubProcessBase(base.BaseTestCase):
 
 class TestIpWrapper(base.BaseTestCase):
     def setUp(self):
-        super(TestIpWrapper, self).setUp()
+        super().setUp()
         self.execute_p = mock.patch.object(ip_lib.IPWrapper, '_execute')
         self.execute = self.execute_p.start()
 
@@ -356,6 +357,21 @@ class TestIpWrapper(base.BaseTestCase):
                 self.assertEqual(ip_ns_cmd_cls.mock_calls, expected)
                 self.assertNotIn(mock.call().delete('ns'),
                                  ip_ns_cmd_cls.mock_calls)
+
+    def test_garbage_collect_namespace_existing_broken(self):
+        with mock.patch.object(ip_lib, 'IpNetnsCommand') as ip_ns_cmd_cls:
+            ip_ns_cmd_cls.return_value.exists.return_value = True
+
+            ip = ip_lib.IPWrapper(namespace='ns')
+
+            with mock.patch.object(ip, 'get_devices',
+                                   side_effect=OSError(errno.EINVAL, None)
+                                   ) as mock_get_devices:
+                self.assertTrue(ip.garbage_collect_namespace())
+
+                mock_get_devices.assert_called_once_with()
+                expected = [mock.call().delete('ns')]
+                ip_ns_cmd_cls.assert_has_calls(expected)
 
     @mock.patch.object(priv_lib, 'create_interface')
     def test_add_vlan(self, create):
@@ -546,7 +562,7 @@ class TestIPDevice(base.BaseTestCase):
 
 class TestIPDeviceCommandBase(base.BaseTestCase):
     def setUp(self):
-        super(TestIPDeviceCommandBase, self).setUp()
+        super().setUp()
         self.ip_dev = mock.Mock()
         self.ip_dev.name = 'eth0'
         self.ip_dev._execute = mock.Mock(return_value='executed')
@@ -559,7 +575,7 @@ class TestIPDeviceCommandBase(base.BaseTestCase):
 
 class TestIPCmdBase(base.BaseTestCase):
     def setUp(self):
-        super(TestIPCmdBase, self).setUp()
+        super().setUp()
         self.parent = mock.Mock()
         self.parent.name = 'eth0'
 
@@ -570,7 +586,7 @@ class TestIPCmdBase(base.BaseTestCase):
 
 class TestIpRuleCommand(TestIPCmdBase):
     def setUp(self):
-        super(TestIpRuleCommand, self).setUp()
+        super().setUp()
         self.parent._as_root.return_value = ''
         self.ns = uuidutils.generate_uuid()
         self.parent.namespace = self.ns
@@ -641,7 +657,7 @@ class TestIpRuleCommand(TestIPCmdBase):
 
 class TestIpLinkCommand(TestIPCmdBase):
     def setUp(self):
-        super(TestIpLinkCommand, self).setUp()
+        super().setUp()
         self.command = 'link'
         self.link_cmd = ip_lib.IpLinkCommand(self.parent)
 
@@ -710,16 +726,17 @@ class TestIpLinkCommand(TestIPCmdBase):
         self.link_cmd.delete()
         delete.assert_called_once_with(self.parent.name, self.parent.namespace)
 
-    @mock.patch.object(priv_lib, 'get_link_attributes')
-    def test_settings_property(self, get_link_attributes):
-        self.link_cmd.attributes
+    @mock.patch.object(priv_lib, 'get_link_attributes', return_value='foo')
+    def test_attributes_property(self, get_link_attributes):
+        attrs = self.link_cmd.attributes
         get_link_attributes.assert_called_once_with(
             self.parent.name, self.parent.namespace)
+        self.assertEqual(attrs, 'foo')
 
 
 class TestIpAddrCommand(TestIPCmdBase):
     def setUp(self):
-        super(TestIpAddrCommand, self).setUp()
+        super().setUp()
         self.parent.name = 'tap0'
         self.command = 'addr'
         self.addr_cmd = ip_lib.IpAddrCommand(self.parent)
@@ -760,6 +777,18 @@ class TestIpAddrCommand(TestIPCmdBase):
             'global',
             None)
 
+    @mock.patch.object(priv_lib, 'add_ip_address')
+    def test_add_address_broadcast(self, add):
+        self.addr_cmd.add('192.168.45.100/32')
+        add.assert_called_once_with(
+            4,
+            '192.168.45.100',
+            32,
+            self.parent.name,
+            self.addr_cmd._parent.namespace,
+            'global',
+            '192.168.45.100')
+
     @mock.patch.object(priv_lib, 'delete_ip_address')
     def test_del_address(self, delete):
         self.addr_cmd.delete('192.168.45.100/24')
@@ -777,7 +806,8 @@ class TestIpAddrCommand(TestIPCmdBase):
             6, self.parent.name, self.addr_cmd._parent.namespace)
 
     def test_wait_until_address_ready(self):
-        self.addr_cmd.list = mock.Mock(return_value=[{'tentative': False}])
+        self.addr_cmd.list = mock.Mock(
+            return_value=[{'tentative': False, 'dadfailed': False}])
         # this address is not tentative or failed so it should return
         self.assertIsNone(self.addr_cmd.wait_until_address_ready(
             '2001:470:9:1224:fd91:272:581e:3a32'))
@@ -786,6 +816,24 @@ class TestIpAddrCommand(TestIPCmdBase):
         self.addr_cmd.list = mock.Mock(return_value=[])
         with testtools.ExpectedException(ip_lib.AddressNotReady):
             self.addr_cmd.wait_until_address_ready('abcd::1234')
+
+    def test_wait_until_address_dadfailed(self):
+        self.addr_cmd.list = mock.Mock(
+            return_value=[{'tentative': True, 'dadfailed': True}])
+        with testtools.ExpectedException(ip_lib.DADFailed):
+            self.addr_cmd.wait_until_address_ready('abcd::1234')
+
+    @mock.patch.object(common_utils, 'wait_until_true')
+    def test_wait_until_address_ready_success_one_timeout(self, mock_wuntil):
+        tentative_address = 'fe80::3023:39ff:febc:22ae'
+        self.addr_cmd.list = mock.Mock(return_value=[
+            dict(scope='link', dadfailed=False, tentative=True, dynamic=False,
+                 cidr=tentative_address + '/64'),
+            dict(scope='link', dadfailed=False, tentative=False, dynamic=False,
+                 cidr=tentative_address + '/64')])
+        self.assertIsNone(self.addr_cmd.wait_until_address_ready(
+            tentative_address, wait_time=3))
+        self.assertEqual(1, mock_wuntil.call_count)
 
     def test_wait_until_address_ready_timeout(self):
         tentative_address = 'fe80::3023:39ff:febc:22ae'
@@ -862,7 +910,7 @@ class TestIpAddrCommand(TestIPCmdBase):
 
 class TestIpNetnsCommand(TestIPCmdBase):
     def setUp(self):
-        super(TestIpNetnsCommand, self).setUp()
+        super().setUp()
         self.command = 'netns'
         self.netns_cmd = ip_lib.IpNetnsCommand(self.parent)
 
@@ -902,7 +950,7 @@ class TestIpNetnsCommand(TestIPCmdBase):
             self.netns_cmd.execute(['ip', 'link', 'list'], env)
             execute.assert_called_once_with(
                 ['ip', 'netns', 'exec', 'ns', 'env'] +
-                ['%s=%s' % (k, v) for k, v in env.items()] +
+                [f'{k}={v}' for k, v in env.items()] +
                 ['ip', 'link', 'list'],
                 run_as_root=True, check_exit_code=True, extra_ok_codes=None,
                 log_fail_as_error=True, privsep_exec=False)
@@ -950,7 +998,7 @@ class TestDeviceExists(base.BaseTestCase):
 
 class TestIpNeighCommand(TestIPCmdBase):
     def setUp(self):
-        super(TestIpNeighCommand, self).setUp()
+        super().setUp()
         self.parent.name = 'tap0'
         self.command = 'neigh'
         self.neigh_cmd = ip_lib.IpNeighCommand(self.parent)
@@ -1002,7 +1050,8 @@ class TestIpNeighCommand(TestIPCmdBase):
     @mock.patch.object(priv_lib, '_run_iproute_neigh')
     def test_delete_entry_not_exist(self, mock_run_iproute):
         # trying to delete a non-existent entry shouldn't raise an error
-        mock_run_iproute.side_effect = NetlinkError(errno.ENOENT, None)
+        mock_run_iproute.side_effect = netlink_exceptions.NetlinkError(
+            errno.ENOENT, None)
         self.neigh_cmd.delete('192.168.45.100', 'cc:dd:ee:ff:ab:cd')
 
     @mock.patch.object(pyroute2, 'NetNS')
@@ -1030,10 +1079,16 @@ class TestIpNeighCommand(TestIPCmdBase):
 
 
 class TestArpPing(TestIPCmdBase):
+    @mock.patch.object(ip_lib, 'ARPING_SLEEP', 0)
     @mock.patch.object(ip_lib, 'IPWrapper')
-    @mock.patch('eventlet.spawn_n')
-    def test_send_ipv4_addr_adv_notif(self, spawn_n, mIPWrapper):
-        spawn_n.side_effect = lambda f: f()
+    @mock.patch('threading.Thread')
+    def test_send_ipv4_addr_adv_notif(self, mock_thread, mIPWrapper):
+        def Thread(target):
+            target()
+            return mock.MagicMock()
+
+        mock_thread.side_effect = Thread
+
         ARPING_COUNT = 3
         address = '20.0.0.1'
         ip_lib.send_ip_addr_adv_notif(mock.sentinel.ns_name,
@@ -1041,7 +1096,7 @@ class TestArpPing(TestIPCmdBase):
                                       address,
                                       ARPING_COUNT)
 
-        self.assertTrue(spawn_n.called)
+        self.assertTrue(mock_thread.called)
         mIPWrapper.assert_has_calls([
             mock.call(namespace=mock.sentinel.ns_name),
             mock.call().netns.execute(mock.ANY, extra_ok_codes=[1],
@@ -1055,7 +1110,8 @@ class TestArpPing(TestIPCmdBase):
             mock.call().netns.execute(mock.ANY, extra_ok_codes=[1, 2],
                                       privsep_exec=True),
             mock.call().netns.execute(mock.ANY, extra_ok_codes=[1, 2],
-                                      privsep_exec=True)])
+                                      privsep_exec=True)],
+            any_order=True)
 
         ip_wrapper = mIPWrapper(namespace=mock.sentinel.ns_name)
 
@@ -1071,9 +1127,13 @@ class TestArpPing(TestIPCmdBase):
                                                      privsep_exec=True)
 
     @mock.patch.object(ip_lib, 'IPWrapper')
-    @mock.patch('eventlet.spawn_n')
-    def test_send_ipv4_addr_adv_notif_nodev(self, spawn_n, mIPWrapper):
-        spawn_n.side_effect = lambda f: f()
+    @mock.patch('threading.Thread')
+    def test_send_ipv4_addr_adv_notif_nodev(self, mock_thread, mIPWrapper):
+        def Thread(target):
+            target()
+            return mock.MagicMock()
+
+        mock_thread.side_effect = Thread
         ip_wrapper = mIPWrapper(namespace=mock.sentinel.ns_name)
         ip_wrapper.netns.execute.side_effect = RuntimeError
         ARPING_COUNT = 3
@@ -1092,14 +1152,14 @@ class TestArpPing(TestIPCmdBase):
                                       privsep_exec=True)
         ] * 1)
 
-    @mock.patch('eventlet.spawn_n')
-    def test_no_ipv6_addr_notif(self, spawn_n):
+    @mock.patch('threading.Thread')
+    def test_no_ipv6_addr_notif(self, mock_thread):
         ipv6_addr = 'fd00::1'
         ip_lib.send_ip_addr_adv_notif(mock.sentinel.ns_name,
                                       mock.sentinel.iface_name,
                                       ipv6_addr,
                                       3)
-        self.assertFalse(spawn_n.called)
+        self.assertFalse(mock_thread.called)
 
 
 class TestAddNamespaceToCmd(base.BaseTestCase):
@@ -1122,7 +1182,7 @@ class TestSetIpNonlocalBindForHaNamespace(base.BaseTestCase):
 
 class TestSysctl(base.BaseTestCase):
     def setUp(self):
-        super(TestSysctl, self).setUp()
+        super().setUp()
         self.execute_p = mock.patch.object(ip_lib.IpNetnsCommand, 'execute')
         self.execute = self.execute_p.start()
 
@@ -1142,9 +1202,27 @@ class TestSysctl(base.BaseTestCase):
             self.assertFalse(self.execute.called)
 
 
+class TestGetSysctl(base.BaseTestCase):
+    @mock.patch.object(ip_lib, 'IPWrapper')
+    def test_get_ip_nonlocal_bind(self, mIPWrapper):
+        cmd = ['sysctl', '-bn', ip_lib.IP_NONLOCAL_BIND]
+        ip_lib.get_ip_nonlocal_bind()
+        mIPWrapper.assert_has_calls([
+            mock.call().netns.execute(cmd, run_as_root=True, privsep_exec=True)
+        ])
+
+    @mock.patch.object(ip_lib, 'IPWrapper')
+    def test_get_ipv6_forwarding(self, mIPWrapper):
+        cmd = ['sysctl', '-b', 'net.ipv6.conf.tap0.forwarding']
+        ip_lib.get_ipv6_forwarding('tap0')
+        mIPWrapper.assert_has_calls([
+            mock.call().netns.execute(cmd, run_as_root=True, privsep_exec=True)
+        ])
+
+
 class TestConntrack(base.BaseTestCase):
     def setUp(self):
-        super(TestConntrack, self).setUp()
+        super().setUp()
         self.execute_p = mock.patch.object(ip_lib.IpNetnsCommand, 'execute')
         self.execute = self.execute_p.start()
 
@@ -1172,7 +1250,7 @@ class ParseIpRuleTestCase(base.BaseTestCase):
         'table': 255, 'action': 1, 'src_len': 0, 'event': 'RTM_NEWRULE'}
 
     def setUp(self):
-        super(ParseIpRuleTestCase, self).setUp()
+        super().setUp()
         self.rule = copy.deepcopy(self.BASE_RULE)
 
     def test_parse_priority(self):
@@ -1194,7 +1272,7 @@ class ParseIpRuleTestCase(base.BaseTestCase):
 
     def test_parse_from_any_ipv4(self):
         parsed_rule = ip_lib._parse_ip_rule(self.rule, 4)
-        self.assertEqual('0.0.0.0/0', parsed_rule['from'])
+        self.assertEqual(constants.IPv4_ANY, parsed_rule['from'])
 
     def test_parse_from_any_ipv6(self):
         parsed_rule = ip_lib._parse_ip_rule(self.rule, 6)
@@ -1273,7 +1351,7 @@ class ListIpRulesTestCase(base.BaseTestCase):
         reference = [
             {'type': 'unicast', 'from': '10.0.0.1/24', 'priority': '0',
              'table': '100'},
-            {'type': 'blackhole', 'from': '0.0.0.0/0', 'priority': '0',
+            {'type': 'blackhole', 'from': constants.IPv4_ANY, 'priority': '0',
              'table': 'local'}]
         self.assertEqual(reference, retval)
 
@@ -1341,7 +1419,7 @@ class GetDevicesInfoTestCase(base.BaseTestCase):
     }
 
     def setUp(self):
-        super(GetDevicesInfoTestCase, self).setUp()
+        super().setUp()
         self.mock_getdevs = mock.patch.object(priv_lib,
                                               'get_link_devices').start()
 

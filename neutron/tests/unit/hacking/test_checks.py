@@ -62,20 +62,25 @@ class HackingTestCase(base.BaseTestCase):
                mock.method.assert_has_calls()
                """
         self.assertEqual(
-            1, len(list(checks.check_assert_called_once_with(fail_code2,
-                                            "neutron/tests/test_assert.py"))))
+            1, len(list(
+                checks.check_assert_called_once_with(
+                    fail_code2, "neutron/tests/test_assert.py"))))
         self.assertEqual(
-            1, len(list(checks.check_assert_called_once_with(fail_code3,
-                                            "neutron/tests/test_assert.py"))))
+            1, len(list(
+                checks.check_assert_called_once_with(
+                    fail_code3, "neutron/tests/test_assert.py"))))
         self.assertEqual(
-            0, len(list(checks.check_assert_called_once_with(pass_code,
-                                            "neutron/tests/test_assert.py"))))
+            0, len(list(
+                checks.check_assert_called_once_with(
+                    pass_code, "neutron/tests/test_assert.py"))))
         self.assertEqual(
-            1, len(list(checks.check_assert_called_once_with(fail_code4,
-                                            "neutron/tests/test_assert.py"))))
+            1, len(list(
+                checks.check_assert_called_once_with(
+                    fail_code4, "neutron/tests/test_assert.py"))))
         self.assertEqual(
-            0, len(list(checks.check_assert_called_once_with(pass_code2,
-                                            "neutron/tests/test_assert.py"))))
+            0, len(list(
+                checks.check_assert_called_once_with(
+                    pass_code2, "neutron/tests/test_assert.py"))))
 
     def test_asserttruefalse(self):
         true_fail_code1 = """
@@ -125,7 +130,7 @@ class HackingTestCase(base.BaseTestCase):
         self.assertFalse(
             list(
                 checks.check_asserttruefalse(false_pass_code,
-                                            "neutron/tests/test_assert.py")))
+                                             "neutron/tests/test_assert.py")))
 
     def test_assertempty(self):
         fail_code = """
@@ -142,34 +147,20 @@ class HackingTestCase(base.BaseTestCase):
         empty_cases = ['{}', '[]', '""', "''", '()', 'set()']
         for ec in empty_cases:
             self.assertEqual(
-                1, len(list(checks.check_assertempty(fail_code % (ec, ec),
-                                            "neutron/tests/test_assert.py"))))
+                1, len(list(
+                    checks.check_assertempty(
+                        fail_code % (ec, ec),
+                        "neutron/tests/test_assert.py"))))
             self.assertEqual(
-                0, len(list(checks.check_asserttruefalse(pass_code1 % (ec, ec),
-                                            "neutron/tests/test_assert.py"))))
+                0, len(list(
+                    checks.check_asserttruefalse(
+                        pass_code1 % (ec, ec),
+                        "neutron/tests/test_assert.py"))))
             self.assertEqual(
-                0, len(list(checks.check_asserttruefalse(pass_code2 % ec,
-                                            "neutron/tests/test_assert.py"))))
-
-    def test_assertisinstance(self):
-        fail_code = """
-               self.assertTrue(isinstance(observed, ANY_TYPE))
-               """
-        pass_code1 = """
-               self.assertEqual(ANY_TYPE, type(observed))
-               """
-        pass_code2 = """
-               self.assertIsInstance(observed, ANY_TYPE)
-               """
-        self.assertEqual(
-            1, len(list(checks.check_assertisinstance(fail_code,
-                                        "neutron/tests/test_assert.py"))))
-        self.assertEqual(
-            0, len(list(checks.check_assertisinstance(pass_code1,
-                                            "neutron/tests/test_assert.py"))))
-        self.assertEqual(
-            0, len(list(checks.check_assertisinstance(pass_code2,
-                                            "neutron/tests/test_assert.py"))))
+                0, len(list(
+                    checks.check_asserttruefalse(
+                        pass_code2 % ec,
+                        "neutron/tests/test_assert.py"))))
 
     def test_assertequal_for_httpcode(self):
         fail_code = """
@@ -179,11 +170,13 @@ class HackingTestCase(base.BaseTestCase):
                 self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
                 """
         self.assertEqual(
-            1, len(list(checks.check_assertequal_for_httpcode(fail_code,
-                                        "neutron/tests/test_assert.py"))))
+            1, len(list(
+                checks.check_assertequal_for_httpcode(
+                    fail_code, "neutron/tests/test_assert.py"))))
         self.assertEqual(
-            0, len(list(checks.check_assertequal_for_httpcode(pass_code,
-                                        "neutron/tests/test_assert.py"))))
+            0, len(list(
+                checks.check_assertequal_for_httpcode(
+                    pass_code, "neutron/tests/test_assert.py"))))
 
     def test_check_no_imports_from_tests(self):
         fail_codes = ('from neutron import tests',
@@ -206,25 +199,6 @@ class HackingTestCase(base.BaseTestCase):
         self.assertLinePasses(f, "filter(function, range(0,10))")
         self.assertLinePasses(f, "lambda x, y: x+y")
 
-    def test_check_no_import_mock(self):
-        pass_line = 'from unittest import mock'
-        fail_lines = ('import mock',
-                      'import mock as mock_lib',
-                      'from mock import patch')
-        self.assertEqual(
-            0, len(list(
-                checks.check_no_import_mock(
-                    pass_line, "neutron/tests/test_fake.py", None))))
-        for fail_line in fail_lines:
-            self.assertEqual(
-                0, len(list(
-                    checks.check_no_import_mock(
-                        fail_line, "neutron/common/utils.py", None))))
-            self.assertEqual(
-                1, len(list(
-                    checks.check_no_import_mock(
-                        fail_line, "neutron/tests/test_fake.py", None))))
-
     def test_check_no_import_six(self):
         pass_line = 'from other_library import six'
         fail_lines = ('import six',
@@ -236,6 +210,19 @@ class HackingTestCase(base.BaseTestCase):
         for fail_line in fail_lines:
             self.assertEqual(
                 1, len(list(checks.check_no_import_six(
+                    fail_line, mock.ANY, None))))
+
+    def test_check_no_import_packaging(self):
+        pass_line = 'import other_library import packaging'
+        fail_lines = ('import packaging',
+                      'from packaging import version')
+        self.assertEqual(
+            0,
+            len(list(checks.check_no_import_packaging(pass_line, mock.ANY,
+                                                      None))))
+        for fail_line in fail_lines:
+            self.assertEqual(
+                1, len(list(checks.check_no_import_packaging(
                     fail_line, mock.ANY, None))))
 
     def test_check_oslo_i18n_wrapper(self):
@@ -285,3 +272,16 @@ class HackingTestCase(base.BaseTestCase):
         _pass(["_('foo')"], "neutron/_i18n.py")
         _pass(["_('foo')"], "neutron/i18n.py")
         _pass(["_('foo')"], "neutron/foo.py", noqa=True)
+
+    def test_check_no_sqlalchemy_lazy_subquery(self):
+        f = checks.check_no_sqlalchemy_lazy_subquery
+        self.assertLineFails(
+            'N350', f,
+            "backref=orm.backref('tags', lazy='subquery', viewonly=True),")
+        self.assertLineFails(
+            'N350', f,
+            "query.options(orm.subqueryload(ml2_models.PortBinding.port))")
+        self.assertLinePasses(
+            f, "backref=orm.backref('tags', lazy='selectin', viewonly=True),")
+        self.assertLinePasses(
+            f, "query.options(orm.selectinload(ml2_models.PortBinding.port))")

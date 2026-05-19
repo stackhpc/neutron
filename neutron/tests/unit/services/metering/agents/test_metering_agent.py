@@ -50,7 +50,7 @@ ROUTERS_WITH_RULE = [{'status': 'ACTIVE',
 class TestMeteringOperations(base.BaseTestCase):
 
     def setUp(self):
-        super(TestMeteringOperations, self).setUp()
+        super().setUp()
         metering_agent_config.register_metering_agent_opts()
 
         self.noop_driver = ('neutron.services.metering.drivers.noop.'
@@ -118,13 +118,11 @@ class TestMeteringOperations(base.BaseTestCase):
         self.agent._metering_loop()
 
         self.assertNotEqual(len(fake_notifier.NOTIFICATIONS), 0)
-        for n in fake_notifier.NOTIFICATIONS:
-            if n['event_type'] == 'l3.meter':
-                break
+        l3_meter_events = [n for n in fake_notifier.NOTIFICATIONS
+                           if n['event_type'] == 'l3.meter']
+        self.assertEqual(len(l3_meter_events), 1)
 
-        self.assertEqual('l3.meter', n['event_type'])
-
-        payload = n['payload']
+        payload = l3_meter_events[0]['payload']
         self.assertEqual(PROJECT_ID, payload['project_id'])
         self.assertEqual(LABEL_ID, payload['label_id'])
         self.assertEqual(88, payload['pkts'])
@@ -147,6 +145,7 @@ class TestMeteringOperations(base.BaseTestCase):
         cfg.CONF.set_override('report_interval', report_interval)
         cfg.CONF.set_override('granular_traffic_data', False)
 
+        l3_meter_event = None
         for i in range(report_interval):
             self.agent._metering_loop()
             count = 0
@@ -157,13 +156,14 @@ class TestMeteringOperations(base.BaseTestCase):
                         # skip the first notification because the time is 0
                         count += 1
                         if count > 1:
+                            l3_meter_event = n
                             break
 
             time_fixture.advance_time_seconds(measure_interval)
 
-        self.assertEqual('l3.meter', n['event_type'])
+        self.assertIsNotNone(l3_meter_event)
 
-        payload = n['payload']
+        payload = l3_meter_event['payload']
         self.assertEqual(PROJECT_ID, payload['project_id'])
         self.assertEqual(LABEL_ID, payload['label_id'])
         self.assertLess((payload['time'] - report_interval),
@@ -243,7 +243,7 @@ class TestMeteringOperations(base.BaseTestCase):
 
 class TestMeteringDriver(base.BaseTestCase):
     def setUp(self):
-        super(TestMeteringDriver, self).setUp()
+        super().setUp()
         metering_agent_config.register_metering_agent_opts()
 
         cfg.CONF.set_override('driver', 'noop')

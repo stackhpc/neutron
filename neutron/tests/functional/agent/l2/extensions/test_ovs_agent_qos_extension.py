@@ -63,15 +63,15 @@ class OVSAgentQoSExtensionTestFramework(base.OVSAgentTestFramework):
             max_burst_kbps=9)
 
     def setUp(self):
-        super(OVSAgentQoSExtensionTestFramework, self).setUp()
+        super().setUp()
         self.config.set_override('extensions', ['qos'], 'agent')
         self._set_pull_mock()
         self.set_test_qos_rules(TEST_POLICY_ID1,
                                 [self.test_bw_limit_rule_1,
-                                self.test_dscp_marking_rule_1])
+                                 self.test_dscp_marking_rule_1])
         self.set_test_qos_rules(TEST_POLICY_ID2,
                                 [self.test_bw_limit_rule_2,
-                                self.test_dscp_marking_rule_2])
+                                 self.test_dscp_marking_rule_2])
 
     def _set_pull_mock(self):
 
@@ -101,15 +101,13 @@ class OVSAgentQoSExtensionTestFramework(base.OVSAgentTestFramework):
         self.qos_policies[policy_id] = qos_policy
 
     def _create_test_port_dict(self, policy_id=None):
-        port_dict = super(OVSAgentQoSExtensionTestFramework,
-                          self)._create_test_port_dict()
+        port_dict = super()._create_test_port_dict()
         port_dict['qos_policy_id'] = policy_id
         port_dict['qos_network_policy_id'] = None
         return port_dict
 
     def _get_device_details(self, port, network):
-        dev = super(OVSAgentQoSExtensionTestFramework,
-                    self)._get_device_details(port, network)
+        dev = super()._get_device_details(port, network)
         dev['qos_policy_id'] = port['qos_policy_id']
         return dev
 
@@ -184,7 +182,7 @@ class TestOVSAgentQosExtension(OVSAgentQoSExtensionTestFramework):
     ]
 
     def setUp(self):
-        super(TestOVSAgentQosExtension, self).setUp()
+        super().setUp()
         self.test_bw_limit_rule_1.direction = self.direction
         self.test_bw_limit_rule_2.direction = self.direction
 
@@ -192,7 +190,7 @@ class TestOVSAgentQosExtension(OVSAgentQoSExtensionTestFramework):
     def reverse_direction(self):
         if self.direction == constants.INGRESS_DIRECTION:
             return constants.EGRESS_DIRECTION
-        elif self.direction == constants.EGRESS_DIRECTION:
+        if self.direction == constants.EGRESS_DIRECTION:
             return constants.INGRESS_DIRECTION
 
     def test_port_creation_with_bandwidth_limit(self):
@@ -354,7 +352,7 @@ class TestOVSAgentQosExtension(OVSAgentQoSExtensionTestFramework):
         port_dict = self._create_port_with_qos()
 
         policy_copy = copy.deepcopy(self.qos_policies[TEST_POLICY_ID1])
-        policy_copy.rules = list()
+        policy_copy.rules = []
         context = mock.Mock()
         consumer_reg.push(context, resources.QOS_POLICY, [policy_copy],
                           events.UPDATED)

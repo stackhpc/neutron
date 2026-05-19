@@ -27,7 +27,7 @@ from neutron.tests.unit.objects import test_rbac
 from neutron.tests.unit import testlib_api
 
 
-class SubnetPoolTestMixin(object):
+class SubnetPoolTestMixin:
     def _create_test_subnetpool(self, snp_id=None):
 
         if not snp_id:
@@ -127,7 +127,7 @@ class SubnetPoolDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
             address_scope_id=fake_address_scope_id
         )
         filter_mock = mock.Mock(
-            return_value=mock.Mock(count=mock.Mock(return_value=0))
+            return_value=mock.Mock(first=mock.Mock(return_value=None))
         )
         mock_query_with_hooks.return_value = mock.Mock(filter=filter_mock)
 
@@ -184,7 +184,7 @@ class SubnetPoolPrefixDbObjectTestCase(
     _test_class = subnetpool.SubnetPoolPrefix
 
     def setUp(self):
-        super(SubnetPoolPrefixDbObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {'subnetpool_id': lambda: self._create_test_subnetpool().id})
 
@@ -195,9 +195,10 @@ class SubnetPoolRBACDbObjectTestCase(test_rbac.TestRBACObjectMixin,
                                      SubnetPoolTestMixin):
 
     _test_class = subnetpool.SubnetPoolRBAC
+    _parent_class = subnetpool.SubnetPool
 
     def setUp(self):
-        super(SubnetPoolRBACDbObjectTestCase, self).setUp()
+        super().setUp()
         for obj in self.db_objs:
             self._create_test_subnetpool(obj['object_id'])
 

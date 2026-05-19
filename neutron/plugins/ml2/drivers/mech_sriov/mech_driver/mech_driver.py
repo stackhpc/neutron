@@ -77,11 +77,13 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                          vnic_type_prohibit_list=prohibit_list)
 
         # NOTE(ndipanov): PF passthrough requires a different vif type
+        def _vif_type(vtype):
+            return (portbindings.VIF_TYPE_HOSTDEV_PHY
+                    if vtype == portbindings.VNIC_DIRECT_PHYSICAL
+                    else portbindings.VIF_TYPE_HW_VEB)
+
         self.vnic_type_for_vif_type = (
-            {vtype: portbindings.VIF_TYPE_HOSTDEV_PHY
-                if vtype == portbindings.VNIC_DIRECT_PHYSICAL
-                else portbindings.VIF_TYPE_HW_VEB
-             for vtype in self.supported_vnic_types})
+            {vtype: _vif_type(vtype) for vtype in self.supported_vnic_types})
         self.vif_details = vif_details
         sriov_qos_driver.register()
 
@@ -108,9 +110,9 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         """
         if 'device_mappings' in agent['configurations']:
             return agent['configurations']['device_mappings']
-        else:
-            raise ValueError(_('Cannot standardize device mappings of agent '
-                               'type: %s'), agent['agent_type'])
+        raise ValueError(
+            _('Cannot standardize device mappings of agent type: %s'),
+            agent['agent_type'])
 
     def bind_port(self, context):
         LOG.debug("Attempting to bind port %(port)s on "
@@ -133,6 +135,22 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                       vnic_type)
             return
 
+        allowed_binding_segments = []
+
+        subnets = self.get_subnets_from_fixed_ips(context)
+        if subnets:
+            # In case that fixed IPs is provided, filter segments per subnet
+            # that they belong to first.
+            for segment in context.segments_to_bind:
+                for subnet in subnets:
+                    seg_id = subnet.get('segment_id')
+                    # If subnet is not attached to any segment, let's use
+                    # default behavior.
+                    if seg_id is None or seg_id == segment[api.ID]:
+                        allowed_binding_segments.append(segment)
+        else:
+            allowed_binding_segments = context.segments_to_bind
+
         if vnic_type == portbindings.VNIC_DIRECT_PHYSICAL:
             # Physical functions don't support things like QoS properties,
             # spoof checking, etc. so we might as well side-step the agent
@@ -141,7 +159,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             # either. This should be changed in the future so physical
             # functions can use device mapping checks and the plugin can
             # get port status updates.
-            for segment in context.segments_to_bind:
+            for segment in allowed_binding_segments:
                 if self.try_to_bind_segment_for_agent(context, segment,
                                                       agent=None):
                     break
@@ -150,7 +168,7 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         for agent in context.host_agents(self.agent_type):
             LOG.debug("Checking agent: %s", agent)
             if agent['alive']:
-                for segment in context.segments_to_bind:
+                for segment in allowed_binding_segments:
                     if self.try_to_bind_segment_for_agent(context, segment,
                                                           agent):
                         return
@@ -194,10 +212,6 @@ class SriovNicSwitchMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                 return segment[api.PHYSICAL_NETWORK] in mappings
             return True
         return False
-
-    def check_vlan_transparency(self, context):
-        """SR-IOV driver vlan transparency support."""
-        return True
 
     def _get_vif_details(self, segment):
         network_type = segment[api.NETWORK_TYPE]

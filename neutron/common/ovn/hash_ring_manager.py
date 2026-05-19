@@ -28,16 +28,18 @@ from neutron_lib import context
 LOG = log.getLogger(__name__)
 
 
-class HashRingManager(object):
+class HashRingManager:
 
     def __init__(self, group_name):
         self._hash_ring = None
+        self._node_last_touch = {}
         self._last_time_loaded = None
         self._check_hashring_startup = True
         self._group = group_name
         # Flag to rate limit the caching log
         self._prev_num_nodes = -1
         self.admin_ctx = context.get_admin_context()
+        self._offline_node_count = 0
 
     @property
     def _wait_startup_before_caching(self):
@@ -91,7 +93,14 @@ class HashRingManager(object):
                 constants.HASH_RING_NODES_TIMEOUT, self._group)
             self._hash_ring = hashring.HashRing({node.node_uuid
                                                  for node in nodes})
+            self._node_last_touch = {node.node_uuid: node.updated_at
+                                     for node in nodes}
             self._last_time_loaded = timeutils.utcnow()
+            self._offline_node_count = db_hash_ring.count_offline_nodes(
+                self.admin_ctx, constants.HASH_RING_NODES_TIMEOUT,
+                self._group)
+            LOG.debug("Hash Ring loaded. %d active nodes. %d offline nodes",
+                      len(nodes), self._offline_node_count)
 
     def refresh(self):
         self._load_hash_ring(refresh=True)
@@ -106,6 +115,8 @@ class HashRingManager(object):
         try:
             # We need to pop the value from the set. If empty,
             # KeyError is raised
-            return self._hash_ring[key].pop()
+            node_uuid = self._hash_ring[key].pop()
+            return node_uuid, self._node_last_touch[node_uuid]
         except KeyError:
-            raise exceptions.HashRingIsEmpty(key=key)
+            raise exceptions.HashRingIsEmpty(
+                key=key, node_count=self._offline_node_count)

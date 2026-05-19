@@ -40,19 +40,22 @@ class InjectContext(base.ConfigurableMiddleware):
     def __call__(self, req):
         user_id = req.headers.get('X_USER_ID', '')
 
-        # Determine the tenant
-        tenant_id = req.headers.get('X_PROJECT_ID')
+        # Determine the project
+        project_id = req.headers.get('X_PROJECT_ID')
 
-        # Suck out the roles
-        roles = [r.strip() for r in req.headers.get('X_ROLES', '').split(',')]
+        roles = ['member', 'reader']
+        # Suck out the roles if any are set
+        custom_roles = req.headers.get('X_ROLES')
+        if custom_roles:
+            roles = [r.strip() for r in custom_roles.split(',')]
 
         # Human-friendly names
-        tenant_name = req.headers.get('X_PROJECT_NAME')
+        project_name = req.headers.get('X_PROJECT_NAME')
         user_name = req.headers.get('X_USER_NAME')
 
         # Create a context with the authentication data
-        ctx = context.Context(user_id, tenant_id, roles=roles,
-                              user_name=user_name, tenant_name=tenant_name)
+        ctx = context.Context(user_id, project_id, roles=roles,
+                              user_name=user_name, project_name=project_name)
         req.environ['neutron.context'] = ctx
         return self.application
 
@@ -73,7 +76,7 @@ class PecanFunctionalTest(testlib_api.SqlTestCase,
 
     def setUp(self, service_plugins=None, extensions=None):
         self.setup_coreplugin('ml2', load_plugins=False)
-        super(PecanFunctionalTest, self).setUp()
+        super().setUp()
         self.addCleanup(exts.PluginAwareExtensionManager.clear_instance)
         self.set_config_overrides()
         manager.init()
@@ -89,15 +92,15 @@ class PecanFunctionalTest(testlib_api.SqlTestCase,
     def set_config_overrides(self):
         cfg.CONF.set_override('auth_strategy', 'noauth')
 
-    def do_request(self, url, tenant_id=None, admin=False,
+    def do_request(self, url, project_id=None, admin=False,
                    expect_errors=False):
         if admin:
-            if not tenant_id:
-                tenant_id = 'admin'
-            headers = {'X-Tenant-Id': tenant_id,
+            if not project_id:
+                project_id = 'admin'
+            headers = {'X-Tenant-Id': project_id,
                        'X-Roles': 'admin'}
         else:
-            headers = {'X-Tenant-ID': tenant_id or ''}
+            headers = {'X-Tenant-ID': project_id or ''}
         return self.app.get(url, headers=headers, expect_errors=expect_errors)
 
 

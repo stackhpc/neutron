@@ -121,7 +121,8 @@ def delete_distributed_port_binding_if_stale(context, binding):
             LOG.debug("Distributed port: Deleting binding %s", binding)
             context.session.delete(binding)
             for bindlv in (context.session.query(models.PortBindingLevel).
-                    filter_by(port_id=binding.port_id, host=binding.host)):
+                           filter_by(port_id=binding.port_id,
+                                     host=binding.host)):
                 context.session.delete(bindlv)
             LOG.debug("For port %(port_id)s, host %(host)s, "
                       "cleared binding levels",
@@ -177,8 +178,8 @@ def get_sg_ids_grouped_by_port(context, port_ids):
     with db_api.CONTEXT_READER.using(context):
         # partial UUIDs must be individually matched with startswith.
         # full UUIDs may be matched directly in an IN statement
-        partial_uuids = set(port_id for port_id in port_ids
-                            if not uuidutils.is_uuid_like(port_id))
+        partial_uuids = {port_id for port_id in port_ids
+                         if not uuidutils.is_uuid_like(port_id)}
         full_uuids = set(port_ids) - partial_uuids
         or_criteria = [models_v2.Port.id.startswith(port_id)
                        for port_id in partial_uuids]
@@ -239,7 +240,7 @@ def generate_distributed_port_status(context, port_id):
     for bind in query.filter(models.DistributedPortBinding.port_id == port_id):
         if bind.status == n_const.PORT_STATUS_ACTIVE:
             return bind.status
-        elif bind.status == n_const.PORT_STATUS_DOWN:
+        if bind.status == n_const.PORT_STATUS_DOWN:
             final_status = bind.status
     return final_status
 
@@ -271,7 +272,7 @@ def get_distributed_port_bindings(context, port_id):
     with db_api.CONTEXT_READER.using(context):
         bindings = (context.session.query(models.DistributedPortBinding).
                     filter(models.DistributedPortBinding.port_id.startswith(
-                           port_id)).all())
+                        port_id)).all())
     if not bindings:
         LOG.debug("No bindings for distributed port %s", port_id)
     return bindings
@@ -323,7 +324,7 @@ def is_dhcp_active_on_any_subnet(context, subnet_ids):
         return False
     return bool(context.session.query(models_v2.Subnet.id).
                 enable_eagerloads(False).filter_by(enable_dhcp=True).
-                filter(models_v2.Subnet.id.in_(subnet_ids)).count())
+                filter(models_v2.Subnet.id.in_(subnet_ids)).first())
 
 
 def _prevent_segment_delete_with_port_bound(resource, event, trigger,
@@ -345,7 +346,7 @@ def _prevent_segment_delete_with_port_bound(resource, event, trigger,
 
     if auto_delete_port_ids:
         LOG.debug("Auto-deleting dhcp port(s) on segment %s: %s",
-            payload.resource_id, ", ".join(auto_delete_port_ids))
+                  payload.resource_id, ", ".join(auto_delete_port_ids))
         plugin = directory.get_plugin()
     for port_id in auto_delete_port_ids:
         try:

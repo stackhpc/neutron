@@ -22,30 +22,28 @@ from neutron._i18n import _
 
 OPTS = [
     cfg.StrOpt('agent_mode', default=constants.L3_AGENT_MODE_LEGACY,
-               choices=(constants.L3_AGENT_MODE_DVR,
-                        constants.L3_AGENT_MODE_DVR_SNAT,
-                        constants.L3_AGENT_MODE_LEGACY,
-                        constants.L3_AGENT_MODE_DVR_NO_EXTERNAL),
-               help=_("The working mode for the agent. Allowed modes are: "
-                      "'legacy' - this preserves the existing behavior "
-                      "where the L3 agent is deployed on a centralized "
-                      "networking node to provide L3 services like DNAT, "
-                      "and SNAT. Use this mode if you do not want to "
-                      "adopt DVR. 'dvr' - this mode enables DVR "
-                      "functionality and must be used for an L3 agent "
-                      "that runs on a compute host. 'dvr_snat' - this "
-                      "enables centralized SNAT support in conjunction "
-                      "with DVR.  This mode must be used for an L3 agent "
-                      "running on a centralized node (or in single-host "
-                      "deployments, e.g. devstack). "
-                      "dvr_snat mode is not supported on a compute host. "
-                      "'dvr_no_external' - this mode enables only East/West "
-                      "DVR routing functionality for a L3 agent that runs on "
-                      "a compute host, the North/South functionality such "
-                      "as DNAT and SNAT will be provided by the centralized "
-                      "network node that is running in 'dvr_snat' mode. "
-                      "This mode should be used when there is no "
-                      "external network connectivity on the compute host.")),
+               choices=[(constants.L3_AGENT_MODE_DVR,
+                         "Enable DVR functionality and must be used for "
+                         "an L3 agent that runs on a compute host."),
+                        (constants.L3_AGENT_MODE_DVR_SNAT,
+                         "Enable centralized SNAT support in conjunction "
+                         "with DVR. This mode must be used for an L3 agent "
+                         "running on a centralized node (or in single-host "
+                         "deployments, e.g. devstack)."),
+                        (constants.L3_AGENT_MODE_LEGACY,
+                         "Preserve the existing behavior where the L3 agent "
+                         "is deployed on a centralized networking node to "
+                         "provide L3 services like DNAT and SNAT. "
+                         "Use this mode if you do not want to adopt DVR."),
+                        (constants.L3_AGENT_MODE_DVR_NO_EXTERNAL,
+                         "Enable only East/West DVR routing functionality for "
+                         "an L3 agent that runs on a compute host, while "
+                         "the North/South functionality such as DNAT and SNAT "
+                         "will be provided by the centralized network node "
+                         "that is running in 'dvr_snat' mode. This mode "
+                         "should be used when there is no external network "
+                         "connectivity on the compute host.")],
+               help=_("The working mode for the agent.")),
     cfg.PortOpt('metadata_port',
                 default=9697,
                 help=_("TCP Port used by Neutron metadata namespace proxy.")),
@@ -64,8 +62,8 @@ OPTS = [
                       "be used. However, an IPv6 gateway address is needed "
                       "for use as the next-hop for the default route. "
                       "If no IPv6 gateway address is configured here, "
-                      "(and only then) the neutron router will be configured "
-                      "to get its default route from router advertisements "
+                      "(and only then) the Neutron router will be configured "
+                      "to get its default route from Router Advertisements "
                       "(RAs) from the upstream router; in which case the "
                       "upstream router must also be configured to send "
                       "these RAs. "
@@ -73,14 +71,7 @@ OPTS = [
                       "of the interface on the upstream router. If a "
                       "next-hop using a global unique address (GUA) is "
                       "desired, it needs to be done via a subnet allocated "
-                      "to the network and not through this parameter. ")),
-    cfg.StrOpt('prefix_delegation_driver',
-               default='dibbler',
-               help=_('Driver used for ipv6 prefix delegation. This needs to '
-                      'be an entry point defined in the '
-                      'neutron.agent.linux.pd_drivers namespace. See '
-                      'setup.cfg for entry points included with the neutron '
-                      'source.')),
+                      "to the network and not through this parameter.")),
     cfg.BoolOpt('enable_metadata_proxy', default=True,
                 help=_("Allow running metadata proxy.")),
     cfg.StrOpt('metadata_access_mark',
@@ -90,34 +81,24 @@ OPTS = [
                       'that only the lower 16 bits will be used.')),
     cfg.StrOpt('external_ingress_mark',
                default='0x2',
-               help=_('Iptables mangle mark used to mark ingress from '
+               help=_('Iptables mangle mark used to mark ingress from an '
                       'external network. This mark will be masked with '
                       '0xffff so that only the lower 16 bits will be used.')),
     cfg.StrOpt('radvd_user',
                default='',
                help=_('The username passed to radvd, used to drop root '
                       'privileges and change user ID to username and group ID '
-                      'to the primary group of username. If no user specified '
-                      '(by default), the user executing the L3 agent will be '
-                      'passed. If "root" specified, because radvd is spawned '
-                      'as root, no "username" parameter will be passed.')),
+                      'of the primary group of username. If no user specified '
+                      '(default), the user executing the L3 agent will be '
+                      'passed. If "root" is specified, because radvd is '
+                      'spawned as root, no "username" parameter will be '
+                      'passed.')),
     cfg.BoolOpt('cleanup_on_shutdown', default=False,
                 help=_('Delete all routers on L3 agent shutdown. For L3 HA '
                        'routers it includes a shutdown of keepalived and '
                        'the state change monitor. NOTE: Setting to True '
                        'could affect the data plane when stopping or '
                        'restarting the L3 agent.')),
-    cfg.BoolOpt('keepalived_use_no_track',
-                default=True,
-                deprecated_for_removal=True,
-                deprecated_reason='By keepalived version detection introduced '
-                                  'by https://review.opendev.org/757620 there '
-                                  'is no need for this config option. To be '
-                                  'removed in X.',
-                help=_('If keepalived without support for "no_track" option '
-                       'is used, this should be set to False. '
-                       'Support for this option was introduced in keepalived '
-                       '2.x'))
 ]
 
 

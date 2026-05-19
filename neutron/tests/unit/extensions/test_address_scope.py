@@ -28,13 +28,13 @@ import webob.exc
 from neutron.db import address_scope_db
 from neutron.db import db_base_plugin_v2
 from neutron.extensions import address_scope as ext_address_scope
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
 
 DB_PLUGIN_KLASS = ('neutron.tests.unit.extensions.test_address_scope.'
                    'AddressScopeTestPlugin')
 
 
-class AddressScopeTestExtensionManager(object):
+class AddressScopeTestExtensionManager:
 
     def get_resources(self):
         return ext_address_scope.Address_scope.get_resources()
@@ -49,45 +49,45 @@ class AddressScopeTestExtensionManager(object):
 class AddressScopeTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
 
     def _create_address_scope(self, fmt, ip_version=constants.IP_VERSION_4,
-                              expected_res_status=None, admin=False, **kwargs):
+                              expected_res_status=None, admin=False,
+                              project_id=None, **kwargs):
         address_scope = {'address_scope': {}}
         address_scope['address_scope']['ip_version'] = ip_version
+        project_id = project_id or self._project_id
         for k, v in kwargs.items():
             address_scope['address_scope'][k] = str(v)
 
         address_scope_req = self.new_create_request('address-scopes',
-                                                    address_scope, fmt)
-
-        if not admin:
-            neutron_context = context.Context('', kwargs.get('tenant_id',
-                                                             self._tenant_id))
-            address_scope_req.environ['neutron.context'] = neutron_context
+                                                    address_scope, fmt,
+                                                    project_id=project_id,
+                                                    as_admin=admin)
 
         address_scope_res = address_scope_req.get_response(self.ext_api)
         if expected_res_status:
             self.assertEqual(expected_res_status, address_scope_res.status_int)
         return address_scope_res
 
-    def _make_address_scope(self, fmt, ip_version, admin=False, **kwargs):
+    def _make_address_scope(self, fmt, ip_version, admin=False,
+                            project_id=None, **kwargs):
         res = self._create_address_scope(fmt, ip_version,
-                                         admin=admin, **kwargs)
-        if res.status_int >= webob.exc.HTTPClientError.code:
-            raise webob.exc.HTTPClientError(code=res.status_int)
+                                         admin=admin, project_id=project_id,
+                                         **kwargs)
+        self._check_http_response(res)
         return self.deserialize(fmt, res)
 
     @contextlib.contextmanager
     def address_scope(self, ip_version=constants.IP_VERSION_4,
-                      admin=False, **kwargs):
-        if 'project_id' in kwargs:
-            kwargs['tenant_id'] = kwargs['project_id']
+                      admin=False, project_id=None, **kwargs):
+        project_id = project_id if project_id else kwargs.pop(
+            'project_id', None)
         addr_scope = self._make_address_scope(self.fmt, ip_version,
-                                              admin, **kwargs)
+                                              admin, project_id, **kwargs)
         yield addr_scope
 
     def _test_create_address_scope(self, ip_version=constants.IP_VERSION_4,
                                    admin=False, expected=None, **kwargs):
         keys = kwargs.copy()
-        keys.setdefault('tenant_id', self._tenant_id)
+        keys.setdefault('project_id', self._project_id)
         with self.address_scope(ip_version,
                                 admin=admin, **keys) as addr_scope:
             keys['ip_version'] = ip_version
@@ -97,11 +97,11 @@ class AddressScopeTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         return addr_scope
 
     def _test_update_address_scope(self, addr_scope_id, data, admin=False,
-                                   expected=None, tenant_id=None):
+                                   expected=None, project_id=None):
         update_req = self.new_update_request(
-            'address-scopes', data, addr_scope_id)
-        update_req.environ['neutron.context'] = context.Context(
-            '', tenant_id or self._tenant_id, is_admin=admin)
+            'address-scopes', data, addr_scope_id,
+            project_id=project_id or self._project_id,
+            as_admin=admin)
 
         update_res = update_req.get_response(self.ext_api)
         if expected:
@@ -125,11 +125,11 @@ class TestAddressScope(AddressScopeTestCase):
     def setUp(self):
         plugin = DB_PLUGIN_KLASS
         ext_mgr = AddressScopeTestExtensionManager()
-        super(TestAddressScope, self).setUp(plugin=plugin, ext_mgr=ext_mgr)
+        super().setUp(plugin=plugin, ext_mgr=ext_mgr)
 
     def test_create_address_scope_ipv4(self):
         expected_addr_scope = {'name': 'foo-address-scope',
-                               'tenant_id': self._tenant_id,
+                               'project_id': self._project_id,
                                'shared': False,
                                'ip_version': constants.IP_VERSION_4}
         self._test_create_address_scope(name='foo-address-scope',
@@ -137,7 +137,7 @@ class TestAddressScope(AddressScopeTestCase):
 
     def test_create_address_scope_ipv6(self):
         expected_addr_scope = {'name': 'foo-address-scope',
-                               'tenant_id': self._tenant_id,
+                               'project_id': self._project_id,
                                'shared': False,
                                'ip_version': constants.IP_VERSION_6}
         self._test_create_address_scope(constants.IP_VERSION_6,
@@ -146,7 +146,7 @@ class TestAddressScope(AddressScopeTestCase):
 
     def test_create_address_scope_empty_name(self):
         expected_addr_scope = {'name': '',
-                               'tenant_id': self._tenant_id,
+                               'project_id': self._project_id,
                                'shared': False}
         self._test_create_address_scope(name='', expected=expected_addr_scope)
 
@@ -161,7 +161,7 @@ class TestAddressScope(AddressScopeTestCase):
 
     def test_created_address_scope_shared_non_admin(self):
         res = self._create_address_scope(self.fmt, name='foo-address-scope',
-                                         tenant_id=self._tenant_id,
+                                         project_id=self._project_id,
                                          admin=False, shared=True)
         self.assertEqual(webob.exc.HTTPForbidden.code, res.status_int)
 
@@ -212,7 +212,7 @@ class TestAddressScope(AddressScopeTestCase):
         self.assertEqual(addr_scope['address_scope']['id'],
                          res['address_scope']['id'])
 
-    def test_get_address_scope_different_tenants_not_shared(self):
+    def test_get_address_scope_different_projects_not_shared(self):
         addr_scope = self._test_create_address_scope(name='foo-address-scope')
         req = self.new_show_request('address-scopes',
                                     addr_scope['address_scope']['id'])
@@ -221,12 +221,12 @@ class TestAddressScope(AddressScopeTestCase):
         res = req.get_response(self.ext_api)
         self.assertEqual(webob.exc.HTTPNotFound.code, res.status_int)
 
-    def test_get_address_scope_different_tenants_shared(self):
+    def test_get_address_scope_different_projects_shared(self):
         addr_scope = self._test_create_address_scope(name='foo-address-scope',
                                                      shared=True, admin=True)
         req = self.new_show_request('address-scopes',
                                     addr_scope['address_scope']['id'])
-        neutron_context = context.Context('', 'test-tenant-2')
+        neutron_context = context.Context('', 'test-project-2')
         req.environ['neutron.context'] = neutron_context
         res = self.deserialize(self.fmt, req.get_response(self.ext_api))
         self.assertEqual(addr_scope['address_scope']['id'],
@@ -239,23 +239,21 @@ class TestAddressScope(AddressScopeTestCase):
         res = self._list('address-scopes')
         self.assertEqual(2, len(res['address_scopes']))
 
-    def test_list_address_scopes_different_tenants_shared(self):
+    def test_list_address_scopes_different_projects_shared(self):
         self._test_create_address_scope(name='foo-address-scope', shared=True,
                                         admin=True)
         admin_res = self._list('address-scopes')
         mortal_res = self._list(
-            'address-scopes',
-            neutron_context=context.Context('', 'not-the-owner'))
+            'address-scopes', project_id='not-the-owner')
         self.assertEqual(1, len(admin_res['address_scopes']))
         self.assertEqual(1, len(mortal_res['address_scopes']))
 
-    def test_list_address_scopes_different_tenants_not_shared(self):
+    def test_list_address_scopes_different_projects_not_shared(self):
         self._test_create_address_scope(constants.IP_VERSION_6,
                                         name='foo-address-scope')
         admin_res = self._list('address-scopes')
         mortal_res = self._list(
-            'address-scopes',
-            neutron_context=context.Context('', 'not-the-owner'))
+            'address-scopes', project_id='not-the-owner')
         self.assertEqual(1, len(admin_res['address_scopes']))
         self.assertEqual(0, len(mortal_res['address_scopes']))
 
@@ -264,13 +262,12 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
     def setUp(self):
         plugin = DB_PLUGIN_KLASS
         ext_mgr = AddressScopeTestExtensionManager()
-        super(TestSubnetPoolsWithAddressScopes, self).setUp(plugin=plugin,
-                                                            ext_mgr=ext_mgr)
+        super().setUp(plugin=plugin,
+                      ext_mgr=ext_mgr)
 
     def _test_create_subnetpool(self, prefixes, expected=None,
                                 admin=False, **kwargs):
         keys = kwargs.copy()
-        keys.setdefault('tenant_id', self._tenant_id)
         with self.subnetpool(prefixes, admin, **keys) as subnetpool:
             self._validate_resource(subnetpool, keys, 'subnetpool')
             if expected:
@@ -385,14 +382,14 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
                         'subnetpool_id': subnetpool_id,
                         'prefixlen': 24,
                         'ip_version': constants.IP_VERSION_4,
-                        'tenant_id': network['network']['tenant_id']}}
+                        'project_id': network['network']['project_id']}}
                 req = self.new_create_request('subnets', data)
                 subnet = self.deserialize(self.fmt,
                                           req.get_response(self.api))
 
                 with mock.patch.object(registry, 'publish') as publish:
                     plugin = db_base_plugin_v2.NeutronDbPluginV2()
-                    plugin.is_address_scope_owned_by_tenant = mock.Mock(
+                    plugin.is_address_scope_owned_by_project = mock.Mock(
                         return_value=True)
                     plugin._validate_address_scope_id = mock.Mock()
                     ctx = context.get_admin_context()
@@ -459,7 +456,7 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
                     'network_id': network['network']['id'],
                     'subnetpool_id': v4_subnetpool_id,
                     'ip_version': constants.IP_VERSION_4,
-                    'tenant_id': network['network']['tenant_id']}}
+                    'project_id': network['network']['project_id']}}
             req = self.new_create_request('subnets', data)
             self.deserialize(self.fmt, req.get_response(self.api))
             data['subnet']['subnetpool_id'] = v6_subnetpool_id
@@ -526,20 +523,20 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
             with self.subnetpool(
                         ['10.10.0.0/16'],
                         name='subnetpool_a',
-                        tenant_id=addr_scope['tenant_id'],
+                        project_id=addr_scope['project_id'],
                         default_prefixlen=24,
                         address_scope_id=addr_scope['id']) as subnetpool_a,\
                 self.subnetpool(
                          ['10.20.0.0/16'],
                          name='subnetpool_b',
-                         tenant_id=addr_scope['tenant_id'],
+                         project_id=addr_scope['project_id'],
                          default_prefixlen=24,
                          address_scope_id=addr_scope['id']) as subnetpool_b:
                 subnetpool_a = subnetpool_a['subnetpool']
                 subnetpool_b = subnetpool_b['subnetpool']
 
                 with self.network(
-                        tenant_id=addr_scope['tenant_id']) as network:
+                        project_id=addr_scope['project_id']) as network:
                     subnet_a = self._make_subnet(
                         self.fmt,
                         network,
@@ -547,7 +544,7 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
                         None,
                         subnetpool_id=subnetpool_a['id'],
                         ip_version=constants.IP_VERSION_4,
-                        tenant_id=addr_scope['tenant_id'])
+                        project_id=addr_scope['project_id'])
                     subnet_b = self._make_subnet(
                         self.fmt,
                         network,
@@ -555,10 +552,10 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
                         None,
                         subnetpool_id=subnetpool_b['id'],
                         ip_version=constants.IP_VERSION_4,
-                        tenant_id=addr_scope['tenant_id'])
+                        project_id=addr_scope['project_id'])
 
                     # Look up subnet counts and perform assertions
-                    ctx = context.Context('', addr_scope['tenant_id'])
+                    ctx = context.Context('', addr_scope['project_id'])
                     pl = directory.get_plugin()
                     total_count = pl.get_subnets_count(
                         ctx,
@@ -589,20 +586,20 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
             with self.subnetpool(
                         ['10.10.0.0/16'],
                         name='subnetpool_a',
-                        tenant_id=scope_a['tenant_id'],
+                        project_id=scope_a['project_id'],
                         default_prefixlen=24,
                         address_scope_id=scope_a['id']) as subnetpool_a,\
                 self.subnetpool(
                          ['10.20.0.0/16'],
                          name='subnetpool_b',
-                         tenant_id=scope_a['tenant_id'],
+                         project_id=scope_a['project_id'],
                          default_prefixlen=24,
                          address_scope_id=scope_a['id']) as subnetpool_b:
                 subnetpool_a = subnetpool_a['subnetpool']
                 subnetpool_b = subnetpool_b['subnetpool']
 
                 with self.network(
-                        tenant_id=scope_a['tenant_id']) as network:
+                        project_id=scope_a['project_id']) as network:
                     self._make_subnet(
                         self.fmt,
                         network,
@@ -610,7 +607,7 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
                         None,
                         subnetpool_id=subnetpool_a['id'],
                         ip_version=constants.IP_VERSION_4,
-                        tenant_id=scope_a['tenant_id'])
+                        project_id=scope_a['project_id'])
                     self._make_subnet(
                         self.fmt,
                         network,
@@ -618,7 +615,7 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
                         None,
                         subnetpool_id=subnetpool_b['id'],
                         ip_version=constants.IP_VERSION_4,
-                        tenant_id=scope_a['tenant_id'])
+                        project_id=scope_a['project_id'])
 
                     # Attempt to update subnetpool_b's address scope and
                     # assert failure.
@@ -638,13 +635,13 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
             with self.subnetpool(
                         ['2001:db8:1234::/48'],
                         name='non_pd_pool',
-                        tenant_id=addr_scope['tenant_id'],
+                        project_id=addr_scope['project_id'],
                         default_prefixlen=64,
                         address_scope_id=addr_scope['id']) as non_pd_pool:
                 non_pd_pool = non_pd_pool['subnetpool']
 
                 with self.network(
-                        tenant_id=addr_scope['tenant_id']) as network:
+                        project_id=addr_scope['project_id']) as network:
                     with self.subnet(cidr=None,
                                      network=network,
                                      ip_version=constants.IP_VERSION_6,
@@ -656,7 +653,7 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
                             cidr=None,
                             net_id=network['network']['id'],
                             subnetpool_id=non_pd_pool['id'],
-                            tenant_id=addr_scope['tenant_id'],
+                            project_id=addr_scope['project_id'],
                             ip_version=constants.IP_VERSION_6)
                         self.assertEqual(webob.exc.HTTPBadRequest.code,
                                          res.status_int)
@@ -668,13 +665,13 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
             with self.subnetpool(
                         ['2001:db8:1234::/48'],
                         name='non_pd_pool',
-                        tenant_id=addr_scope['tenant_id'],
+                        project_id=addr_scope['project_id'],
                         default_prefixlen=64,
                         address_scope_id=addr_scope['id']) as non_pd_pool:
                 non_pd_pool = non_pd_pool['subnetpool']
 
                 with self.network(
-                        tenant_id=addr_scope['tenant_id']) as network:
+                        project_id=addr_scope['project_id']) as network:
                     with self.subnet(cidr=None,
                                      network=network,
                                      ip_version=constants.IP_VERSION_6,
@@ -683,7 +680,7 @@ class TestSubnetPoolsWithAddressScopes(AddressScopeTestCase):
                             self.fmt,
                             cidr=None,
                             net_id=network['network']['id'],
-                            tenant_id=addr_scope['tenant_id'],
+                            project_id=addr_scope['project_id'],
                             subnetpool_id=constants.IPV6_PD_POOL_ID,
                             ip_version=constants.IP_VERSION_6,
                             ipv6_ra_mode=constants.IPV6_SLAAC,

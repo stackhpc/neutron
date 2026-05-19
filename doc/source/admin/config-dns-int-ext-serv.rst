@@ -1,7 +1,7 @@
 .. _config-dns-int-ext-serv:
 
 ========================================
-DNS integration with an external service
+DNS Integration with an External Service
 ========================================
 
 This page serves as a guide for how to use the DNS integration functionality of
@@ -47,10 +47,11 @@ Once this is done, the user has to take the following steps and restart
      Networking service to create and update reverse lookup (PTR) zones.
    * ``project_name``: the name of the project to be used by the
      Networking service to create and update reverse lookup (PTR) zones.
-   * ``project_domain_name``: the name of the domain for the project to be used by the
-     Networking service to create and update reverse lookup (PTR) zones.
-   * ``user_domain_name``: the name of the domain for the user to be used by the
-     Networking service to create and update reverse lookup (PTR) zones.
+   * ``project_domain_name``: the name of the domain for the project to be
+     used by the Networking service to create and update reverse lookup (PTR)
+     zones.
+   * ``user_domain_name``: the name of the domain for the user to be used by
+     the Networking service to create and update reverse lookup (PTR) zones.
    * ``region_name``: the name of the region to be used by the
      Networking service to create and update reverse lookup (PTR) zones.
    * ``allow_reverse_dns_lookup``: a boolean value specifying whether to enable
@@ -60,10 +61,11 @@ Once this is done, the user has to take the following steps and restart
    * ``ipv6_ptr_zone_prefix_size``: the size in bits of the prefix for the IPv6
      reverse lookup (PTR) zones.
    * ``ptr_zone_email``: the email address to use when creating new reverse
-     lookup (PTR) zones. The default is ``admin@<dns_domain>`` where ``<dns_domain>``
-     is the domain for the first record being created in that zone.
-   * ``insecure``: whether to disable SSL certificate validation. By default, certificates
-     are validated.
+     lookup (PTR) zones. The default is ``admin@<dns_domain>`` where
+     ``<dns_domain>`` is the domain for the first record being created in that
+     zone.
+   * ``insecure``: whether to disable SSL certificate validation. By default,
+     certificates are validated.
    * ``cafile``: Path to a valid Certificate Authority (CA) certificate.
      Optional, the system CAs are used as default.
 
@@ -186,7 +188,7 @@ Following is an example of these steps:
    | progress                             | 0                                                              |
    | security_groups                      | default                                                        |
    | status                               | BUILD                                                          |
-   | tenant_id                            | d5660cb1e6934612a01b4fb2fb630725                               |
+   | project_id                           | d5660cb1e6934612a01b4fb2fb630725                               |
    | updated                              | 2016-02-15T19:27:34Z                                           |
    | user_id                              | 8bb6e578cba24e7db9d3810633124525                               |
    +--------------------------------------+----------------------------------------------------------------+
@@ -381,7 +383,7 @@ allocated for the instance:
    | progress                             | 0                                                              |
    | security_groups                      | default                                                        |
    | status                               | BUILD                                                          |
-   | tenant_id                            | d5660cb1e6934612a01b4fb2fb630725                               |
+   | project_id                           | d5660cb1e6934612a01b4fb2fb630725                               |
    | updated                              | 2016-02-15T19:42:44Z                                           |
    | user_id                              | 8bb6e578cba24e7db9d3810633124525                               |
    +--------------------------------------+----------------------------------------------------------------+
@@ -538,7 +540,7 @@ while at the same time IPs from other subnets having the flag set to
 criteria from the other use cases below.
 
 A typical scenario for this use case is a dual stack deployment, where a
-tenant network would be configured with both an IPv4 and an IPv6 subnet.
+project network would be configured with both an IPv4 and an IPv6 subnet.
 The IPv4 subnet will usually be using some RFC1918 address space and being
 NATted towards the outside on the attached router, therefore the fixed IPs
 from this subnet will not be globally routed and they also should not be
@@ -853,7 +855,7 @@ external DNS service. This is an example:
    | progress                             | 0                                                              |
    | security_groups                      | default                                                        |
    | status                               | BUILD                                                          |
-   | tenant_id                            | d5660cb1e6934612a01b4fb2fb630725                               |
+   | project_id                           | d5660cb1e6934612a01b4fb2fb630725                               |
    | updated                              | 2016-02-15T19:10:43Z                                           |
    | user_id                              | 8bb6e578cba24e7db9d3810633124525                               |
    +--------------------------------------+----------------------------------------------------------------+
@@ -908,8 +910,8 @@ Only for :ref:`config-dns-use-case-3`, if the port binding extension is
 enabled in the Networking service, the Compute service will execute one
 additional port update operation when allocating the port for the instance
 during the boot process. This may have a noticeable adverse effect in the
-performance of the boot process that should be evaluated before adoption of this
-use case.
+performance of the boot process that should be evaluated before adoption of
+this use case.
 
 .. _config-dns-int-ext-serv-net:
 
@@ -926,7 +928,7 @@ meet the following requirements:
 
 This usually implies that these use cases only work for networks specifically
 created for this purpose by an admin, they do not work for networks
-which tenants can create on their own.
+which projects can create on their own.
 
 .. _config-dns-int-ext-dns-assignment:
 

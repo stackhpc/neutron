@@ -11,10 +11,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 #
-import collections
+
 import copy
 from unittest import mock
 
+from oslo_utils import uuidutils
 from ovsdbapp.backend import ovs_idl
 
 from neutron.common.ovn import constants as ovn_const
@@ -34,7 +35,7 @@ class TestDBImplIdlOvn(base.BaseTestCase):
             # Pre-populate ovs idl "._data"
             fake_data = copy.deepcopy(fake_attr)
             try:
-                del fake_data["unit_test_id"]
+                fake_data.pop("unit_test_id")
             except KeyError:
                 pass
             setattr(fake_row, "_data", fake_data)
@@ -161,43 +162,99 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
                               'lr-name-d'}},
             {'name': utils.ovn_name('lr-id-e'),
              'external_ids': {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
-                              'lr-name-e'}}],
+                              'lr-name-e'}},
+            {'name': utils.ovn_name('lr-id-f'),
+             'external_ids': {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                              'lr-name-f'}}],
         'lrouter_ports': [
             {'name': utils.ovn_lrouter_port_name('orp-id-a1'),
-             'external_ids': {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
-                              'lr-id-a'},
+             'external_ids': {
+                 ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                     utils.ovn_name('lr-id-a'),
+                 ovn_const.OVN_ROUTER_IS_EXT_GW: str(True)},
              'networks': ['10.0.1.0/24'],
-             'options': {ovn_const.OVN_GATEWAY_CHASSIS_KEY: 'host-1'}},
+             },
             {'name': utils.ovn_lrouter_port_name('orp-id-a2'),
-             'external_ids': {}, 'networks': ['10.0.2.0/24'],
-             'options': {ovn_const.OVN_GATEWAY_CHASSIS_KEY: 'host-1'}},
+             'external_ids': {
+                 ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                     utils.ovn_name('lr-id-a'),
+                 ovn_const.OVN_ROUTER_IS_EXT_GW: str(True)},
+             'networks': ['10.0.2.0/24'],
+             },
             {'name': utils.ovn_lrouter_port_name('orp-id-a3'),
-             'external_ids': {}, 'networks': ['10.0.3.0/24'],
-             'options': {ovn_const.OVN_GATEWAY_CHASSIS_KEY:
-                         ovn_const.OVN_GATEWAY_INVALID_CHASSIS}},
+             'external_ids': {
+                 ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                     utils.ovn_name('lr-id-a'),
+                 ovn_const.OVN_ROUTER_IS_EXT_GW: str(True)},
+             'networks': ['10.0.3.0/24'],
+             },
             {'name': 'xrp-id-b1',
-             'external_ids': {}, 'networks': ['20.0.1.0/24']},
+             'external_ids': {
+                 ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                     utils.ovn_name('lr-id-b'),
+             }, 'networks': ['20.0.1.0/24']},
             {'name': utils.ovn_lrouter_port_name('orp-id-b2'),
-             'external_ids': {}, 'networks': ['20.0.2.0/24'],
-             'options': {ovn_const.OVN_GATEWAY_CHASSIS_KEY: 'host-2'}},
+             'external_ids': {
+                 ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                     utils.ovn_name('lr-id-b'),
+            }, 'networks': ['20.0.2.0/24'],
+            },
             {'name': utils.ovn_lrouter_port_name('orp-id-b3'),
-             'external_ids': {}, 'networks': ['20.0.3.0/24'],
-             'options': {}}],
+             'external_ids': {
+                 ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                     utils.ovn_name('lr-id-b'),
+            }, 'networks': ['20.0.3.0/24'],
+                'options': {}},
+            {'name': utils.ovn_lrouter_port_name('gwc'),
+             'external_ids': {
+                 ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY:
+                     utils.ovn_name('lr-id-f'),
+                 ovn_const.OVN_ROUTER_IS_EXT_GW: str(True)},
+             'networks': ['10.0.4.0/24'],
+             'options': {}},
+            {'name': utils.ovn_lrouter_port_name('not-managed'),
+             'external_ids': {
+                 'owner': 'not-owned-by-neutron',
+            },
+                'networks': ['10.0.5.0/24'],
+                'options': {}}],
+        'ha_chassis_group': [
+            {'name': utils.ovn_name('lr-id-a')},
+            {'name': utils.ovn_name('lr-id-b')},
+        ],
+        'ha_chassis': [
+            {'chassis_name': 'host-1', 'priority': 1},
+            {'chassis_name': 'host-2', 'priority': 2},
+            {'chassis_name': 'host-3', 'priority': 3},
+            {'chassis_name': 'host-4', 'priority': 4},
+            {'chassis_name': 'host-5', 'priority': 5},
+        ],
         'static_routes': [{'ip_prefix': '20.0.0.0/16',
-                           'nexthop': '10.0.3.253'},
+                           'nexthop': '10.0.3.253',
+                           'external_ids': {
+                               ovn_const.OVN_SUBNET_EXT_ID_KEY: 'uuid_1'}},
                           {'ip_prefix': '10.0.0.0/16',
-                           'nexthop': '20.0.2.253'}],
+                           'nexthop': '20.0.2.253',
+                           'external_ids': {
+                               ovn_const.OVN_SUBNET_EXT_ID_KEY: 'uuid_2'}},
+                          {'ip_prefix': '30.0.0.0/16',
+                           'nexthop': '30.0.4.253',
+                           'external_ids': {'owner': 'not-owned-by-neutron'}}],
         'nats': [{'external_ip': '10.0.3.1', 'logical_ip': '20.0.0.0/16',
                   'type': 'snat'},
                  {'external_ip': '20.0.2.1', 'logical_ip': '10.0.0.0/24',
                   'type': 'snat'},
                  {'external_ip': '20.0.2.4', 'logical_ip': '10.0.0.4',
                   'type': 'dnat_and_snat', 'external_mac': [],
-                  'logical_port': []},
+                  'logical_port': [],
+                  'external_ids': {ovn_const.OVN_FIP_EXT_ID_KEY: 'fip_id_a'},
+                  'gateway_port': uuidutils.generate_uuid()},
                  {'external_ip': '20.0.2.5', 'logical_ip': '10.0.0.5',
                   'type': 'dnat_and_snat',
                   'external_mac': ['00:01:02:03:04:05'],
-                  'logical_port': ['lsp-id-001']}],
+                  'logical_port': ['lsp-id-001'],
+                  'external_ids': {ovn_const.OVN_FIP_EXT_ID_KEY: 'fip_id_b'},
+                  'gateway_port': []}],
         'acls': [
             {'unit_test_id': 1,
              'action': 'allow-related', 'direction': 'from-lport',
@@ -317,7 +374,9 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
                 utils.ovn_lrouter_port_name('orp-id-a3')],
             utils.ovn_name('lr-id-b'): [
                 'xrp-id-b1',
-                utils.ovn_lrouter_port_name('orp-id-b2')]},
+                utils.ovn_lrouter_port_name('orp-id-b2')],
+            utils.ovn_name('lr-id-f'): [
+                utils.ovn_lrouter_port_name('gwc')]},
         'lrtosroute': {
             utils.ovn_name('lr-id-a'): ['20.0.0.0/16'],
             utils.ovn_name('lr-id-b'): ['10.0.0.0/16']
@@ -330,11 +389,24 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
             utils.ovn_name('ls-id-1'): [1, 2, 3, 4],
             utils.ovn_name('ls-id-2'): [5, 6],
             'ls-id-4': [7, 8],
-            utils.ovn_name('ls-id-5'): [9, 10]}
+            utils.ovn_name('ls-id-5'): [9, 10],
+        },
+        'hcgtohc': {
+            utils.ovn_name('lr-id-a'): ['host-1'],
+            utils.ovn_name('lr-id-b'): ['host-2'],
+        },
+        'lrptohcg': {
+            utils.ovn_lrouter_port_name('orp-id-a1'): [
+                utils.ovn_name('lr-id-a')],
+            utils.ovn_lrouter_port_name('orp-id-a2'): [
+                utils.ovn_name('lr-id-a')],
+            utils.ovn_lrouter_port_name('orp-id-b2'): [
+                utils.ovn_name('lr-id-b')],
+        },
     }
 
     def setUp(self):
-        super(TestNBImplIdlOvn, self).setUp()
+        super().setUp()
 
         self.lswitch_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
         self.lsp_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
@@ -346,6 +418,8 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
         self.dhcp_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
         self.address_set_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
         self.lb_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
+        self.hcg_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
+        self.ha_chassis_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
 
         self._tables = {}
         self._tables['Logical_Switch'] = self.lswitch_table
@@ -358,6 +432,8 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
         self._tables['Address_Set'] = self.address_set_table
         self._tables['Load_Balancer'] = self.lb_table
         self._tables['NAT'] = self.nat_table
+        self._tables['HA_Chassis_Group'] = self.hcg_table
+        self._tables['HA_Chassis'] = self.ha_chassis_table
 
         with mock.patch.object(impl_idl_ovn.OvsdbNbOvnIdl, 'from_worker',
                                return_value=mock.Mock()):
@@ -379,11 +455,24 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
             TestNBImplIdlOvn.fake_associations['lstolsp'],
             self.lswitch_table, self.lsp_table,
             'name', 'name', 'ports')
-        # Load Routers and Router Ports
+        # Load Routers, Router Ports and Gateway Chassis
         fake_lrouters = TestNBImplIdlOvn.fake_set['lrouters']
         self._load_ovsdb_fake_rows(self.lrouter_table, fake_lrouters)
         fake_lrps = TestNBImplIdlOvn.fake_set['lrouter_ports']
         self._load_ovsdb_fake_rows(self.lrp_table, fake_lrps)
+        fake_hcg = TestNBImplIdlOvn.fake_set['ha_chassis_group']
+        self._load_ovsdb_fake_rows(self.hcg_table, fake_hcg)
+        fake_ha_chassis = TestNBImplIdlOvn.fake_set['ha_chassis']
+        self._load_ovsdb_fake_rows(self.ha_chassis_table, fake_ha_chassis)
+        self._construct_ovsdb_references(
+            TestNBImplIdlOvn.fake_associations['hcgtohc'],
+            self.hcg_table, self.ha_chassis_table,
+            'name', 'chassis_name', 'ha_chassis')
+        self._construct_ovsdb_references(
+            TestNBImplIdlOvn.fake_associations['lrptohcg'],
+            self.lrp_table, self.hcg_table,
+            'name', 'name', 'ha_chassis_group')
+
         # Associate routers and router ports
         self._construct_ovsdb_references(
             TestNBImplIdlOvn.fake_associations['lrtolrp'],
@@ -446,19 +535,49 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
                      'provnet_ports': []}]
         self.assertCountEqual(mapping, expected)
 
-    def test_get_all_logical_routers_with_rports(self):
+    def _test_get_all_logical_routers_with_rports(self, is_gw_port):
         # Test empty
-        mapping = self.nb_ovn_idl.get_all_logical_switches_with_ports()
+        mapping = self.nb_ovn_idl.get_all_logical_routers_with_rports()
         self.assertCountEqual(mapping, {})
         # Test loaded values
         self._load_nb_db()
+
+        # Test with gateway_port_support enabled
         mapping = self.nb_ovn_idl.get_all_logical_routers_with_rports()
+        lra_nat = self._find_ovsdb_fake_row(self.nat_table,
+                                            'external_ip', '20.0.2.4')
+        lrb_nat = self._find_ovsdb_fake_row(self.nat_table,
+                                            'external_ip', '20.0.2.5')
+
+        lra_fip = {'external_ip': '20.0.2.4',
+                   'logical_ip': '10.0.0.4',
+                   'type': 'dnat_and_snat',
+                   'external_ids': {ovn_const.OVN_FIP_EXT_ID_KEY: 'fip_id_a'},
+                   'uuid': lra_nat.uuid,
+                   'gateway_port': lra_nat.gateway_port,
+                   }
+        lrb_fip = {'external_ip': '20.0.2.5',
+                   'logical_ip': '10.0.0.5',
+                   'type': 'dnat_and_snat',
+                   'external_mac': '00:01:02:03:04:05',
+                   'logical_port': 'lsp-id-001',
+                   'external_ids': {ovn_const.OVN_FIP_EXT_ID_KEY: 'fip_id_b'},
+                   'uuid': lrb_nat.uuid,
+                   'gateway_port': [],
+                   }
+
+        if is_gw_port:
+            lra_fip['gateway_port'] = lra_nat.gateway_port
+            lrb_fip['gateway_port'] = lrb_nat.gateway_port
+
         expected = [{'name': 'lr-id-a',
                      'ports': {'orp-id-a1': ['10.0.1.0/24'],
                                'orp-id-a2': ['10.0.2.0/24'],
                                'orp-id-a3': ['10.0.3.0/24']},
                      'static_routes': [{'destination': '20.0.0.0/16',
-                                        'nexthop': '10.0.3.253'}],
+                                        'nexthop': '10.0.3.253',
+                                        'external_ids': {
+                                            'neutron:subnet_id': 'uuid_1'}}],
                      'snats': [{'external_ip': '10.0.3.1',
                                 'logical_ip': '20.0.0.0/16',
                                 'type': 'snat'}],
@@ -467,25 +586,29 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
                      'ports': {'xrp-id-b1': ['20.0.1.0/24'],
                                'orp-id-b2': ['20.0.2.0/24']},
                      'static_routes': [{'destination': '10.0.0.0/16',
-                                        'nexthop': '20.0.2.253'}],
+                                        'nexthop': '20.0.2.253',
+                                        'external_ids': {
+                                            'neutron:subnet_id': 'uuid_2'}}],
                      'snats': [{'external_ip': '20.0.2.1',
                                 'logical_ip': '10.0.0.0/24',
                                 'type': 'snat'}],
-                     'dnat_and_snats': [{'external_ip': '20.0.2.4',
-                                         'logical_ip': '10.0.0.4',
-                                         'type': 'dnat_and_snat'},
-                                        {'external_ip': '20.0.2.5',
-                                         'logical_ip': '10.0.0.5',
-                                         'type': 'dnat_and_snat',
-                                         'external_mac': '00:01:02:03:04:05',
-                                         'logical_port': 'lsp-id-001'}]},
+                     'dnat_and_snats': [lra_fip, lrb_fip]},
                     {'name': 'lr-id-c', 'ports': {}, 'static_routes': [],
                      'snats': [], 'dnat_and_snats': []},
                     {'name': 'lr-id-d', 'ports': {}, 'static_routes': [],
                      'snats': [], 'dnat_and_snats': []},
                     {'name': 'lr-id-e', 'ports': {}, 'static_routes': [],
+                     'snats': [], 'dnat_and_snats': []},
+                    {'name': 'lr-id-f', 'static_routes': [],
+                     'ports': {'gwc': ['10.0.4.0/24']},
                      'snats': [], 'dnat_and_snats': []}]
         self.assertCountEqual(mapping, expected)
+
+    def test_get_all_logical_routers_with_rports(self):
+        self._test_get_all_logical_routers_with_rports(True)
+
+    def test_get_all_logical_routers_with_rports_without_nat_gw_port(self):
+        self._test_get_all_logical_routers_with_rports(False)
 
     def test_get_acls_for_lswitches(self):
         self._load_nb_db()
@@ -557,20 +680,20 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
     def test_get_all_chassis_gateway_bindings(self):
         self._load_nb_db()
         bindings = self.nb_ovn_idl.get_all_chassis_gateway_bindings()
-        expected = {'host-1': [utils.ovn_lrouter_port_name('orp-id-a1'),
-                               utils.ovn_lrouter_port_name('orp-id-a2')],
-                    'host-2': [utils.ovn_lrouter_port_name('orp-id-b2')],
-                    ovn_const.OVN_GATEWAY_INVALID_CHASSIS: [
-                        utils.ovn_name('orp-id-a3')]}
-        self.assertCountEqual(bindings, expected)
+        expected = {
+            'host-1': [(utils.ovn_lrouter_port_name('orp-id-a1'), 1),
+                       (utils.ovn_lrouter_port_name('orp-id-a2'), 1)],
+            'host-2': [(utils.ovn_lrouter_port_name('orp-id-b2'), 2)],
+        }
+        self.assertEqual(bindings, expected)
 
-        bindings = self.nb_ovn_idl.get_all_chassis_gateway_bindings([])
-        self.assertCountEqual(bindings, expected)
+        bindings = self.nb_ovn_idl.get_all_chassis_gateway_bindings(
+            chassis_candidate_list=[])
+        self.assertEqual(bindings, expected)
 
         bindings = self.nb_ovn_idl.get_all_chassis_gateway_bindings(['host-1'])
-        expected = {'host-1': [utils.ovn_lrouter_port_name('orp-id-a1'),
-                               utils.ovn_lrouter_port_name('orp-id-a2')]}
-        self.assertCountEqual(bindings, expected)
+        expected.pop('host-2')
+        self.assertEqual(bindings, expected)
 
     def test_get_gateway_chassis_binding(self):
         self._load_nb_db()
@@ -582,7 +705,7 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
         self.assertEqual(chassis, ['host-2'])
         chassis = self.nb_ovn_idl.get_gateway_chassis_binding(
             utils.ovn_lrouter_port_name('orp-id-a3'))
-        self.assertEqual(chassis, ['neutron-ovn-invalid-chassis'])
+        self.assertEqual([], chassis)
         chassis = self.nb_ovn_idl.get_gateway_chassis_binding(
             utils.ovn_lrouter_port_name('orp-id-b3'))
         self.assertEqual([], chassis)
@@ -626,11 +749,14 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
 
     def test_get_unhosted_gateways_deleted_physnet(self):
         self._load_nb_db()
-        # The LRP is on host-2 now
-        router_row = self._find_ovsdb_fake_row(self.lrp_table,
-                                               'name', 'lrp-orp-id-a1')
-        setattr(router_row, 'options', {
-            ovn_const.OVN_GATEWAY_CHASSIS_KEY: 'host-2'})
+        # HA_Chassis_Group for "lr-id-b" has a HA_Chassis on host-2
+        lrptohcg = {
+            utils.ovn_lrouter_port_name('orp-id-a1'): [
+                 utils.ovn_name('lr-id-b')]}
+        self._construct_ovsdb_references(
+            lrptohcg, self.lrp_table, self.hcg_table,
+            'name', 'name', 'ha_chassis_group')
+
         port_physnet_dict = {'orp-id-a1': 'physnet1'}
         chassis_with_azs = {'host-1': ['az-a'], 'host-2': ['az-a']}
         # Lets spoof that physnet1 is deleted from host-2.
@@ -638,23 +764,20 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
             port_physnet_dict, {'host-1': 'physnet1', 'host-2': 'physnet3'},
             ['host-1', 'host-2'], chassis_with_azs)
         # Make sure that lrp is rescheduled, because host-1 has physet1
-        expected = ['lrp-orp-id-a1']
-        self.assertCountEqual(unhosted_gateways, expected)
+        expected = {utils.ovn_lrouter_port_name('orp-id-a1')}
+        self.assertEqual(unhosted_gateways, expected)
         # Spoof that there is no valid host with required physnet.
         unhosted_gateways = self.nb_ovn_idl.get_unhosted_gateways(
             port_physnet_dict, {'host-1': 'physnet4', 'host-2': 'physnet3'},
             ['host-1', 'host-2'], chassis_with_azs)
-        self.assertCountEqual(unhosted_gateways, [])
+        self.assertEqual(set(), unhosted_gateways)
 
     def _test_get_unhosted_gateway_max_chassis(self, r):
-        gw_chassis_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
-        self._tables['Gateway_Chassis'] = gw_chassis_table
-        gw_chassis = collections.namedtuple('gw_chassis',
-                                            'chassis_name priority')
-        TestNBImplIdlOvn.fake_set['lrouter_ports'][0]['gateway_chassis'] = [
-            gw_chassis(chassis_name='host-%s' % x,
-                       priority=x) for x in r]
         self._load_nb_db()
+        hcgtohc = {utils.ovn_name('lr-id-a'): [f'host-{idx}' for idx in r]}
+        self._construct_ovsdb_references(
+            hcgtohc, self.hcg_table, self.ha_chassis_table,
+            'name', 'chassis_name', 'ha_chassis')
         self.port_physnet_dict = {'orp-id-a1': 'physnet1'}
 
     def test_get_unhosted_gateway_max_chassis_lack_of_chassis(self):
@@ -783,11 +906,6 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
         self.assertEqual(len(dhcp_options['subnets']), 3)
         self.assertEqual(len(dhcp_options['ports_v4']), 2)
 
-    def test_get_address_sets(self):
-        self._load_nb_db()
-        address_sets = self.nb_ovn_idl.get_address_sets()
-        self.assertEqual(len(address_sets), 4)
-
     def test_get_router_floatingip_lbs(self):
         lrouter_name = 'rtr_name'
         # Empty
@@ -813,6 +931,42 @@ class TestNBImplIdlOvn(TestDBImplIdlOvn):
         lb = self.nb_ovn_idl.get_floatingip_in_nat_or_lb(fip_id)
         self.assertEqual(lb['_uuid'], lb_row.uuid)
 
+    def test_get_lrouter_gw_ports_legacy_option(self):
+        self._load_nb_db()
+
+        gw1_row = self._find_ovsdb_fake_row(
+            self.lrp_table, 'name', utils.ovn_lrouter_port_name('orp-id-a1'))
+        gw2_row = self._find_ovsdb_fake_row(
+            self.lrp_table, 'name', utils.ovn_lrouter_port_name('orp-id-a2'))
+        gw3_row = self._find_ovsdb_fake_row(
+            self.lrp_table, 'name', utils.ovn_lrouter_port_name('orp-id-a3'))
+
+        gw_ports = self.nb_ovn_idl.get_lrouter_gw_ports(
+            utils.ovn_name('lr-id-a'))
+        self.assertEqual([gw1_row, gw2_row, gw3_row], gw_ports)
+
+    def test_get_lrouter_gw_ports_gwc(self):
+        self._load_nb_db()
+        gw1_row = self._find_ovsdb_fake_row(
+            self.lrp_table, 'name', utils.ovn_lrouter_port_name('gwc'))
+
+        gw_ports = self.nb_ovn_idl.get_lrouter_gw_ports(
+            utils.ovn_name('lr-id-f'))
+        self.assertEqual([gw1_row], gw_ports)
+
+    def test_get_lrouter_by_lrouter_port(self):
+        self.assertIsNone(
+            self.nb_ovn_idl.get_lrouter_by_lrouter_port('not_there'))
+        self._load_nb_db()
+        self.assertIsNone(
+            self.nb_ovn_idl.get_lrouter_by_lrouter_port('not_there'))
+        lr_row = self._find_ovsdb_fake_row(
+            self.lrouter_table,
+            'name',
+            utils.ovn_name('lr-id-a'))
+        lr = self.nb_ovn_idl.get_lrouter_by_lrouter_port('lrp-orp-id-a1')
+        self.assertEqual(lr.uuid, lr_row.uuid)
+
 
 class TestSBImplIdlOvnBase(TestDBImplIdlOvn):
 
@@ -832,7 +986,7 @@ class TestSBImplIdlOvnBase(TestDBImplIdlOvn):
     fake_associations = {}
 
     def setUp(self):
-        super(TestSBImplIdlOvnBase, self).setUp()
+        super().setUp()
 
         self.chassis_table = fakes.FakeOvsdbTable.create_one_ovsdb_table()
 

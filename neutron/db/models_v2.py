@@ -30,28 +30,50 @@ from neutron.db import rbac_db_models
 
 
 # NOTE(ralonsoh): move to neutron_lib.db.model_base
-class HasInUse(object):
+class HasInUse:
     """NeutronBaseV2 mixin, to add the flag "in_use" to a DB model.
 
-    The content of this flag (boolean) parameter is not relevant. The goal of
-    this field is to be used in a write transaction to mark a DB register as
-    "in_use". Writing any value on this DB parameter will lock the container
-    register. At the end of the DB transaction, the DB engine will check if
-    this register was modified or deleted. In such case, the transaction will
-    fail and won't be committed.
+    The goal of this class is to allow users lock specific database rows with
+    a shared or exclusive lock (without necessarily introducing a change in
+    the table itself). Having these locks allows the DB engine to prevent
+    concurrent modifications (e.g. the deletion of a resource while we are
+    currently adding a new dependency on the resource).
 
-    "lock_register" is the method to write the register "in_use" column.
-    Because the lifespan of this DB lock is the DB transaction, there isn't an
-    unlock method. The lock will finish once the transaction ends.
+    "read_lock_register" takes a shared DB lock on the row specified by the
+    filters. The lock is automatically released once the transaction ends.
+    You can have any number of parallel read locks on the same DB row. But
+    you can not have any write lock in parallel.
+
+    "write_lock_register" takes an exclusive DB lock on the row specified by
+    the filters. The lock is automatically released on transaction commit.
+    You may only have one write lock on each row at a time. It therefor
+    blocks all other read and write locks to this row.
     """
-    in_use = sa.Column(sa.Boolean(), nullable=False,
-                       server_default=sql.false(), default=False)
 
     @classmethod
-    def lock_register(cls, context, exception, **filters):
+    def write_lock_register(cls, context, exception, **filters):
+        # we use `with_for_update()` to include `FOR UPDATE` in the sql
+        # statement.
+        # we need to set `enable_eagerloads(False)` so that we do not try to
+        # load attached resources (e.g. standardattributes) as this breaks the
+        # `FOR UPDATE` statement.
         num_reg = context.session.query(
-            cls).filter_by(**filters).update({'in_use': True})
-        if num_reg != 1:
+            cls).filter_by(**filters).enable_eagerloads(
+                False).with_for_update().first()
+        if num_reg is None:
+            raise exception
+
+    @classmethod
+    def read_lock_register(cls, context, exception, **filters):
+        # we use `with_for_update(read=True)` to include `LOCK IN SHARE MODE`
+        # in the sql statement.
+        # we need to set `enable_eagerloads(False)` so that we do not try to
+        # load attached resources (e.g. standardattributes) as this breaks the
+        # `LOCK IN SHARE MODE` statement.
+        num_reg = context.session.query(
+            cls).filter_by(**filters).enable_eagerloads(
+                False).with_for_update(read=True).first()
+        if num_reg is None:
             raise exception
 
 
@@ -65,7 +87,7 @@ class IPAllocationPool(model_base.BASEV2, model_base.HasId):
     last_ip = sa.Column(sa.String(64), nullable=False)
 
     def __repr__(self):
-        return "%s - %s" % (self.first_ip, self.last_ip)
+        return f"{self.first_ip} - {self.last_ip}"
 
 
 class IPAllocation(model_base.BASEV2):
@@ -85,7 +107,7 @@ class IPAllocation(model_base.BASEV2):
     revises_on_change = ('port', )
 
 
-class Route(object):
+class Route:
     """mixin of a route."""
 
     destination = sa.Column(sa.String(64), nullable=False, primary_key=True)
@@ -110,7 +132,7 @@ class Port(standard_attr.HasStandardAttributes, model_base.BASEV2,
     fixed_ips = orm.relationship(IPAllocation,
                                  backref=orm.backref('port',
                                                      load_on_pending=True),
-                                 lazy='subquery',
+                                 lazy='selectin',
                                  cascade='all, delete-orphan',
                                  order_by=(IPAllocation.ip_address,
                                            IPAllocation.subnet_id))
@@ -126,8 +148,6 @@ class Port(standard_attr.HasStandardAttributes, model_base.BASEV2,
 
     __table_args__ = (
         sa.Index(
-            'ix_ports_network_id_mac_address', 'network_id', 'mac_address'),
-        sa.Index(
             'ix_ports_network_id_device_owner', 'network_id', 'device_owner'),
         sa.Index('ix_ports_device_id', 'device_id'),
         sa.UniqueConstraint(
@@ -140,13 +160,13 @@ class Port(standard_attr.HasStandardAttributes, model_base.BASEV2,
                                port_def.RESOURCE_NAME}
     tag_support = True
 
-    def __init__(self, id=None, tenant_id=None, project_id=None, name=None,
+    def __init__(self, id=None, project_id=None, name=None,
                  network_id=None, mac_address=None, admin_state_up=None,
                  status=None, device_id=None, device_owner=None,
                  fixed_ips=None, **kwargs):
-        super(Port, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.id = id
-        self.project_id = project_id or tenant_id
+        self.project_id = project_id
         self.name = name
         self.network_id = network_id
         self.mac_address = mac_address
@@ -197,24 +217,24 @@ class Subnet(standard_attr.HasStandardAttributes, model_base.BASEV2,
     cidr = sa.Column(sa.String(64), nullable=False)
     gateway_ip = sa.Column(sa.String(64))
     network_standard_attr = orm.relationship(
-        'StandardAttribute', lazy='subquery', viewonly=True,
+        'StandardAttribute', lazy='selectin', viewonly=True,
         secondary='networks', uselist=False,
         load_on_pending=True)
     revises_on_change = ('network_standard_attr', )
     allocation_pools = orm.relationship(IPAllocationPool,
                                         backref='subnet',
-                                        lazy="subquery",
+                                        lazy="selectin",
                                         cascade='delete')
     enable_dhcp = sa.Column(sa.Boolean())
     dns_nameservers = orm.relationship(DNSNameServer,
                                        backref='subnet',
                                        cascade='all, delete, delete-orphan',
                                        order_by=DNSNameServer.order,
-                                       lazy='subquery')
+                                       lazy='selectin')
     routes = orm.relationship(SubnetRoute,
                               backref='subnet',
                               cascade='all, delete, delete-orphan',
-                              lazy='subquery')
+                              lazy='selectin')
     ipv6_ra_mode = sa.Column(sa.Enum(constants.IPV6_SLAAC,
                                      constants.DHCPV6_STATEFUL,
                                      constants.DHCPV6_STATELESS,
@@ -228,7 +248,7 @@ class Subnet(standard_attr.HasStandardAttributes, model_base.BASEV2,
     # subnets don't have their own rbac_entries, they just inherit from
     # the network rbac entries
     rbac_entries = orm.relationship(
-        rbac_db_models.NetworkRBAC, lazy='subquery', uselist=True,
+        rbac_db_models.NetworkRBAC, lazy='joined', uselist=True,
         foreign_keys='Subnet.network_id',
         primaryjoin='Subnet.network_id==NetworkRBAC.object_id',
         viewonly=True)
@@ -279,10 +299,10 @@ class SubnetPool(standard_attr.HasStandardAttributes, model_base.BASEV2,
     prefixes = orm.relationship(SubnetPoolPrefix,
                                 backref='subnetpools',
                                 cascade='all, delete, delete-orphan',
-                                lazy='subquery')
+                                lazy='selectin')
     rbac_entries = sa.orm.relationship(rbac_db_models.SubnetPoolRBAC,
                                        backref='subnetpools',
-                                       lazy='subquery',
+                                       lazy='selectin',
                                        cascade='all, delete, delete-orphan')
     api_collections = [subnetpool_def.COLLECTION_NAME]
     collection_resource_map = {subnetpool_def.COLLECTION_NAME:
@@ -297,21 +317,22 @@ class Network(standard_attr.HasStandardAttributes, model_base.BASEV2,
     name = sa.Column(sa.String(db_const.NAME_FIELD_SIZE))
     subnets = orm.relationship(
         Subnet,
-        lazy="subquery")
+        lazy="selectin")
     status = sa.Column(sa.String(16))
     admin_state_up = sa.Column(sa.Boolean)
     vlan_transparent = sa.Column(sa.Boolean, nullable=True)
+    qinq = sa.Column(sa.Boolean, nullable=True)
     rbac_entries = orm.relationship(rbac_db_models.NetworkRBAC,
                                     backref=orm.backref('network',
                                                         load_on_pending=True),
-                                    lazy='subquery',
+                                    lazy='joined',
                                     cascade='all, delete, delete-orphan')
     availability_zone_hints = sa.Column(sa.String(255))
     mtu = sa.Column(sa.Integer, nullable=False,
                     default=constants.DEFAULT_NETWORK_MTU,
                     server_default=str(constants.DEFAULT_NETWORK_MTU))
     dhcp_agents = orm.relationship(
-        'Agent', lazy='subquery', viewonly=True,
+        'Agent', lazy='selectin', viewonly=True,
         secondary=ndab_model.NetworkDhcpAgentBinding.__table__)
     api_collections = [net_def.COLLECTION_NAME]
     collection_resource_map = {net_def.COLLECTION_NAME: net_def.RESOURCE_NAME}

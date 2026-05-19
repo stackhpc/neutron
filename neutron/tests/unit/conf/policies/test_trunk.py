@@ -22,7 +22,7 @@ from neutron.tests.unit.conf.policies import test_base as base
 class TrunkAPITestCase(base.PolicyBaseTestCase):
 
     def setUp(self):
-        super(TrunkAPITestCase, self).setUp()
+        super().setUp()
         self.target = {'project_id': self.project_id}
         self.alt_target = {'project_id': self.alt_project_id}
 
@@ -30,7 +30,7 @@ class TrunkAPITestCase(base.PolicyBaseTestCase):
 class SystemAdminTests(TrunkAPITestCase):
 
     def setUp(self):
-        super(SystemAdminTests, self).setUp()
+        super().setUp()
         self.context = self.system_admin_ctx
 
     def test_create_trunk(self):
@@ -43,6 +43,16 @@ class SystemAdminTests(TrunkAPITestCase):
             policy.enforce,
             self.context, 'create_trunk', self.alt_target)
 
+    def test_create_trunk_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'create_trunk:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'create_trunk:tags', self.alt_target)
+
     def test_get_trunk(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -52,6 +62,16 @@ class SystemAdminTests(TrunkAPITestCase):
             base_policy.InvalidScope,
             policy.enforce,
             self.context, 'get_trunk', self.alt_target)
+
+    def test_get_trunk_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'get_trunk:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'get_trunk:tags', self.alt_target)
 
     def test_update_trunk(self):
         self.assertRaises(
@@ -63,6 +83,16 @@ class SystemAdminTests(TrunkAPITestCase):
             policy.enforce,
             self.context, 'update_trunk', self.alt_target)
 
+    def test_update_trunk_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_trunk:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_trunk:tags', self.alt_target)
+
     def test_delete_trunk(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -72,6 +102,16 @@ class SystemAdminTests(TrunkAPITestCase):
             base_policy.InvalidScope,
             policy.enforce,
             self.context, 'delete_trunk', self.alt_target)
+
+    def test_delete_trunk_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'delete_trunk:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'delete_trunk:tags', self.alt_target)
 
     def test_get_subports(self):
         self.assertRaises(
@@ -107,22 +147,78 @@ class SystemAdminTests(TrunkAPITestCase):
 class SystemMemberTests(SystemAdminTests):
 
     def setUp(self):
-        super(SystemMemberTests, self).setUp()
+        super().setUp()
         self.context = self.system_member_ctx
 
 
 class SystemReaderTests(SystemMemberTests):
 
     def setUp(self):
-        super(SystemReaderTests, self).setUp()
+        super().setUp()
         self.context = self.system_reader_ctx
 
 
 class AdminTests(TrunkAPITestCase):
 
     def setUp(self):
-        super(AdminTests, self).setUp()
+        super().setUp()
         self.context = self.project_admin_ctx
+
+    def test_create_trunk(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_trunk', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'create_trunk', self.alt_target))
+
+    def test_create_trunk_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_trunk:tags', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'create_trunk:tags',
+                           self.alt_target))
+
+    def test_get_trunk(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_trunk', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'get_trunk', self.alt_target))
+
+    def test_update_trunk(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_trunk', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'update_trunk', self.alt_target))
+
+    def test_delete_trunk(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_trunk', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_trunk', self.alt_target))
+
+    def test_get_subports(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_subports', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'get_subports', self.alt_target))
+
+    def test_add_subports(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'add_subports', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'add_subports', self.alt_target))
+
+    def test_remove_subports(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'remove_subports', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'remove_subports', self.alt_target))
+
+
+class ProjectManagerTests(AdminTests):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.project_manager_ctx
 
     def test_create_trunk(self):
         self.assertTrue(
@@ -131,6 +227,14 @@ class AdminTests(TrunkAPITestCase):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'create_trunk', self.alt_target)
+
+    def test_create_trunk_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_trunk:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_trunk:tags', self.alt_target)
 
     def test_get_trunk(self):
         self.assertTrue(
@@ -181,17 +285,17 @@ class AdminTests(TrunkAPITestCase):
             self.context, 'remove_subports', self.alt_target)
 
 
-class ProjectMemberTests(AdminTests):
+class ProjectMemberTests(ProjectManagerTests):
 
     def setUp(self):
-        super(ProjectMemberTests, self).setUp()
+        super().setUp()
         self.context = self.project_member_ctx
 
 
 class ProjectReaderTests(ProjectMemberTests):
 
     def setUp(self):
-        super(ProjectReaderTests, self).setUp()
+        super().setUp()
         self.context = self.project_reader_ctx
 
     def test_create_trunk(self):
@@ -203,6 +307,16 @@ class ProjectReaderTests(ProjectMemberTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'create_trunk', self.alt_target)
+
+    def test_create_trunk_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_trunk:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_trunk:tags', self.alt_target)
 
     def test_update_trunk(self):
         self.assertRaises(
@@ -243,3 +357,58 @@ class ProjectReaderTests(ProjectMemberTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'remove_subports', self.alt_target)
+
+
+class ServiceRoleTests(TrunkAPITestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.service_ctx
+
+    def test_create_trunk(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_trunk', self.target)
+
+    def test_create_trunk_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_trunk:tags', self.target)
+
+    def test_get_trunk(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_trunk', self.target)
+
+    def test_update_trunk(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_trunk', self.target)
+
+    def test_delete_trunk(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'delete_trunk', self.target)
+
+    def test_get_subports(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_subports', self.target)
+
+    def test_add_subports(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'add_subports', self.target)
+
+    def test_remove_subports(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'remove_subports', self.target)

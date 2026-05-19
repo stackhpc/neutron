@@ -21,13 +21,13 @@ from neutron.objects import ipam as ipam_objs
 # Database operations for Neutron's DB-backed IPAM driver
 
 
-class IpamSubnetManager(object):
+class IpamSubnetManager:
 
     @classmethod
     def load_by_neutron_subnet_id(cls, context, neutron_subnet_id):
 
         objs = ipam_objs.IpamSubnet.get_objects(
-                context, neutron_subnet_id=neutron_subnet_id)
+            context, neutron_subnet_id=neutron_subnet_id)
         return objs.pop() if objs else None
 
     def __init__(self, ipam_subnet_id, neutron_subnet_id):
@@ -65,7 +65,7 @@ class IpamSubnetManager(object):
         :param neutron_subnet_id: neutron subnet id associated with ipam subnet
         """
         return ipam_objs.IpamSubnet.delete_objects(
-             context, neutron_subnet_id=neutron_subnet_id)
+            context, neutron_subnet_id=neutron_subnet_id)
 
     def create_pool(self, context, pool_start, pool_end):
         """Create an allocation pool for the subnet.
@@ -99,9 +99,9 @@ class IpamSubnetManager(object):
     def check_unique_allocation(self, context, ip_address):
         """Validate that the IP address on the subnet is not in use."""
         return not ipam_objs.IpamAllocation.objects_exist(
-                     context, ipam_subnet_id=self._ipam_subnet_id,
-                     status=const.IPAM_ALLOCATION_STATUS_ALLOCATED,
-                     ip_address=ip_address)
+            context, ipam_subnet_id=self._ipam_subnet_id,
+            status=const.IPAM_ALLOCATION_STATUS_ALLOCATED,
+            ip_address=ip_address)
 
     def list_allocations(self, context,
                          status=const.IPAM_ALLOCATION_STATUS_ALLOCATED):

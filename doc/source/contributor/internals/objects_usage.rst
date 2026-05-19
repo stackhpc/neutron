@@ -21,8 +21,8 @@
       (Avoid deeper levels because they do not render well.)
 
 
-Objects in neutron
-==================
+Objects
+=======
 
 Object versioning is a key concept in achieving rolling upgrades. Since its
 initial implementation by the nova community, a versioned object model has been
@@ -374,8 +374,8 @@ types that can be used to implement them.
     # implemented in some object-specific way.
     synthetic_fields = ['dhcp_agents', 'shared', 'subnets']
 
-:code:`ObjectField` and :code:`ListOfObjectsField`  take the name of object class
-as an argument.
+:code:`ObjectField` and :code:`ListOfObjectsField`  take the name of object
+class as an argument.
 
 
 Implementing custom synthetic fields
@@ -644,15 +644,14 @@ four releases newer than what is running on the computes.
 Known fast forward upgrade windows are:
 
 * Red Hat OpenStack Platform (RHOSP): X -> X+3 [#]_
-* SuSE OpenStack Cloud (SOC): X -> X+2 [#]_
 * Ubuntu Cloud Archive: X -> X+4 [#]_
 
 Therefore removal of OVO version downgrade code should be removed in the fifth
 cycle after the code was introduced.  For example, if an object version was
 introduced in Ocata then it can be removed in Train.
 
-Backward compatibility for tenant_id
-------------------------------------
+Backward compatibility for project_id
+-------------------------------------
 All objects can support :code:`tenant_id` and :code:`project_id` filters and
 fields at the same time; it is automatically enabled for all objects that have
 a :code:`project_id` field. The base :code:`NeutronDbObject` class has support
@@ -690,6 +689,5 @@ References
 .. [#] https://docs.openstack.org/neutron/latest/contributor/internals/db_layer.html#the-standard-attribute-table
 .. [#] https://opendev.org/openstack/neutron/src/tag/ocata-eol/neutron/objects/rbac_db.py#L291
 .. [#] https://access.redhat.com/support/policy/updates/openstack/platform/
-.. [#] https://www.suse.com/releasenotes/x86_64/SUSE-OPENSTACK-CLOUD/8/#Upgrade
 .. [#] https://www.ubuntu.com/about/release-cycle
 .. [#] https://opendev.org/openstack/neutron-lib/src/neutron_lib/objects/utils.py

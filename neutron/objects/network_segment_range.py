@@ -21,6 +21,7 @@ from neutron_lib.db import resource_extend
 from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions as n_exc
 from neutron_lib.objects import common_types
+from oslo_utils import uuidutils
 from oslo_versionedobjects import fields as obj_fields
 from sqlalchemy import and_
 from sqlalchemy import not_
@@ -29,6 +30,7 @@ from sqlalchemy import sql
 
 from neutron._i18n import _
 from neutron.common import _constants as common_constants
+from neutron.common import utils as n_utils
 from neutron.db.models import network_segment_range as range_model
 from neutron.db.models.plugins.ml2 import geneveallocation as \
     geneve_alloc_model
@@ -52,7 +54,9 @@ models_map = {
 @base.NeutronObjectRegistry.register
 class NetworkSegmentRange(base.NeutronDbObject):
     # Version 1.0: Initial version
-    VERSION = '1.0'
+    # Version 1.1: Add unique constraint and make 'physical_network' not
+    #              nullable
+    VERSION = '1.1'
 
     db_model = range_model.NetworkSegmentRange
 
@@ -66,13 +70,13 @@ class NetworkSegmentRange(base.NeutronDbObject):
         'project_id': obj_fields.StringField(nullable=True),
         'network_type': common_types.NetworkSegmentRangeNetworkTypeEnumField(
             nullable=False),
-        'physical_network': obj_fields.StringField(nullable=True),
+        'physical_network': obj_fields.StringField(nullable=False),
         'minimum': obj_fields.IntegerField(nullable=True),
         'maximum': obj_fields.IntegerField(nullable=True)
     }
 
     def to_dict(self, fields=None):
-        _dict = super(NetworkSegmentRange, self).to_dict()
+        _dict = super().to_dict()
         # extend the network segment range dict with `available` and `used`
         # fields
         _dict.update({'available': self._get_available_allocation()})
@@ -93,11 +97,11 @@ class NetworkSegmentRange(base.NeutronDbObject):
 
     def create(self):
         self._check_shared_project_id('create')
-        super(NetworkSegmentRange, self).create()
+        super().create()
 
     def update(self):
         self._check_shared_project_id('update')
-        super(NetworkSegmentRange, self).update()
+        super().update()
 
     def _get_allocation_model_details(self):
         model = models_map.get(self.network_type)
@@ -129,6 +133,7 @@ class NetworkSegmentRange(base.NeutronDbObject):
             return [segmentation_id for (segmentation_id,) in alloc_available]
 
     def _get_used_allocation_mapping(self):
+        phys_net = self.physical_network or None
         with self.db_context_reader(self.obj_context):
             query = self.obj_context.session.query(
                 segments_model.NetworkSegment.segmentation_id,
@@ -136,8 +141,7 @@ class NetworkSegmentRange(base.NeutronDbObject):
             alloc_used = (query.filter(and_(
                 segments_model.NetworkSegment.network_type ==
                 self.network_type,
-                segments_model.NetworkSegment.physical_network ==
-                self.physical_network,
+                segments_model.NetworkSegment.physical_network == phys_net,
                 segments_model.NetworkSegment.segmentation_id >= self.minimum,
                 segments_model.NetworkSegment.segmentation_id <= self.maximum))
                           .filter(segments_model.NetworkSegment.network_id ==
@@ -147,8 +151,8 @@ class NetworkSegmentRange(base.NeutronDbObject):
     @classmethod
     def _build_query_segments(cls, context, model, network_type, **filters):
         columns = set(dict(model.__table__.columns))
-        model_filters = dict((k, filters[k])
-                             for k in columns & set(filters.keys()))
+        model_filters = {k: filters[k]
+                         for k in columns & set(filters.keys())}
         query = (context.session.query(model)
                  .filter_by(allocated=False, **model_filters).distinct())
         _and = and_(
@@ -188,7 +192,7 @@ class NetworkSegmentRange(base.NeutronDbObject):
                     'physical_network' in _filters):
                 shared_ranges.filter(cls.db_model.physical_network ==
                                      _filters['physical_network'])
-            segment_ids = set([])
+            segment_ids = set()
             for shared_range in shared_ranges.all():
                 segment_ids.update(set(range(shared_range.minimum,
                                              shared_range.maximum + 1)))
@@ -229,3 +233,47 @@ class NetworkSegmentRange(base.NeutronDbObject):
                        for _range in segment_ranges]
             query = query.filter(or_(*clauses))
             return query.limit(common_constants.IDPOOL_SELECT_SIZE).all()
+
+    @classmethod
+    def delete_expired_default_network_segment_ranges(
+            cls, context, network_type, start_time):
+        model = models_map.get(network_type)
+        if not model:
+            msg = (_("network_type '%s' unknown for getting allocation "
+                     "information") % network_type)
+            raise n_exc.InvalidInput(error_message=msg)
+        created_at = n_utils.ts_to_datetime(start_time)
+        with cls.db_context_writer(context):
+            nsr_ids = context.session.query(cls.db_model.id).filter(
+                cls.db_model.default == sql.expression.true(),
+                cls.db_model.network_type == network_type,
+                cls.db_model.created_at != created_at).all()
+            nsr_ids = [nsr_id[0] for nsr_id in nsr_ids]
+            if nsr_ids:
+                NetworkSegmentRange.delete_objects(context, id=nsr_ids)
+
+    @classmethod
+    def new_default(cls, context, network_type, physical_network,
+                    minimum, maximum, start_time):
+        physical_network = physical_network or ''
+        model = models_map.get(network_type)
+        if not model:
+            msg = (_("network_type '%s' unknown for getting allocation "
+                     "information") % network_type)
+            raise n_exc.InvalidInput(error_message=msg)
+        created_at = n_utils.ts_to_datetime(start_time)
+        with cls.db_context_writer(context):
+            if context.session.query(cls.db_model).filter(
+                cls.db_model.default == sql.expression.true(),
+                cls.db_model.shared == sql.expression.true(),
+                cls.db_model.network_type == network_type,
+                cls.db_model.physical_network == physical_network,
+                cls.db_model.minimum == minimum,
+                cls.db_model.maximum == maximum,
+                cls.db_model.created_at == created_at,
+            ).first():
+                return
+
+        cls(context, id=uuidutils.generate_uuid(), default=True, shared=True,
+            network_type=network_type, physical_network=physical_network,
+            minimum=minimum, maximum=maximum, created_at=created_at).create()

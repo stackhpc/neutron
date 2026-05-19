@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import os
 import pprint
 
@@ -31,12 +32,12 @@ object_data = {
     'AddressGroupRBAC': '1.1-be82ed54376b85ee4f963d479ac48c91',
     'AddressScope': '1.1-dd0dfdb67775892d3adc090e28e43bd8',
     'AddressScopeRBAC': '1.1-be82ed54376b85ee4f963d479ac48c91',
-    'Agent': '1.1-64b670752d57b3c7602cb136e0338507',
+    'Agent': '1.1-4feb0abf8732a17c16dee962091d9203',
     'AllowedAddressPair': '1.0-9f9186b6f952fbf31d257b0458b852c0',
     'AutoAllocatedTopology': '1.0-74642e58c53bf3610dc224c59f81b242',
     'ConntrackHelper': '1.0-b1a50cfe18178db50c7f206e75613f4b',
     'DefaultSecurityGroup': '1.0-971520cb2e0ec06d747885a0cf78347f',
-    'DistributedPortBinding': '1.0-39c0d17b281991dcb66716fee5a8bef2',
+    'DistributedPortBinding': '1.0-575793af113535b8eae1a0c1eab906e2',
     'DNSNameServer': '1.0-bf87a85327e2d812d1666ede99d9918b',
     'ExternalNetwork': '1.0-53d885e033cb931f9bb3bdd6bbe3f0ce',
     'DvrFipGatewayPortAgentBinding': '1.0-ee2af3296265a5463de0bc3695b35b51',
@@ -65,24 +66,27 @@ object_data = {
     'MeteringLabelRule': '2.0-0ad09894c62e1ce6e868f725158959ba',
     'Log': '1.0-6391351c0f34ed34375a19202f361d24',
     'NDPProxy': '1.0-a6597d9caac3bb0d63f943f82e4dda8c',
-    'Network': '1.1-c3e9ecc0618ee934181d91b143a48901',
+    'Network': '1.2-0221c921b40f11b237e6a274984f238a',
     'NetworkDhcpAgentBinding': '1.1-d9443c88809ffa4c45a0a5a48134b54a',
     'NetworkDNSDomain': '1.0-420db7910294608534c1e2e30d6d8319',
     'NetworkPortSecurity': '1.0-b30802391a87945ee9c07582b4ff95e3',
     'NetworkRBAC': '1.3-be82ed54376b85ee4f963d479ac48c91',
     'NetworkSegment': '1.0-57b7f2960971e3b95ded20cbc59244a8',
-    'NetworkSegmentRange': '1.0-bdec1fffc9058ea676089b1f2f2b3cf3',
+    'NetworkSegmentRange': '1.1-ed71c4bd2d3f06c3da5b4a1b3069b69f',
     'NetworkSubnetLock': '1.0-140de39d4b86ae346dc3d70b885bea53',
-    'Port': '1.7-d8c1cfe42cfa3719a5d810eeab79e006',
+    'Port': '1.10-ae84f686bfc3deb4017495134da6ef04',
+    'PortHardwareOffloadType': '1.0-5f424d02b144fd1832ac3e6b03662674',
     'PortDeviceProfile': '1.0-b98c7083cc3e93d176fd7a91ae13af32',
+    'PortHints': '1.0-e6d029e62d66b4384dfbe220cc027c21',
     'PortNumaAffinityPolicy': '1.0-38fcea43e7bfb2536461f3d053c43aa3',
-    'PortBinding': '1.0-3306deeaa6deb01e33af06777d48d578',
+    'PortBinding': '1.0-8c30695f87c700d9f435b160519e3400',
     'PortBindingLevel': '1.1-50d47f63218f87581b6cd9a62db574e5',
     'PortDataPlaneStatus': '1.0-25be74bda46c749653a10357676c0ab2',
     'PortDNS': '1.1-c5ca2dc172bdd5fafee3fc986d1d7023',
     'PortForwarding': '1.3-402b1fb5a754808b82a966c95f468113',
     'PortSecurity': '1.0-b30802391a87945ee9c07582b4ff95e3',
     'PortUplinkStatusPropagation': '1.1-f0a4ca451a941910376c33616dea5de2',
+    'PortTrusted': '1.0-8312fb91937412cdeb92c3279059c7ce',
     'ProviderResourceAssociation': '1.0-05ab2d5a3017e5ce9dd381328f285f34',
     'ProvisioningBlock': '1.0-c19d6d05bfa8143533471c1296066125',
     'QosBandwidthLimitRule': '1.5-51b662b12a8d1dfa89288d826c6d26d3',
@@ -105,19 +109,20 @@ object_data = {
     'ResourceDelta': '1.0-a980b37e0a52618b5af8db29af18be76',
     'Route': '1.0-a9883a63b416126f9e345523ec09483b',
     'Router': '1.1-614fa16cc99c60e4fc19ac1b31a52291',
-    'RouterExtraAttributes': '1.0-ef8d61ae2864f0ec9af0ab7939cab318',
+    'RouterExtraAttributes': '1.1-19c45c32098d2aae8e1a22d18944a954',
     'RouterL3AgentBinding': '1.0-c5ba6c95e3a4c1236a55f490cd67da82',
     'RouterNDPProxyState': '1.0-4042e475bf173d1d8d17adb962eae1b2',
     'RouterPort': '1.0-c8c8f499bcdd59186fcd83f323106908',
     'RouterRoute': '1.0-07fc5337c801fb8c6ccfbcc5afb45907',
-    'SecurityGroup': '1.5-7eb8e44c327512e7bb1759ab41ede44b',
+    'SecurityGroup': '1.6-7eb8e44c327512e7bb1759ab41ede44b',
+    'SecurityGroupDefaultRule': '1.0-d498fd4993b6732f3f266c4b7e292e22',
     'SecurityGroupPortBinding': '1.0-6879d5c0af80396ef5a72934b6a6ef20',
     'SecurityGroupRBAC': '1.1-be82ed54376b85ee4f963d479ac48c91',
-    'SecurityGroupRule': '1.2-27793368d4ac35f2ed6e0bb653c6aaad',
+    'SecurityGroupRule': '1.3-60cdd6434e35979d2b280ed28a9598d3',
     'SegmentHostMapping': '1.0-521597cf82ead26217c3bd10738f00f0',
     'ServiceProfile': '1.0-9beafc9e7d081b8258f3c5cb66ac5eed',
     'StandardAttribute': '1.0-617d4f46524c4ce734a6fc1cc0ac6a0b',
-    'Subnet': '1.1-5b7e1789a1732259d1e28b4bd87eb1c2',
+    'Subnet': '1.2-476759b72624961bb4aade8203289227',
     'SubnetDNSPublishFixedIP': '1.0-db22af6fa20b143986f0cbe06cbfe0ea',
     'SubnetPool': '1.1-a0e03895d1a6e7b9d4ab7b0ca13c3867',
     'SubnetPoolPrefix': '1.0-13c15144135eb869faa4a76dc3ee3b6c',
@@ -135,7 +140,7 @@ object_data = {
 class TestObjectVersions(test_base.BaseTestCase):
 
     def setUp(self):
-        super(TestObjectVersions, self).setUp()
+        super().setUp()
         # NOTE(ihrachys): seed registry with all objects under neutron.objects
         # before validating the hashes
         objects.register_objects()
@@ -150,7 +155,32 @@ class TestObjectVersions(test_base.BaseTestCase):
                 hashes_file.write(pprint.pformat(fingerprints))
 
         expected, actual = checker.test_hashes(object_data)
-        self.assertEqual(expected, actual,
-                         'Some objects have changed; please make sure the '
-                         'versions have been bumped, and then update their '
-                         'hashes in the object_data map in this test module.')
+        try:
+            self.assertEqual(
+                expected, actual,
+                'Some objects have changed; please make sure the '
+                'versions have been bumped, and then update their '
+                'hashes in the object_data map in this test module.')
+        except Exception:
+            # FIXME(stephenfin): This is workaround for a bug fix in
+            # neutron-lib which had the side effect of changing hashes. The
+            # change in hash has no impact at runtime since our behavior and
+            # data remain unchanged. We should drop all of the below and the
+            # try-except above once we bump our neutron-lib minimum to a
+            # version that includes the fix [1].
+            #
+            # [1] https://review.opendev.org/c/openstack/neutron-lib/+/985636
+            old_object_data = copy.copy(object_data)
+            old_object_data.update({
+                'Agent': '1.1-64b670752d57b3c7602cb136e0338507',
+                'DistributedPortBinding': '1.0-39c0d17b281991dcb66716fee5a8bef2',  # noqa: E501
+                'PortBinding': '1.0-3306deeaa6deb01e33af06777d48d578',
+                'PortHints': '1.0-9ebf6e12fa427809476a92c7432352b8',
+            })
+
+            expected, actual = checker.test_hashes(old_object_data)
+            self.assertEqual(
+                expected, actual,
+                'Some objects have changed; please make sure the '
+                'versions have been bumped, and then update their '
+                'hashes in the object_data map in this test module.')

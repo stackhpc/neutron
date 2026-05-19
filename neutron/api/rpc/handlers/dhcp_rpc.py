@@ -43,7 +43,7 @@ from neutron.quota import resource_registry
 LOG = logging.getLogger(__name__)
 
 
-class DhcpRpcCallback(object):
+class DhcpRpcCallback:
     """DHCP agent RPC callback in plugin implementations.
 
     This class implements the server side of an rpc interface.  The client
@@ -116,11 +116,9 @@ class DhcpRpcCallback(object):
         try:
             if action == 'create_port':
                 return p_utils.create_port(plugin, context, port)
-            elif action == 'update_port':
+            if action == 'update_port':
                 return plugin.update_port(context, port['id'], port)
-            else:
-                msg = _('Unrecognized action')
-                raise exceptions.Invalid(message=msg)
+            raise exceptions.Invalid(message=_('Unrecognized action'))
         except (db_exc.DBReferenceError,
                 exceptions.NetworkNotFound,
                 exceptions.SubnetNotFound,
@@ -134,10 +132,9 @@ class DhcpRpcCallback(object):
                     try:
                         subnet_id = port['port']['fixed_ips'][0]['subnet_id']
                         plugin.get_subnet(context, subnet_id)
+                        ctxt.reraise = True
                     except exceptions.SubnetNotFound:
                         pass
-                    else:
-                        ctxt.reraise = True
                 if ctxt.reraise:
                     net_id = port['port']['network_id']
                     LOG.warning("Action %(action)s for network %(net_id)s "
@@ -209,6 +206,7 @@ class DhcpRpcCallback(object):
         seg_subnets = [subnet for subnet in subnets if
                        subnet.get('segment_id')]
         nonlocal_subnets = []
+        network_segments = []
         # If there are no subnets with segments, then this is not a routed
         # network and no filtering should take place.
         if seg_plug and seg_subnets:
@@ -226,22 +224,7 @@ class DhcpRpcCallback(object):
                                 if subnet.get('segment_id') not in segment_ids]
             subnets = [subnet for subnet in seg_subnets
                        if subnet.get('segment_id') in segment_ids]
-        # NOTE(kevinbenton): we sort these because the agent builds tags
-        # based on position in the list and has to restart the process if
-        # the order changes.
-        # TODO(ralonsoh): in Z+, remove "tenant_id" parameter. DHCP agents
-        # should read only "project_id".
-        ret = {'id': network.id,
-               'project_id': network.project_id,
-               'tenant_id': network.project_id,
-               'admin_state_up': network.admin_state_up,
-               'subnets': sorted(subnets, key=operator.itemgetter('id')),
-               'non_local_subnets': sorted(nonlocal_subnets,
-                                           key=operator.itemgetter('id')),
-               'ports': ports,
-               'mtu': network.mtu}
-        if seg_plug:
-            ret['segments'] = [{
+            network_segments = [{
                 'id': segment.id,
                 'network_id': segment.network_id,
                 'name': segment.name,
@@ -251,6 +234,20 @@ class DhcpRpcCallback(object):
                 'is_dynamic': segment.is_dynamic,
                 'segment_index': segment.segment_index,
                 'hosts': segment.hosts} for segment in network.segments]
+
+        # NOTE(kevinbenton): we sort these because the agent builds tags
+        # based on position in the list and has to restart the process if
+        # the order changes.
+        ret = {'id': network.id,
+               'project_id': network.project_id,
+               'admin_state_up': network.admin_state_up,
+               'subnets': sorted(subnets, key=operator.itemgetter('id')),
+               'non_local_subnets': sorted(nonlocal_subnets,
+                                           key=operator.itemgetter('id')),
+               'ports': ports,
+               'mtu': network.mtu}
+        if network_segments:
+            ret['segments'] = network_segments
         return ret
 
     @db_api.retry_db_errors
@@ -313,7 +310,7 @@ class DhcpRpcCallback(object):
             old_port = plugin.get_port(context, port['id'])
             if (old_port['device_id'] !=
                     constants.DEVICE_ID_RESERVED_DHCP_PORT and
-                old_port['device_id'] !=
+                    old_port['device_id'] !=
                     utils.get_dhcp_agent_device_id(network_id, host)):
                 return
             if not self._is_dhcp_agent_hosting_network(plugin, context, host,

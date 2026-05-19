@@ -19,7 +19,6 @@ Below you can find a list of checks specific to this repository.
 - [N329] Use assertCountEqual() instead of assertItemsEqual()
 - [N330] Use assertEqual(*empty*, observed) instead of
          assertEqual(observed, *empty*)
-- [N331] Detect wrong usage with assertTrue(isinstance()).
 - [N332] Use assertEqual(expected_http_code, observed_http_code) instead of
          assertEqual(observed_http_code, expected_http_code).
 - [N340] Check usage of <module>.i18n (and neutron.i18n)
@@ -28,7 +27,6 @@ Below you can find a list of checks specific to this repository.
 - [N344] Python 3: Do not use filter(lambda obj: test(obj), data). Replace it
   with [obj for obj in data if test(obj)].
 - [N346] Use neutron_lib.db.api.sqla_listen rather than sqlalchemy
-- [N347] Test code must not import mock library
 - [N348] Test code must not import six library
 
 .. note::

@@ -23,8 +23,10 @@ class PeriodicWorkerTestCase(base.BaseTestCase):
 
     def test_periodic_worker_lifecycle(self):
         check_function = mock.Mock()
+        desc = 'Periodic worker for "PeriodicWorkerTestCase"'
         worker = neutron_worker.PeriodicWorker(
-            check_function, interval=1, initial_delay=1)
+            check_function, interval=1, initial_delay=1,
+            desc=desc)
         self.addCleanup(worker.stop)
         worker.wait()
         self.assertFalse(check_function.called)

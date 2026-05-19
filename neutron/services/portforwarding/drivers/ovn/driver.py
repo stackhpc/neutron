@@ -10,20 +10,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_log import log
-
-from ovsdbapp.backend.ovs_idl import idlutils
-from ovsdbapp import constants as ovsdbapp_const
-
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as const
 from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
+from oslo_log import log
+from oslo_utils import strutils
+from ovsdbapp.backend.ovs_idl import idlutils
+from ovsdbapp import constants as ovsdbapp_const
 
 from neutron.common.ovn import constants as ovn_const
+from neutron.common.ovn import exceptions as ovn_exc
 from neutron.common.ovn import utils as ovn_utils
+from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron import manager
 from neutron.objects import port_forwarding as port_forwarding_obj
@@ -32,7 +33,7 @@ from neutron.services.portforwarding import constants as pf_const
 LOG = log.getLogger(__name__)
 
 
-class OVNPortForwardingHandler(object):
+class OVNPortForwardingHandler:
     @staticmethod
     def _get_lb_protocol(pf_obj):
         return pf_const.LB_PROTOCOL_MAP[pf_obj.protocol]
@@ -55,10 +56,10 @@ class OVNPortForwardingHandler(object):
         lb_name = cls.lb_name(pf_obj.floatingip_id,
                               cls._get_lb_protocol(pf_obj),
                               external_port)
-        vip = "{}:{}".format(pf_obj.floating_ip_address, pf_obj.external_port)
+        vip = f"{pf_obj.floating_ip_address}:{pf_obj.external_port}"
         internal_ip = "{}:{}".format(pf_obj.internal_ip_address,
                                      pf_obj.internal_port)
-        rtr_name = 'neutron-{}'.format(pf_obj.router_id)
+        rtr_name = f'neutron-{pf_obj.router_id}'
         return lb_name, vip, [internal_ip], rtr_name
 
     def _get_lbs_and_ls(self, nb_ovn, payload):
@@ -118,11 +119,11 @@ class OVNPortForwardingHandler(object):
             ovn_lss = [port.external_ids.get(ext_id_key)
                        for port in ovn_lr.ports
                        if port.external_ids.get(ext_id_key) and
-                       not port.gateway_chassis]
+                       not port.ha_chassis_group]
             for ls_name in ovn_lss:
                 try:
                     ovn_txn.add(nb_ovn.ls_lb_add(ls_name, lb_name,
-                        may_exist=True))
+                                                 may_exist=True))
                 except idlutils.RowNotFound:
                     # If one or more logical_switches are deleted
                     # log warning for those and continue with the rest.
@@ -130,7 +131,41 @@ class OVNPortForwardingHandler(object):
                                 "Switch %s failed as it is not found",
                                 lb_name, ls_name)
 
+    def _validate_router_networks(self, nb_ovn, router_id):
+        if not ovn_conf.is_ovn_distributed_floating_ip():
+            return
+        rtr_name = f'neutron-{router_id}'
+        ovn_lr = nb_ovn.get_lrouter(rtr_name)
+        if not ovn_lr:
+            return
+        for lrouter_port in ovn_lr.ports:
+            is_ext_gw = strutils.bool_from_string(
+                lrouter_port.external_ids.get(ovn_const.OVN_ROUTER_IS_EXT_GW))
+            if is_ext_gw:
+                # NOTE(slaweq): This is external gateway port of the router and
+                # this not needs to be checked
+                continue
+            ovn_network_name = lrouter_port.external_ids.get(
+                ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY)
+            if not ovn_network_name:
+                continue
+            network_id = ovn_utils.get_neutron_name(ovn_network_name)
+            if not network_id:
+                continue
+            if ovn_utils.is_provider_network(network_id):
+                LOG.warning("Port forwarding configured in the router "
+                            "%(router_id)s will not work properly as "
+                            "distributed floating IPs are enabled "
+                            "and at least one provider network "
+                            "(%(network_id)s) is connected to that router. "
+                            "See bug https://launchpad.net/bugs/2028846 for "
+                            "more details.", {
+                                'router_id': router_id,
+                                'network_id': network_id})
+                return
+
     def port_forwarding_created(self, ovn_txn, nb_ovn, pf_obj):
+        self._validate_router_networks(nb_ovn, pf_obj.router_id)
         pf_objs = pf_obj.unroll_port_ranges()
         is_range = len(pf_objs) > 1
         for pf_obj in pf_objs:
@@ -189,12 +224,29 @@ class OVNPortForwardingHandler(object):
 
 
 @registry.has_registry_receivers
-class OVNPortForwarding(object):
+class OVNPortForwarding:
 
     def __init__(self, l3_plugin):
+        self._validate_configuration()
         self._l3_plugin = l3_plugin
         self._pf_plugin_property = None
         self._handler = OVNPortForwardingHandler()
+
+    def _validate_configuration(self):
+        """This method checks if Neutron config is compatible with OVN and PFs.
+
+        It stops process in case when provider network types (vlan/flat)
+        are enabled as tenant networks AND distributed floating IPs are enabled
+        as this configuration is not working fine with FIP PFs in ML2/OVN case.
+        """
+        try:
+            ovn_utils.validate_port_forwarding_configuration()
+        except ovn_exc.InvalidPortForwardingConfiguration:
+            LOG.warning("Neutron configuration is invalid for port "
+                        "forwardings and ML2/OVN backend. "
+                        "It is not valid to use together provider network "
+                        "types (vlan/flat) as tenant networks, distributed "
+                        "floating IPs and port forwardings.")
 
     @property
     def _pf_plugin(self):
@@ -233,8 +285,8 @@ class OVNPortForwarding(object):
         """
         check_rev_tuples = []
         for lb_name in self._handler.lb_names(fip_id):
-            check_rev_cmd = ovn_nb.check_revision_number(lb_name, fip_obj,
-                ovn_const.TYPE_FLOATINGIPS, if_exists=True)
+            check_rev_cmd = ovn_nb.check_revision_number(
+                lb_name, fip_obj, ovn_const.TYPE_FLOATINGIPS, if_exists=True)
             ovn_txn.add(check_rev_cmd)
             check_rev_tuples.append((check_rev_cmd, fip_obj))
         return check_rev_tuples
@@ -256,15 +308,15 @@ class OVNPortForwarding(object):
                 self._handler.port_forwarding_created(ovn_txn, ovn_nb,
                                                       payload.latest_state)
                 self._l3_plugin.update_floatingip_status(
-                        context, payload.latest_state.floatingip_id,
-                        const.FLOATINGIP_STATUS_ACTIVE)
+                    context, payload.latest_state.floatingip_id,
+                    const.FLOATINGIP_STATUS_ACTIVE)
             elif event_type == events.AFTER_UPDATE:
                 self._handler.port_forwarding_updated(
                     ovn_txn, ovn_nb,
                     payload.latest_state, payload.states[0])
             elif event_type == events.AFTER_DELETE:
                 pfs = _pf_plugin.get_floatingip_port_forwardings(
-                          context, payload.states[0].floatingip_id)
+                    context, payload.states[0].floatingip_id)
                 self._handler.port_forwarding_deleted(ovn_txn, ovn_nb,
                                                       payload.states[0])
                 if not pfs:

@@ -17,6 +17,7 @@ from unittest import mock
 from neutron_lib import context
 from neutron_lib import exceptions as lib_exc
 from neutron_lib.objects import exceptions as obj_exc
+from neutron_lib.plugins import constants as plugin_consts
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 
@@ -37,7 +38,7 @@ DB_PLUGIN_KLASS = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 class TestConntrackHelperPlugin(testlib_api.SqlTestCase):
 
     def setUp(self):
-        super(TestConntrackHelperPlugin, self).setUp()
+        super().setUp()
 
         with mock.patch.object(
                 resource_manager.ResourceCallbacksManager, '_singleton',
@@ -69,10 +70,8 @@ class TestConntrackHelperPlugin(testlib_api.SqlTestCase):
         cfg.CONF.set_override("service_plugins", ["router",
                                                   "conntrack_helper"])
         manager.init()
-        # TODO(hjensas): Add CONNTRACKHELPER to neutron-lib Well-known
-        #  service type constants.
-        self.cth_plugin = directory.get_plugin("CONNTRACKHELPER")
-        self.ctxt = context.Context('admin', 'fake_tenant')
+        self.cth_plugin = directory.get_plugin(plugin_consts.CONNTRACKHELPER)
+        self.ctxt = context.Context('admin', 'fake_project')
         mock.patch.object(self.ctxt.session, 'refresh').start()
         mock.patch.object(self.ctxt.session, 'expunge').start()
 

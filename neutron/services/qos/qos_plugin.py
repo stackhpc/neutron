@@ -42,6 +42,7 @@ from neutron_lib.db import resource_extend
 from neutron_lib import exceptions as lib_exc
 from neutron_lib.exceptions import qos as qos_exc
 from neutron_lib.placement import client as pl_client
+from neutron_lib.placement import constants as pl_constants
 from neutron_lib.placement import utils as pl_utils
 from neutron_lib.services.qos import constants as qos_consts
 import os_resource_classes as orc
@@ -50,7 +51,6 @@ from oslo_log import log as logging
 
 from neutron._i18n import _
 from neutron.db import db_base_plugin_common
-from neutron.exceptions import qos as neutron_qos_exc
 from neutron.extensions import qos
 from neutron.objects import base as base_obj
 from neutron.objects import network as network_object
@@ -91,10 +91,9 @@ class QoSPlugin(qos.QoSPluginBase):
 
     __native_pagination_support = True
     __native_sorting_support = True
-    __filter_validation_support = True
 
     def __init__(self):
-        super(QoSPlugin, self).__init__()
+        super().__init__()
         self.driver_manager = manager.QosServiceDriverManager()
         self._placement_client = pl_client.PlacementAPIClient(cfg.CONF)
 
@@ -153,11 +152,11 @@ class QoSPlugin(qos.QoSPluginBase):
             qos_id, port_db.id, port_res[portbindings.VNIC_TYPE],
             port_db.network_id)
         min_pps_request_group = QoSPlugin._get_min_pps_request_group(
-                qos_id, port_db.id, port_res[portbindings.VNIC_TYPE])
+            qos_id, port_db.id, port_res[portbindings.VNIC_TYPE])
 
         port_res['resource_request'] = (
             QoSPlugin._get_resource_request(min_bw_request_group,
-                min_pps_request_group))
+                                            min_pps_request_group))
         return port_res
 
     @staticmethod
@@ -197,11 +196,11 @@ class QoSPlugin(qos.QoSPluginBase):
                                   network_id, min_bw_rules=None,
                                   segments=None):
         request_group = {}
-        if not min_bw_rules:
+        if min_bw_rules is None:
             min_bw_rules = rule_object.QosMinimumBandwidthRule.get_objects(
                 context.get_admin_context(), qos_policy_id=qos_policy_id)
         min_bw_resources = QoSPlugin._get_min_bw_resources(min_bw_rules)
-        if not segments:
+        if segments is None:
             segments = network_object.NetworkSegment.get_objects(
                 context.get_admin_context(), network_id=network_id)
         min_bw_traits = QoSPlugin._get_min_bw_traits(vnic_type, segments)
@@ -218,7 +217,7 @@ class QoSPlugin(qos.QoSPluginBase):
     def _get_min_pps_request_group(qos_policy_id, port_id, vnic_type,
                                    min_pps_rules=None):
         request_group = {}
-        if not min_pps_rules:
+        if min_pps_rules is None:
             min_pps_rules = rule_object.QosMinimumPacketRateRule.get_objects(
                 context.get_admin_context(),
                 qos_policy_id=qos_policy_id)
@@ -254,17 +253,22 @@ class QoSPlugin(qos.QoSPluginBase):
         # support will be available. See Placement spec:
         # https://review.opendev.org/565730
         first_segment = segments[0]
-        if not first_segment or not first_segment.physical_network:
+        if not first_segment:
             return []
-        physnet_trait = pl_utils.physnet_trait(
-            first_segment.physical_network)
+        if not first_segment.physical_network:
+            # If there is no physical network this is because this is an
+            # overlay network (tunnelled network).
+            net_trait = pl_constants.TRAIT_NETWORK_TUNNEL
+        else:
+            net_trait = pl_utils.physnet_trait(first_segment.physical_network)
+
         # NOTE(ralonsoh): we should not rely on the current execution order of
         # the port extending functions. Although here we have
         # port_res[VNIC_TYPE], we should retrieve this value from the port DB
         # object instead.
         vnic_trait = pl_utils.vnic_type_trait(vnic_type)
 
-        return [physnet_trait, vnic_trait]
+        return [net_trait, vnic_trait]
 
     @staticmethod
     @resource_extend.extends([port_def.COLLECTION_NAME_BULK])
@@ -291,33 +295,41 @@ class QoSPlugin(qos.QoSPluginBase):
                     context.get_admin_context(), qos_policy_id=qos_id)
                 min_bw_rules[qos_id] = rules
 
+            if qos_id not in min_pps_rules:
+                rules = rule_object.QosMinimumPacketRateRule.get_objects(
+                    context.get_admin_context(), qos_policy_id=qos_id)
+                min_pps_rules[qos_id] = rules
+
+            if not min_bw_rules[qos_id] and not min_pps_rules[qos_id]:
+                port_res['resource_request'] = None
+                continue
+
             if net_id not in net_segments:
                 segments = network_object.NetworkSegment.get_objects(
                     context.get_admin_context(),
                     network_id=net_id)
                 net_segments[net_id] = segments
 
-            min_bw_request_group = QoSPlugin._get_min_bw_request_group(
-                qos_id, port_id, vnic_type, net_id,
-                min_bw_rules[qos_id], net_segments[net_id])
+            min_bw_request_group = None
+            if net_segments[net_id]:
+                min_bw_request_group = QoSPlugin._get_min_bw_request_group(
+                    qos_id, port_id, vnic_type, net_id,
+                    min_bw_rules=min_bw_rules[qos_id],
+                    segments=net_segments[net_id])
 
-            if qos_id not in min_pps_rules:
-                rules = rule_object.QosMinimumPacketRateRule.get_objects(
-                    context.get_admin_context(), qos_policy_id=qos_id)
-                min_pps_rules[qos_id] = rules
             min_pps_request_group = QoSPlugin._get_min_pps_request_group(
                 qos_id, port_id, vnic_type, min_pps_rules[qos_id])
 
             port_res['resource_request'] = (
                 QoSPlugin._get_resource_request(min_bw_request_group,
-                    min_pps_request_group))
+                                                min_pps_request_group))
 
         return ports_res
 
     def _get_ports_with_policy(self, context, policy):
         networks_ids = policy.get_bound_networks()
         ports_with_net_policy = ports_object.Port.get_objects(
-            context, network_id=networks_ids)
+            context, network_id=networks_ids) if networks_ids else []
 
         # Filter only this ports which don't have overwritten policy
         ports_with_net_policy = [
@@ -327,7 +339,7 @@ class QoSPlugin(qos.QoSPluginBase):
 
         ports_ids = policy.get_bound_ports()
         ports_with_policy = ports_object.Port.get_objects(
-            context, id=ports_ids)
+            context, id=ports_ids) if ports_ids else []
         return list(set(ports_with_policy + ports_with_net_policy))
 
     def _validate_create_port_callback(self, resource, event, trigger,
@@ -350,12 +362,12 @@ class QoSPlugin(qos.QoSPluginBase):
         orig_port = payload.states[0]
         port = payload.latest_state
         original_policy_id = (orig_port.get(qos_consts.QOS_POLICY_ID) or
-            orig_port.get(qos_consts.QOS_NETWORK_POLICY_ID))
+                              orig_port.get(qos_consts.QOS_NETWORK_POLICY_ID))
         if (qos_consts.QOS_POLICY_ID not in port and
                 qos_consts.QOS_NETWORK_POLICY_ID not in port):
             return
         policy_id = (port.get(qos_consts.QOS_POLICY_ID) or
-            port.get(qos_consts.QOS_NETWORK_POLICY_ID))
+                     port.get(qos_consts.QOS_NETWORK_POLICY_ID))
 
         if policy_id == original_policy_id:
             return
@@ -377,11 +389,9 @@ class QoSPlugin(qos.QoSPluginBase):
             # TODO(lajoskatona): move this to neutron-lib, see similar
             # dict @l125.
             if dir == 'egress':
-                drctn = orc.NET_BW_EGR_KILOBIT_PER_SEC
-            else:
-                drctn = orc.NET_BW_IGR_KILOBIT_PER_SEC
-            return {drctn: value}
-        elif isinstance(rule, rule_object.QosMinimumPacketRateRule):
+                return {orc.NET_BW_EGR_KILOBIT_PER_SEC: value}
+            return {orc.NET_BW_IGR_KILOBIT_PER_SEC: value}
+        if isinstance(rule, rule_object.QosMinimumPacketRateRule):
             value = rule.get('min_kpps')
             # TODO(przszc): move this to neutron-lib, see similar
             # dict @l268.
@@ -432,13 +442,13 @@ class QoSPlugin(qos.QoSPluginBase):
             for rc, value in translated_rule.items():
                 if (rc == orc.NET_PACKET_RATE_KILOPACKET_PER_SEC and
                         (orc.NET_PACKET_RATE_IGR_KILOPACKET_PER_SEC in
-                            alloc_diff[rp_uuid] or
-                        orc.NET_PACKET_RATE_EGR_KILOPACKET_PER_SEC in
-                            alloc_diff[rp_uuid]) or
+                         alloc_diff[rp_uuid] or
+                         orc.NET_PACKET_RATE_EGR_KILOPACKET_PER_SEC in
+                         alloc_diff[rp_uuid]) or
                         (rc in (orc.NET_PACKET_RATE_IGR_KILOPACKET_PER_SEC,
-                            orc.NET_PACKET_RATE_EGR_KILOPACKET_PER_SEC) and
-                        orc.NET_PACKET_RATE_KILOPACKET_PER_SEC in
-                            alloc_diff[rp_uuid])):
+                                orc.NET_PACKET_RATE_EGR_KILOPACKET_PER_SEC) and
+                         orc.NET_PACKET_RATE_KILOPACKET_PER_SEC in
+                         alloc_diff[rp_uuid])):
                     raise NotImplementedError(_(
                         'Changing from direction-less QoS minimum packet rate '
                         'rule to a direction-oriented minimum packet rate rule'
@@ -506,17 +516,19 @@ class QoSPlugin(qos.QoSPluginBase):
             desired_rules = desired_policy.get('rules')
 
         # Filter out rules that can't have resources allocated in Placement
-        original_rules = [r for r in original_rules
-            if (isinstance(r, (rule_object.QosMinimumBandwidthRule,
-                               rule_object.QosMinimumPacketRateRule)))]
-        desired_rules = [r for r in desired_rules
-            if (isinstance(r, (rule_object.QosMinimumBandwidthRule,
-                               rule_object.QosMinimumPacketRateRule)))]
+        original_rules = [
+            r for r in original_rules
+            if (isinstance(r, rule_object.QosMinimumBandwidthRule |
+                           rule_object.QosMinimumPacketRateRule))]
+        desired_rules = [
+            r for r in desired_rules
+            if (isinstance(r, rule_object.QosMinimumBandwidthRule |
+                           rule_object.QosMinimumPacketRateRule))]
         if not original_rules and not desired_rules:
             return
 
-        o_rule_types = set(r.rule_type for r in original_rules)
-        d_rule_types = set(r.rule_type for r in desired_rules)
+        o_rule_types = {r.rule_type for r in original_rules}
+        d_rule_types = {r.rule_type for r in desired_rules}
         allocation = orig_port['binding:profile'].get('allocation')
         if (not original_rules and desired_rules) or not allocation:
             LOG.warning("There was no QoS policy with minimum_bandwidth or "
@@ -552,7 +564,7 @@ class QoSPlugin(qos.QoSPluginBase):
         # port yet. We don't know if Placement API call is going to succeed.
         updated_allocation, rule_type_to_rp_map = (
             self._get_updated_port_allocation(orig_port, original_rules,
-                desired_rules))
+                                              desired_rules))
         alloc_diff = self._prepare_allocation_needs(orig_port,
                                                     rule_type_to_rp_map,
                                                     original_rules,
@@ -562,7 +574,7 @@ class QoSPlugin(qos.QoSPluginBase):
                 self._placement_client.update_qos_allocation(
                     consumer_uuid=device_id, alloc_diff=alloc_diff)
             except ks_exc.Conflict:
-                raise neutron_qos_exc.QosPlacementAllocationUpdateConflict(
+                raise qos_exc.QosPlacementAllocationUpdateConflict(
                     alloc_diff=alloc_diff, consumer=device_id)
 
         # NOTE(przszc): Upon successful allocation update in Placement we can
@@ -602,9 +614,9 @@ class QoSPlugin(qos.QoSPluginBase):
         network_id = payload.resource_id
         network = network_object.Network.get_object(context, id=network_id)
 
-        policy_id = network.qos_policy_id
-        if policy_id is None:
+        if not network or not getattr(network, 'qos_policy_id', None):
             return
+        policy_id = network.qos_policy_id
 
         policy = policy_object.QosPolicy.get_object(
             context.elevated(), id=policy_id)
@@ -622,22 +634,24 @@ class QoSPlugin(qos.QoSPluginBase):
             return
 
         original_policy = policy_object.QosPolicy.get_object(
-                context.elevated(), id=original_policy_id)
+            context.elevated(), id=original_policy_id)
         policy = policy_object.QosPolicy.get_object(
-                context.elevated(), id=policy_id)
+            context.elevated(), id=policy_id)
         ports = ports_object.Port.get_objects(
-                context, network_id=updated_network['id'])
+            context, network_id=updated_network['id'])
 
         # Filter compute bound ports without overwritten QoS policy
-        ports = [port for port in ports if (port.qos_policy_id is None and
-            nl_constants.DEVICE_OWNER_COMPUTE_PREFIX in port['device_owner'])]
+        ports = [port for port in ports
+                 if (port.qos_policy_id is None and
+                     nl_constants.DEVICE_OWNER_COMPUTE_PREFIX in
+                     port['device_owner'])]
 
         for port in ports:
             # Use _make_port_dict() to load extension data
             port_dict = trigger._make_port_dict(port)
             updated_port_attrs = {}
             self._change_placement_allocation(
-                    original_policy, policy, port_dict, updated_port_attrs)
+                original_policy, policy, port_dict, updated_port_attrs)
             for port_binding in port.bindings:
                 port_binding.profile = updated_port_attrs.get(
                     'binding:profile', {})
@@ -661,7 +675,7 @@ class QoSPlugin(qos.QoSPluginBase):
             context, policy, network_id=updated_network['id'])
 
         ports = ports_object.Port.get_objects(
-                context, network_id=updated_network['id'])
+            context, network_id=updated_network['id'])
         # Filter only this ports which don't have overwritten policy
         ports = [
             port for port in ports if port.qos_policy_id is None

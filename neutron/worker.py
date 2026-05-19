@@ -16,33 +16,35 @@ from oslo_service import loopingcall
 
 
 class NeutronBaseWorker(worker.BaseWorker):
-
-    def __init__(self, worker_process_count=1, set_proctitle=None):
+    def __init__(self, worker_process_count=1, set_proctitle=None,
+                 desc=None):
         set_proctitle = set_proctitle or cfg.CONF.setproctitle
-        super(NeutronBaseWorker, self).__init__(
+        super().__init__(
             worker_process_count=worker_process_count,
-            set_proctitle=set_proctitle
+            set_proctitle=set_proctitle,
+            desc=desc,
         )
 
     def start(self, name="neutron-server", desc=None):
-        super(NeutronBaseWorker, self).start(name=name, desc=desc)
+        super().start(name=name, desc=desc)
 
 
 class PeriodicWorker(NeutronBaseWorker):
     """A worker that runs a function at a fixed interval."""
 
-    def __init__(self, check_func, interval, initial_delay):
-        super(PeriodicWorker, self).__init__(worker_process_count=0)
-
+    def __init__(self, check_func, interval, initial_delay,
+                 desc=None):
+        super().__init__(worker_process_count=0, desc=desc)
         self._check_func = check_func
         self._loop = None
         self._interval = interval
         self._initial_delay = initial_delay
 
-    def start(self):
-        super(PeriodicWorker, self).start(desc="periodic worker")
+    def start(self, **kwargs):
+        super().start()
         if self._loop is None:
-            self._loop = loopingcall.FixedIntervalLoopingCall(self._check_func)
+            self._loop = loopingcall.FixedIntervalLoopingCall(
+                f=self._check_func)
         self._loop.start(interval=self._interval,
                          initial_delay=self._initial_delay)
 

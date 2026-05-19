@@ -5,6 +5,9 @@
       - openstack/grenade
       - openstack/neutron
     irrelevant-files: &openvswitch-irrelevant-files
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^releasenotes/.*$
@@ -16,30 +19,55 @@
       - ^neutron/tests/.*$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
       - ^neutron/agent/ovn/.*$
-      - ^neutron/agent/windows/.*$
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
       - ^neutron/plugins/ml2/drivers/ovn/.*$
+      - ^neutron/scheduler/l3_ovn_scheduler.py
       - ^neutron/services/ovn_l3/.*$
       - ^neutron/services/logapi/drivers/ovn/.*$
       - ^neutron/services/portforwarding/drivers/ovn/.*$
-      - ^neutron/services/qos/drivers/linuxbridge/.*$
       - ^neutron/services/qos/drivers/ovn/.*$
-      - ^neutron/services/trunk/drivers/linuxbridge/.*$
       - ^neutron/services/trunk/drivers/ovn/.*$
       - ^neutron/cmd/ovn/.*$
       - ^neutron/common/ovn/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
       - ^vagrant/.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
     vars:
+      grenade_devstack_localrc:
+        shared:
+          Q_AGENT: openvswitch
+          Q_ML2_TENANT_NETWORK_TYPE: vxlan
+          Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
+          NEUTRON_DEPLOY_MOD_WSGI: True
       devstack_services:
         etcd: false
         br-ex-tcpdump: true
         br-int-flows: true
+        # Neutron services
+        q-agt: true
+        q-dhcp: true
+        q-l3: true
+        q-meta: true
+        q-svc: false
+        neutron-api: true
+        neutron-rpc-server: true
+        neutron-periodic-workers: true
+        q-metering: true
+        ovn-controller: false
+        ovn-northd: false
+        q-ovn-metadata-agent: false
         # Cinder services
         c-api: false
         c-bak: false
@@ -58,7 +86,20 @@
               debug_iptables_rules: True
     group-vars:
       subnode:
+        grenade_devstack_localrc:
+          shared:
+            Q_AGENT: openvswitch
+            Q_ML2_TENANT_NETWORK_TYPE: vxlan
+            Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
         devstack_services:
+          # Neutron services
+          q-agt: true
+          q-l3: true
+          q-meta: true
+          ovn-controller: false
+          ovs-vswitchd: false
+          ovsdb-server: false
+          q-ovn-metadata-agent: false
           # Cinder services
           c-bak: false
           c-vol: false
@@ -85,10 +126,29 @@
       - openstack/neutron
     irrelevant-files: *openvswitch-irrelevant-files
     vars:
+      grenade_devstack_localrc:
+        shared:
+          Q_AGENT: openvswitch
+          Q_ML2_TENANT_NETWORK_TYPE: vxlan
+          Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
+          NEUTRON_DEPLOY_MOD_WSGI: True
       devstack_services:
         etcd: false
         br-ex-tcpdump: true
         br-int-flows: true
+        # Neutron services
+        q-agt: true
+        q-dhcp: true
+        q-l3: true
+        q-meta: true
+        q-svc: false
+        neutron-api: true
+        neutron-rpc-server: true
+        neutron-periodic-workers: true
+        q-metering: true
+        ovn-controller: false
+        ovn-northd: false
+        q-ovn-metadata-agent: false
         # Cinder services
         c-api: false
         c-bak: false
@@ -105,9 +165,6 @@
           $NEUTRON_CONF:
             DEFAULT:
               router_distributed: True
-          # NOTE(slaweq): We can get rid of this hardcoded absolute path when
-          # devstack-tempest job will be switched to use lib/neutron instead of
-          # lib/neutron-legacy
           "/$NEUTRON_CORE_PLUGIN_CONF":
             ml2:
               mechanism_drivers: openvswitch,l2population
@@ -130,12 +187,22 @@
               availability_zone: nova
     group-vars:
       subnode:
+        grenade_devstack_localrc:
+          shared:
+            Q_AGENT: openvswitch
+            Q_ML2_TENANT_NETWORK_TYPE: vxlan
+            Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
         devstack_services:
+          br-ex-tcpdump: true
+          br-int-flows: true
+          # Neutron services
           q-agt: true
           q-l3: true
           q-meta: true
-          br-ex-tcpdump: true
-          br-int-flows: true
+          ovn-controller: false
+          ovs-vswitchd: false
+          ovsdb-server: false
+          q-ovn-metadata-agent: false
           # Cinder services
           c-bak: false
           c-vol: false
@@ -144,9 +211,6 @@
             $NEUTRON_CONF:
               DEFAULT:
                 router_distributed: True
-            # NOTE(slaweq): We can get rid of this hardcoded absolute path when
-            # devstack-tempest job will be switched to use lib/neutron instead of
-            # lib/neutron-legacy
             "/$NEUTRON_CORE_PLUGIN_CONF":
               agent:
                 enable_distributed_routing: True
@@ -168,41 +232,47 @@
     parent: grenade-multinode
     timeout: 9000
     irrelevant-files:
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^releasenotes/.*$
       - ^doc/.*$
       - ^setup.cfg$
+      - ^pyproject.toml$
       - ^.*\.conf\.sample$
       - ^.*\.rst$
       - ^neutron/locale/.*$
       - ^neutron/tests/.*$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^tools/ovn_migration/.*$
       - ^neutron/agent/dhcp/.*$
       - ^neutron/agent/l2/.*$
       - ^neutron/agent/l3/.*$
       - ^neutron/agent/metadata/.*$
-      - ^neutron/agent/windows/.*$
       - ^neutron/agent/dhcp_agent.py
       - ^neutron/agent/l3_agent.py
       - ^neutron/agent/metadata_agent.py
       - ^neutron/agent/resource_cache.py
       - ^neutron/agent/rpc.py
       - ^neutron/agent/securitygroup_rpc.py
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/openvswitch/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
-      - ^neutron/services/qos/drivers/linuxbridge/.*$
       - ^neutron/services/qos/drivers/openvswitch/.*$
-      - ^neutron/services/trunk/drivers/linuxbridge/.*$
       - ^neutron/services/trunk/drivers/openvswitch/.*$
       - ^neutron/scheduler/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
       - ^vagrant/.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
     roles:
       - zuul: openstack/neutron-tempest-plugin
     required-projects:
@@ -221,14 +291,18 @@
           Q_BUILD_OVS_FROM_GIT: true
           OVN_BUILD_MODULES: true
           OVN_BUILD_FROM_SOURCE: True
-          OVN_BRANCH: "v21.06.0"
-          OVS_BRANCH: "a4b04276ab5934d087669ff2d191a23931335c87"
+          OVN_BRANCH: "branch-24.03"
+          OVS_BRANCH: "branch-3.3"
         new:
           Q_BUILD_OVS_FROM_GIT: false
           OVN_BUILD_MODULES: false
         shared:
           Q_AGENT: ovn
-          Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
+          OVN_AGENT_EXTENSIONS: 'metadata'
+          # NOTE(ralonsoh): during the eventlet removal, the "logger" mech
+          # driver has been removed from this list. Remove this workaround in
+          # 2026.2 (in 2027.1 for the "-skip-level" job).
+          Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn
           Q_ML2_TENANT_NETWORK_TYPE: geneve
           Q_USE_PROVIDERNET_FOR_PUBLIC: true
           PHYSICAL_NETWORK: public
@@ -236,26 +310,34 @@
           OVN_L3_CREATE_PUBLIC_NETWORK: true
           OVN_DBS_LOG_LEVEL: dbg
           OVN_IGMP_SNOOPING_ENABLE: True
+          NEUTRON_DEPLOY_MOD_WSGI: True
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron
         neutron-tempest-plugin: https://opendev.org/openstack/neutron-tempest-plugin
       zuul_copy_output:
         '{{ devstack_base_dir }}/data/ovs': 'logs'
         '{{ devstack_base_dir }}/data/ovn': 'logs'
+        '/opt/stack/old/logs': 'logs'
+        '/opt/stack/new/logs': 'logs'
       extensions_to_txt:
         db: true
       devstack_services:
         etcd: false
         br-ex-tcpdump: true
         br-int-flows: true
-        q-ovn-metadata-agent: true
+        q-ovn-metadata-agent: false
+        q-ovn-agent: true
         ovn-controller: true
         ovn-northd: true
         ovs-vswitchd: true
         ovsdb-server: true
         placement-api: true
         peakmem_tracker: false
-        q-svc: true
+        q-svc: false
+        neutron-api: true
+        neutron-ovn-maintenance-worker: true
+        neutron-rpc-server: false
+        neutron-periodic-workers: true
         q-agt: false
         q-dhcp: false
         q-l3: false
@@ -293,7 +375,8 @@
           q-l3: false
           q-meta: false
           q-metering: false
-          q-ovn-metadata-agent: true
+          q-ovn-metadata-agent: false
+          q-ovn-agent: true
           tls-proxy: false
           # Cinder services
           c-bak: false
@@ -303,14 +386,18 @@
             Q_BUILD_OVS_FROM_GIT: true
             OVN_BUILD_MODULES: true
             OVN_BUILD_FROM_SOURCE: True
-            OVN_BRANCH: "v21.06.0"
-            OVS_BRANCH: "a4b04276ab5934d087669ff2d191a23931335c87"
+            OVN_BRANCH: "branch-24.03"
+            OVS_BRANCH: "branch-3.3"
           new:
             Q_BUILD_OVS_FROM_GIT: false
             OVN_BUILD_MODULES: false
           shared:
             Q_AGENT: ovn
-            Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
+            OVN_AGENT_EXTENSIONS: 'metadata'
+            # NOTE(ralonsoh): during the eventlet removal, the "logger" mech
+            # driver has been removed from this list. Remove this workaround in
+            # 2026.2 (in 2027.1 for the "-skip-level" job).
+            Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn
             Q_ML2_TENANT_NETWORK_TYPE: geneve
             Q_USE_PROVIDERNET_FOR_PUBLIC: true
             PHYSICAL_NETWORK: public
@@ -323,14 +410,13 @@
     description: |
       Grenade job that skips a release, validating that deployers can skip
       specific releases as prescribed by our process.
-    # See background from gmann:
-    # https://review.opendev.org/c/openstack/manila/+/859875/1/zuul.d/grenade-jobs.yaml
-    branches: ^(?!stable/(pike|queens|rocky|stein|train|ussuri|victoria|wallaby|xena|zed)).*$
     vars:
       # Move this forward when master changes to a new skip-level-allowed
-      # target release. Right now, this is xena because master is zed.
-      # When master is A, this should become yoga, and so forth.
-      grenade_from_branch: stable/yoga
+      # target release. Right now, this is Flamingo (2025.2) because master is
+      # Hibiscus (2026.2).
+      # When master is I (2027.1), this should become Gazpacho (2026.1),
+      # and so forth.
+      grenade_from_branch: stable/2025.2
       grenade_localrc:
         NOVA_ENABLE_UPGRADE_WORKAROUND: True
 
@@ -340,13 +426,21 @@
     description: |
       Grenade job that skips a release, validating that deployers can skip
       specific releases as prescribed by our process.
-    # See background from gmann:
-    # https://review.opendev.org/c/openstack/manila/+/859875/1/zuul.d/grenade-jobs.yaml
-    branches: ^(?!stable/(pike|queens|rocky|stein|train|ussuri|victoria|wallaby|xena|zed)).*$
     vars:
-      # Move this forward when master changes to a new skip-level-allowed
-      # target release. Right now, this is xena because master is zed.
-      # When master is A, this should become yoga, and so forth.
-      grenade_from_branch: stable/yoga
+      # target release. Right now, this is Flamingo (2025.2) because master is
+      # Hibiscus (2026.2).
+      # When master is I (2027.1), this should become Gazpacho (2026.1),
+      # and so forth.
+      grenade_from_branch: stable/2025.2
       grenade_localrc:
         NOVA_ENABLE_UPGRADE_WORKAROUND: True
+
+# NOTE(ralonsoh): to be removed in 2026.2, once the OVN Metadata agent
+# replacement finishes. See LP#2112313.
+- job:
+    name: neutron-ovn-grenade-multinode-ovn-metadata-agent
+    parent: neutron-ovn-grenade-multinode
+    vars:
+      devstack_services:
+        q-ovn-metadata-agent: true
+        q-ovn-agent: false

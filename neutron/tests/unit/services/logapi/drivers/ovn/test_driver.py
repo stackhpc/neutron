@@ -21,15 +21,17 @@ from neutron.common import utils as neutron_utils
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils as ovn_utils
+from neutron.objects import securitygroup as sg_obj
 from neutron.services.logapi.drivers.ovn import driver as ovn_driver
 from neutron.tests import base
 from neutron.tests.unit import fake_resources
 
 FAKE_CFG_RATE = 123
 FAKE_CFG_BURST = 321
+FAKE_LABEL = 1
 
 
-class TestOVNDriver(base.BaseTestCase):
+class TestOVNDriverBase(base.BaseTestCase):
 
     def setUp(self):
         super().setUp()
@@ -39,8 +41,10 @@ class TestOVNDriver(base.BaseTestCase):
         self.plugin_driver.nb_ovn = fake_resources.FakeOvsdbNbOvnIdl()
 
         self.log_plugin = mock.Mock()
-        get_mock_log_plugin = lambda alias: self.log_plugin if (
-                alias == plugin_constants.LOG_API) else None
+
+        def get_mock_log_plugin(alias):
+            return self.log_plugin if (
+                        alias == plugin_constants.LOG_API) else None
         self.fake_get_dir_object = mock.patch(
             "neutron_lib.plugins.directory.get_plugin",
             side_effect=get_mock_log_plugin).start()
@@ -91,6 +95,17 @@ class TestOVNDriver(base.BaseTestCase):
         meter_band_obj_dict = {**meter_band_defaults_dict, **kwargs}
         return mock.Mock(**meter_band_obj_dict)
 
+    def _fake_meter_band_stateless(self, **kwargs):
+        meter_band_defaults_dict = {
+            'uuid': 'tb_stateless',
+            'rate': int(self.fake_cfg_network_log.rate_limit / 2),
+            'burst_size': int(self.fake_cfg_network_log.burst_limit / 2),
+        }
+        meter_band_obj_dict = {**meter_band_defaults_dict, **kwargs}
+        return mock.Mock(**meter_band_obj_dict)
+
+
+class TestOVNDriver(TestOVNDriverBase):
     def test_create(self):
         driver = self._log_driver
         self.assertEqual(self.log_plugin, driver._log_plugin)
@@ -106,83 +121,27 @@ class TestOVNDriver(base.BaseTestCase):
         driver2 = self._log_driver_reinit()
         self.assertEqual(test_log_base, driver2.meter_name)
 
-    def test__create_ovn_fair_meter(self):
-        mock_find_rows = mock.Mock()
-        mock_find_rows.execute.return_value = None
-        self._nb_ovn.db_find_rows.return_value = mock_find_rows
-        self._log_driver._create_ovn_fair_meter(self._nb_ovn.transaction)
-        self.assertFalse(self._nb_ovn.meter_del.called)
-        self.assertTrue(self._nb_ovn.meter_add.called)
-        self.assertFalse(
-            self._nb_ovn.transaction.return_value.__enter__.called)
-        self._nb_ovn.meter_add.assert_called_once_with(
-            name="acl_log_meter",
-            unit="pktps",
-            rate=FAKE_CFG_RATE,
-            fair=True,
-            burst_size=FAKE_CFG_BURST,
-            may_exist=False,
-            external_ids={ovn_const.OVN_DEVICE_OWNER_EXT_ID_KEY:
-                          log_const.LOGGING_PLUGIN})
-
-    def test__create_ovn_fair_meter_unchanged(self):
-        mock_find_rows = mock.Mock()
-        mock_find_rows.execute.return_value = [self._fake_meter()]
-        self._nb_ovn.db_find_rows.return_value = mock_find_rows
-        self._nb_ovn.lookup.side_effect = lambda table, key: (
-            self._fake_meter_band() if key == "test_band" else None)
-        self._log_driver._create_ovn_fair_meter(self._nb_ovn.transaction)
-        self.assertFalse(self._nb_ovn.meter_del.called)
-        self.assertFalse(self._nb_ovn.meter_add.called)
-
-    def test__create_ovn_fair_meter_changed(self):
-        mock_find_rows = mock.Mock()
-        mock_find_rows.execute.return_value = [self._fake_meter(fair=[False])]
-        self._nb_ovn.db_find_rows.return_value = mock_find_rows
-        self._nb_ovn.lookup.return_value = self._fake_meter_band()
-        self._log_driver._create_ovn_fair_meter(self._nb_ovn.transaction)
-        self.assertTrue(self._nb_ovn.meter_del.called)
-        self.assertTrue(self._nb_ovn.meter_add.called)
-
-    def test__create_ovn_fair_meter_band_changed(self):
-        mock_find_rows = mock.Mock()
-        mock_find_rows.execute.return_value = [self._fake_meter()]
-        self._nb_ovn.db_find_rows.return_value = mock_find_rows
-        self._nb_ovn.lookup.return_value = self._fake_meter_band(rate=666)
-        self._log_driver._create_ovn_fair_meter(self._nb_ovn.transaction)
-        self.assertTrue(self._nb_ovn.meter_del.called)
-        self.assertTrue(self._nb_ovn.meter_add.called)
-
-    def test__create_ovn_fair_meter_band_missing(self):
-        mock_find_rows = mock.Mock()
-        mock_find_rows.execute.return_value = [self._fake_meter()]
-        self._nb_ovn.db_find_rows.return_value = mock_find_rows
-        self._nb_ovn.lookup.side_effect = idlutils.RowNotFound
-        self._log_driver._create_ovn_fair_meter(self._nb_ovn.transaction)
-        self.assertTrue(self._nb_ovn.meter_del.called)
-        self.assertTrue(self._nb_ovn.meter_add.called)
-
-    class _fake_acl():
+    class _fake_acl:
         def __init__(self, name=None, **acl_dict):
             acl_defaults_dict = {
-                "name": [name] if name else [],
-                "action": ovn_const.ACL_ACTION_ALLOW_RELATED,
+                'name': [name] if name else [],
+                'action': ovn_const.ACL_ACTION_ALLOW_RELATED,
+                'label': FAKE_LABEL,
+                'log': True,
             }
             self.__dict__ = {**acl_defaults_dict, **acl_dict}
 
     def _fake_pg_dict(self, **kwargs):
+        uuid = uuidutils.generate_uuid()
         pg_defaults_dict = {
-            "name": ovn_utils.ovn_port_group_name(uuidutils.generate_uuid()),
+            "name": ovn_utils.ovn_port_group_name(uuid),
+            "external_ids": {ovn_const.OVN_SG_EXT_ID_KEY: uuid},
             "acls": []
         }
         return {**pg_defaults_dict, **kwargs}
 
     def _fake_pg(self, **kwargs):
-        pg_defaults_dict = {
-            "name": ovn_utils.ovn_port_group_name(uuidutils.generate_uuid()),
-            "acls": []
-        }
-        pg_dict = {**pg_defaults_dict, **kwargs}
+        pg_dict = self._fake_pg_dict(**kwargs)
         return mock.Mock(**pg_dict)
 
     def _fake_log_obj(self, **kwargs):
@@ -232,7 +191,9 @@ class TestOVNDriver(base.BaseTestCase):
             pgs = self._log_driver._pgs_from_log_obj(self.context, log_obj)
             mock_pgs_all.assert_not_called()
             self.assertEqual(2, self._nb_ovn.lookup.call_count)
-            self.assertEqual([{'acls': [], 'name': pg.name}], pgs)
+            self.assertEqual([{'acls': [],
+                               'external_ids': pg.external_ids,
+                               'name': pg.name}], pgs)
 
     def test__pgs_from_log_obj_pg(self):
         with mock.patch.object(self._log_driver, '_pgs_all',
@@ -246,7 +207,9 @@ class TestOVNDriver(base.BaseTestCase):
             mock_pgs_all.assert_not_called()
             self._nb_ovn.lookup.assert_called_once_with(
                 "Port_Group", ovn_utils.ovn_port_group_name('resource_id'))
-            self.assertEqual([{'acls': [], 'name': pg.name}], pgs)
+            self.assertEqual([{'acls': [],
+                               'external_ids': pg.external_ids,
+                               'name': pg.name}], pgs)
 
     def test__pgs_from_log_obj_port(self):
         with mock.patch.object(self._log_driver, '_pgs_all',
@@ -263,7 +226,9 @@ class TestOVNDriver(base.BaseTestCase):
             self._nb_ovn.lookup.assert_called_once_with("Port_Group", pg_name)
             self.fake_get_sgs_attached_to_port.assert_called_once_with(
                 self.context, 'target_id')
-            self.assertEqual([{'acls': [], 'name': pg.name}], pgs)
+            self.assertEqual([{'acls': [],
+                               'external_ids': pg.external_ids,
+                               'name': pg.name}], pgs)
 
     @mock.patch.object(ovn_driver.LOG, 'info')
     def test__remove_acls_log(self, m_info):
@@ -278,7 +243,10 @@ class TestOVNDriver(base.BaseTestCase):
         self.assertEqual(len(pg_dict["acls"]), info_args[1])
         self.assertEqual(len(pg_dict["acls"]) - 2, info_args[2])
         self.assertEqual(len(pg_dict["acls"]), info_args[3])
-        self.assertEqual(len(pg_dict["acls"]), self._nb_ovn.db_set.call_count)
+        self.assertEqual(len(pg_dict["acls"]),
+                         self._nb_ovn.db_set.call_count)
+        self.assertEqual(len(pg_dict["acls"]),
+                         self._nb_ovn.db_remove.call_count)
 
     @mock.patch.object(ovn_driver.LOG, 'info')
     def test__remove_acls_log_missing_acls(self, m_info):
@@ -298,6 +266,19 @@ class TestOVNDriver(base.BaseTestCase):
         self.assertEqual(len(pg_dict["acls"]) - 1,
                          self._nb_ovn.db_set.call_count)
 
+    # This test is enforcing the use of if_exists so that we don't get
+    # unexpected errors while doing parallel operations like erasing log
+    # objects and security groups
+    @mock.patch.object(ovn_driver.LOG, 'info')
+    def test__remove_acls_log_only_if_exists(self, m_info):
+        pg_dict = self._fake_pg_dict(acls=['acl1', 'acl2', 'acl3'])
+
+        def _only_if_exists(_pg_table, acl_uuid, col, val, if_exists):
+            self.assertTrue(if_exists)
+
+        self._nb_ovn.db_remove.side_effect = _only_if_exists
+        self._log_driver._remove_acls_log([pg_dict], self._nb_ovn.transaction)
+
     @mock.patch.object(ovn_driver.LOG, 'info')
     def test__remove_acls_log_with_log_name(self, m_info):
         pg_dict = self._fake_pg_dict(acls=['acl1', 'acl2', 'acl3', 'acl4'])
@@ -315,7 +296,7 @@ class TestOVNDriver(base.BaseTestCase):
         info_args, _info_kwargs = m_info.call_args_list[0]
         self.assertIn('Cleared %d, Not found %d (out of %d visited) ACLs',
                       info_args[0])
-        self.assertIn('for network log {}'.format(log_name), info_args[0])
+        self.assertIn(f'for network log {log_name}', info_args[0])
         self.assertEqual(len(pg_dict["acls"]) - 1, info_args[1])
         self.assertEqual(len(pg_dict["acls"]) - 4, info_args[2])
         self.assertEqual(len(pg_dict["acls"]), info_args[3])
@@ -323,7 +304,8 @@ class TestOVNDriver(base.BaseTestCase):
                          self._nb_ovn.db_set.call_count)
 
     @mock.patch.object(ovn_driver.LOG, 'info')
-    def test__set_acls_log(self, m_info):
+    @mock.patch.object(sg_obj.SecurityGroup, 'get_sg_by_id')
+    def test__set_acls_log(self, get_sg, m_info):
         pg_dict = self._fake_pg_dict(acls=['acl1', 'acl2', 'acl3', 'acl4'])
         log_name = 'test_obj_name'
         used_name = 'test_used_name'
@@ -333,10 +315,14 @@ class TestOVNDriver(base.BaseTestCase):
                 return self._fake_acl()
             return self._fake_acl(name=used_name)
 
+        sg = fake_resources.FakeSecurityGroup.create_one_security_group(
+            attrs={'stateful': True})
+        get_sg.return_value = sg
         self._nb_ovn.lookup.side_effect = _mock_lookup
         actions_enabled = self._log_driver._acl_actions_enabled(
             self._fake_log_obj(event=log_const.ALL_EVENT))
-        self._log_driver._set_acls_log([pg_dict], self._nb_ovn.transaction,
+        self._log_driver._set_acls_log([pg_dict], self.context,
+                                       self._nb_ovn.transaction,
                                        actions_enabled, log_name)
         info_args, _info_kwargs = m_info.call_args_list[0]
         self.assertIn('Set %d (out of %d visited) ACLs for network log %s',
@@ -345,3 +331,48 @@ class TestOVNDriver(base.BaseTestCase):
         self.assertEqual(len(pg_dict["acls"]), info_args[2])
         self.assertEqual(log_name, info_args[3])
         self.assertEqual(1, self._nb_ovn.db_set.call_count)
+
+    def test_add_label_related(self):
+        mock.patch.object(self._log_driver, '_pgs_from_log_obj', return_value=[
+                          {'name': 'neutron_pg_drop',
+                           'external_ids': {},
+                           'acls': [uuidutils.generate_uuid()]}]).start()
+        neutron_acl = {'port_group': 'neutron_pg_drop',
+                       'priority': 1001,
+                       'action': 'drop',
+                       'log': True,
+                       'name': '',
+                       'severity': 'info',
+                       'direction': 'to-lport',
+                       'match': 'outport == @neutron_pg_drop && ip'}
+        log_objs = [self._fake_log_obj(event=log_const.DROP_EVENT)]
+        with mock.patch.object(self._log_driver, '_get_logs',
+                               return_value=log_objs):
+            self._log_driver.add_label_related(neutron_acl, self.context)
+            self.assertNotEqual(neutron_acl['label'], 0)
+
+    def test_add_logging_options_to_acls(self):
+        mock.patch.object(self._log_driver, '_pgs_from_log_obj', return_value=[
+                             {'name': 'neutron_pg_drop', 'external_ids': {},
+                              'acls': [uuidutils.generate_uuid()]}]).start()
+        n_acls = [{'port_group': 'neutron_pg_drop',
+                   'priority': 1001,
+                   'action': 'drop',
+                   'log': False,
+                   'name': '',
+                   'severity': '',
+                   'direction': 'to-lport',
+                   'match': 'outport == @neutron_pg_drop && ip'}]
+        log_objs = [self._fake_log_obj(event=log_const.DROP_EVENT,
+                                       resource_id=None,
+                                       id='1111')]
+
+        with mock.patch.object(self._log_driver, '_get_logs',
+                               return_value=log_objs):
+            self._log_driver.add_logging_options_to_acls(n_acls, self.context)
+            for acl in n_acls:
+                self.assertEqual(acl['severity'], 'info')
+                self.assertTrue(acl['log'])
+                self.assertEqual(acl['name'],
+                                 ovn_utils.ovn_name(log_objs[0].id))
+                self.assertEqual(acl['meter'], self._log_driver.meter_name)

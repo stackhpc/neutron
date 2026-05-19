@@ -17,7 +17,7 @@ from neutron_lib.api.definitions import data_plane_status as dps_lib
 from neutron.objects.port.extensions import data_plane_status as dps_obj
 
 
-class DataPlaneStatusMixin(object):
+class DataPlaneStatusMixin:
     """Mixin class to add data plane status to a port"""
 
     def _process_create_port_data_plane_status(self, context, data, res):
@@ -47,4 +47,4 @@ class DataPlaneStatusMixin(object):
 
         if port_db.get(dps_lib.DATA_PLANE_STATUS):
             port_res[dps_lib.DATA_PLANE_STATUS] = (
-                        port_db[dps_lib.DATA_PLANE_STATUS].data_plane_status)
+                port_db[dps_lib.DATA_PLANE_STATUS].data_plane_status)

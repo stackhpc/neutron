@@ -15,6 +15,7 @@
 from unittest import mock
 
 import netaddr
+from neutron_lib.callbacks import events
 from neutron_lib import context
 from oslo_utils import uuidutils
 
@@ -48,7 +49,7 @@ class SecurityGroupServerRpcApiTestCase(base.BaseTestCase):
 class SGAgentRpcCallBackMixinTestCase(base.BaseTestCase):
 
     def setUp(self):
-        super(SGAgentRpcCallBackMixinTestCase, self).setUp()
+        super().setUp()
         self.rpc = securitygroups_rpc.SecurityGroupAgentRpcCallbackMixin()
         self.rpc.sg_agent = mock.Mock()
 
@@ -68,7 +69,7 @@ class SGAgentRpcCallBackMixinTestCase(base.BaseTestCase):
 class SecurityGroupServerAPIShimTestCase(base.BaseTestCase):
 
     def setUp(self):
-        super(SecurityGroupServerAPIShimTestCase, self).setUp()
+        super().setUp()
         objects.register_objects()
         resource_types = [resources.PORT, resources.SECURITYGROUP,
                           resources.SECURITYGROUPRULE, resources.ADDRESSGROUP]
@@ -120,13 +121,14 @@ class SecurityGroupServerAPIShimTestCase(base.BaseTestCase):
                        return_value=False)
     def _make_security_group_ovo(self, *args, **kwargs):
         attrs = {'id': uuidutils.generate_uuid(), 'revision_number': 1}
+        r_group = kwargs.get('remote_group_id') or attrs['id']
         sg_rule = securitygroup.SecurityGroupRule(
             id=uuidutils.generate_uuid(),
             security_group_id=attrs['id'],
             direction='ingress',
             ethertype='IPv4', protocol='tcp',
             port_range_min=400,
-            remote_group_id=attrs['id'],
+            remote_group_id=r_group,
             revision_number=1,
             remote_address_group_id=kwargs.get('remote_address_group_id',
                                                None),
@@ -152,6 +154,70 @@ class SecurityGroupServerAPIShimTestCase(base.BaseTestCase):
             self.rcache.get_resources('SecurityGroupRule', filters))
         self.sg_agent.security_groups_rule_updated.assert_called_once_with(
             [s1.id])
+
+    def test_sg_deletion_affects_only_own_rules(self):
+        s1 = self._make_security_group_ovo()
+        s2 = self._make_security_group_ovo()
+        filters = {'security_group_id': (s1.id, s2.id)}
+        self.assertEqual(
+            s1.rules + s2.rules,
+            self.rcache.get_resources('SecurityGroupRule', filters))
+        # reset the mock: we care only about what happens at deletion
+        self.sg_agent.security_groups_rule_updated.reset_mock()
+        # Recode resource_cache.record_resource_delete for the test's sake
+        s1_existing = self.rcache._type_cache('SecurityGroup').pop(s1.id, None)
+        self.shim._clear_child_sg_rules('SecurityGroup', events.AFTER_DELETE,
+                                        self.rcache,
+                                        payload=events.DBEventPayload(
+                                            self.ctx,
+                                            resource_id=s1.id,
+                                            states=(s1_existing,)
+                                        ))
+        self.assertEqual(
+            s2.rules,
+            self.rcache.get_resources('SecurityGroupRule', filters))
+        self.sg_agent.security_groups_rule_updated.assert_called_once_with(
+            [s1.id])
+
+        self.sg_agent.security_groups_rule_updated.reset_mock()
+        s2_existing = self.rcache._type_cache('SecurityGroup').pop(s2.id, None)
+        self.shim._clear_child_sg_rules('SecurityGroup', events.AFTER_DELETE,
+                                        self.rcache,
+                                        payload=events.DBEventPayload(
+                                            self.ctx,
+                                            resource_id=s2.id,
+                                            states=(s2_existing,)
+                                        ))
+        self.assertEqual(
+            [],
+            self.rcache.get_resources('SecurityGroupRule', filters))
+        self.sg_agent.security_groups_rule_updated.assert_called_once_with(
+            [s2.id])
+
+    def test_sg_deletion_of_non_cached_sg_changes_nothing(self):
+        s1 = self._make_security_group_ovo()
+        s2 = self._make_security_group_ovo()
+        s3_id = uuidutils.generate_uuid()
+        filters = {'security_group_id': (s1.id, s2.id, s3_id)}
+        self.sg_agent.security_groups_rule_updated.reset_mock()
+
+        # resource_cache.record_resource_delete would set existing to None
+        # when the resource is not in the local resource cache. So do the same
+        # here.
+        s3_existing = None
+        self.shim._clear_child_sg_rules('SecurityGroup', events.AFTER_DELETE,
+                                        self.rcache,
+                                        payload=events.DBEventPayload(
+                                            self.ctx,
+                                            resource_id=s3_id,
+                                            states=(s3_existing,)
+                                        ))
+
+        # Verify that the other rules remain untouched.
+        self.assertEqual(
+            s1.rules + s2.rules,
+            self.rcache.get_resources('SecurityGroupRule', filters))
+        self.sg_agent.security_groups_rule_updated.assert_not_called()
 
     def test_security_group_info_for_devices(self):
         s1 = self._make_security_group_ovo()
@@ -198,13 +264,59 @@ class SecurityGroupServerAPIShimTestCase(base.BaseTestCase):
         self.sg_agent.security_groups_member_updated.assert_called_with(
             {s1.id})
 
+    def test_sg_delete_events_with_remote(self):
+        s1 = self._make_security_group_ovo(remote_group_id='')
+        s2 = self._make_security_group_ovo(remote_group_id=s1.id)
+        rules = self.rcache.get_resources(
+            'SecurityGroupRule',
+            filters={'security_group_id': (s1.id, s2.id)})
+        self.assertEqual(2, len(rules))
+        self.assertEqual(s1.id, rules[0].remote_group_id)
+
+        self.shim._clear_child_sg_rules(
+            'SecurityGroup', 'after_delete', '',
+            events.DBEventPayload(
+                context=self.ctx,
+                states=[s1]
+            )
+        )
+        rules = self.rcache.get_resources(
+            'SecurityGroupRule',
+            filters={'security_group_id': (s1.id, s2.id)})
+        self.assertEqual(0, len(rules))
+
+    def test_sg_delete_events_without_remote(self):
+        s1 = self._make_security_group_ovo()
+        s2 = self._make_security_group_ovo()
+        rules = self.rcache.get_resources(
+            'SecurityGroupRule',
+            filters={'security_group_id': (s1.id, s2.id)})
+        self.assertEqual(2, len(rules))
+        self.assertEqual(s1.id, rules[0].remote_group_id)
+
+        self.shim._clear_child_sg_rules(
+            'SecurityGroup', 'after_delete', '',
+            events.DBEventPayload(
+                context=self.ctx,
+                states=[s1]
+            )
+        )
+        s1_rules = self.rcache.get_resources(
+            'SecurityGroupRule',
+            filters={'security_group_id': (s1.id, )})
+        self.assertEqual(0, len(s1_rules))
+        s2_rules = self.rcache.get_resources(
+            'SecurityGroupRule',
+            filters={'security_group_id': (s2.id, )})
+        self.assertEqual(1, len(s2_rules))
+
     def test_get_secgroup_ids_for_address_group(self):
         ag = self._make_address_group_ovo()
         sg1 = self._make_security_group_ovo(remote_address_group_id=ag.id)
         sg2 = self._make_security_group_ovo(remote_address_group_id=ag.id)
         sg3 = self._make_security_group_ovo()
         sec_group_ids = self.shim.get_secgroup_ids_for_address_group(ag.id)
-        self.assertEqual(set([sg1.id, sg2.id]), set(sec_group_ids))
+        self.assertEqual({sg1.id, sg2.id}, set(sec_group_ids))
         self.assertEqual(2, len(sec_group_ids))
         self.assertNotIn(sg3.id, sec_group_ids)
 
@@ -213,5 +325,5 @@ class SecurityGroupServerAPIShimTestCase(base.BaseTestCase):
         self.sg_agent.address_group_updated.assert_called_with(ag.id)
         self.sg_agent.address_group_updated.reset_mock()
         self.rcache.record_resource_delete(self.ctx, resources.ADDRESSGROUP,
-            ag.id)
+                                           ag.id)
         self.sg_agent.address_group_deleted.assert_called_with(ag.id)

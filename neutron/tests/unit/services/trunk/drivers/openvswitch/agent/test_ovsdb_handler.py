@@ -15,6 +15,7 @@
 
 from unittest import mock
 
+import futurist
 from neutron_lib.services.trunk import constants
 import oslo_messaging
 from oslo_serialization import jsonutils
@@ -32,7 +33,7 @@ from neutron.tests import base
 
 class TestLockOnBridgeName(base.BaseTestCase):
     def setUp(self):
-        super(TestLockOnBridgeName, self).setUp()
+        super().setUp()
         self.lock_mock = mock.patch('oslo_concurrency.lockutils.lock').start()
         self.method_called = False
 
@@ -90,7 +91,7 @@ class TestIsTrunkServicePort(base.BaseTestCase):
 
 class TestBridgeHasInstancePort(base.BaseTestCase):
     def setUp(self):
-        super(TestBridgeHasInstancePort, self).setUp()
+        super().setUp()
         self.bridge = mock.Mock()
         self.present_interfaces = []
         self.bridge.get_iface_name_list.return_value = self.present_interfaces
@@ -115,8 +116,9 @@ class TestBridgeHasInstancePort(base.BaseTestCase):
 
 class TestOVSDBHandler(base.BaseTestCase):
     """Test that RPC or OVSDB failures do not cause crash."""
+
     def setUp(self):
-        super(TestOVSDBHandler, self).setUp()
+        super().setUp()
         self.ovsdb_handler = ovsdb_handler.OVSDBHandler(mock.sentinel.manager)
         mock.patch.object(self.ovsdb_handler, 'trunk_rpc').start()
         mock.patch.object(self.ovsdb_handler, 'trunk_manager').start()
@@ -150,23 +152,23 @@ class TestOVSDBHandler(base.BaseTestCase):
     @mock.patch('neutron.agent.common.ovs_lib.OVSBridge')
     def test_handle_trunk_add_rpc_failure(self, br):
         with mock.patch.object(self.ovsdb_handler, '_wire_trunk',
-                side_effect=oslo_messaging.MessagingException):
+                               side_effect=oslo_messaging.MessagingException):
             with mock.patch.object(ovsdb_handler, 'bridge_has_instance_port',
-                    return_value=True):
+                                   return_value=True):
                 self.ovsdb_handler.handle_trunk_add('foo')
 
     @mock.patch('neutron.agent.common.ovs_lib.OVSBridge')
     def test_handle_trunk_add_ovsdb_failure(self, br):
         with mock.patch.object(self.ovsdb_handler, '_wire_trunk',
-                side_effect=RuntimeError):
+                               side_effect=RuntimeError):
             with mock.patch.object(ovsdb_handler, 'bridge_has_instance_port',
-                    return_value=True):
+                                   return_value=True):
                 self.ovsdb_handler.handle_trunk_add('foo')
 
     @mock.patch('neutron.agent.common.ovs_lib.OVSBridge')
     def test_handle_trunk_add_parent_port_not_found(self, br):
         with mock.patch.object(self.ovsdb_handler, '_get_parent_port',
-                side_effect=exceptions.ParentPortNotFound):
+                               side_effect=exceptions.ParentPortNotFound):
             # do not wait the default timeout
             self.ovsdb_handler.timeout = 1
             self.ovsdb_handler.handle_trunk_add('foo')
@@ -183,9 +185,7 @@ class TestOVSDBHandler(base.BaseTestCase):
     def test_handle_trunk_remove_trunk_manager_failure(self, br):
         with mock.patch.object(self.ovsdb_handler, '_get_trunk_metadata',
                 side_effect=trunk_manager.TrunkManagerError(error='error')):
-            with mock.patch.object(ovsdb_handler, 'bridge_has_instance_port',
-                    return_value=True):
-                self.ovsdb_handler.handle_trunk_remove('foo', self.fake_port)
+            self.ovsdb_handler.handle_trunk_remove('foo', self.fake_port)
 
     @mock.patch('neutron.agent.common.ovs_lib.OVSBridge')
     def test_handle_trunk_remove_rpc_failure(self, br):
@@ -213,7 +213,7 @@ class TestOVSDBHandler(base.BaseTestCase):
         self.ovsdb_handler.trunk_rpc.update_subport_bindings.return_value = (
             self.subport_bindings)
         with mock.patch.object(self.ovsdb_handler, '_set_trunk_metadata',
-                side_effect=RuntimeError):
+                               side_effect=RuntimeError):
             status = self.ovsdb_handler.wire_subports_for_trunk(
                 None, self.trunk_id, self.fake_subports)
         self.assertEqual(constants.TRUNK_DEGRADED_STATUS, status)
@@ -338,3 +338,32 @@ class TestOVSDBHandler(base.BaseTestCase):
         expected_subport_ids = '["foo_subport_1"]'
         self._test__update_trunk_metadata_wire_flag(
             mock_br, False, external_ids, subport_ids, expected_subport_ids)
+
+    @mock.patch('neutron.services.trunk.drivers.openvswitch.agent'
+                '.ovsdb_handler.is_trunk_bridge', return_value=True)
+    def test_process_trunk_port_events(self, mock_is_trunk_bridge):
+        payload = mock.MagicMock(latest_state={
+            'added': [{'name': 'abc'}],
+            'removed': [{'external_ids': {'bridge_name': 'def'}}]})
+
+        with futurist.ThreadPoolExecutor() as executor:
+            with (mock.patch(('neutron.services.trunk.drivers.openvswitch'
+                              '.agent.ovsdb_handler.futurist'
+                              '.ThreadPoolExecutor'),
+                             return_value=executor),
+                  mock.patch.object(
+                      self.ovsdb_handler,
+                      "handle_trunk_add") as mock_add,
+                  mock.patch.object(
+                      self.ovsdb_handler,
+                      "handle_trunk_remove") as mock_remove):
+
+                self.ovsdb_handler.process_trunk_port_events(
+                    mock.ANY, mock.ANY, mock.ANY, payload)
+
+                executor.shutdown()
+
+                mock_add.assert_called_once_with(
+                    'abc')
+                mock_remove.assert_called_once_with(
+                    'def', mock.ANY)

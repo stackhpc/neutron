@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 import copy
 from unittest import mock
 
@@ -59,7 +60,7 @@ RPC_DEV2 = {'device': DEV2.mac,
 
 class TestSriovAgent(base.BaseTestCase):
     def setUp(self):
-        super(TestSriovAgent, self).setUp()
+        super().setUp()
         # disable setting up periodic state reporting
         cfg.CONF.set_override('report_interval', 0, 'AGENT')
         cfg.CONF.set_default('firewall_driver',
@@ -69,7 +70,7 @@ class TestSriovAgent(base.BaseTestCase):
                              False,
                              group='SECURITYGROUP')
 
-        class MockFixedIntervalLoopingCall(object):
+        class MockFixedIntervalLoopingCall:
             def __init__(self, f):
                 self.f = f
 
@@ -83,7 +84,8 @@ class TestSriovAgent(base.BaseTestCase):
         self.agent = sriov_nic_agent.SriovNicSwitchAgent({}, {}, 0, {}, {}, {})
 
     @mock.patch("neutron.plugins.ml2.drivers.mech_sriov.agent.eswitch_manager"
-               ".ESwitchManager.get_assigned_devices_info", return_value=set())
+                ".ESwitchManager.get_assigned_devices_info",
+                return_value=set())
     @mock.patch.object(agent_rpc.PluginReportStateAPI, 'report_state')
     def test_cached_device_count_report_state(self, report_state, get_dev):
         self.agent._report_state()
@@ -94,7 +96,7 @@ class TestSriovAgent(base.BaseTestCase):
         self.assertEqual(0, agent_conf['devices'])
         # ensure report_state doesn't call get_dev
         get_dev.reset_mock()
-        get_dev.return_value = set(['dev1', 'dev2'])
+        get_dev.return_value = {'dev1', 'dev2'}
         self.agent._report_state()
         self.assertEqual(0, agent_conf['devices'])
         # after a device scan, conf should bump to 2
@@ -215,15 +217,11 @@ class TestSriovAgent(base.BaseTestCase):
                        'added': {DEV3, DEV4},
                        'updated': {DEV2, DEV3},
                        'removed': {DEV1}}
-        agent.sg_agent.prepare_devices_filter = mock.Mock()
-        agent.sg_agent.refresh_firewall = mock.Mock()
         agent.treat_devices_added_updated = mock.Mock(return_value=False)
         agent.treat_devices_removed = mock.Mock(return_value=False)
 
         agent.process_network_devices(device_info)
 
-        agent.sg_agent.prepare_devices_filter.assert_called_with({DEV3, DEV4})
-        self.assertTrue(agent.sg_agent.refresh_firewall.called)
         agent.treat_devices_added_updated.assert_called_with(
             {DEV2, DEV3, DEV4})
         agent.treat_devices_removed.assert_called_with({DEV1})
@@ -454,23 +452,23 @@ class TestSriovAgent(base.BaseTestCase):
                              fake_device_info['added'])
 
 
-class FakeAgent(object):
+class FakeAgent:
     def __init__(self):
         self.updated_devices = set()
         self.activated_bindings = set()
         self.conf = mock.Mock()
         self.conf.host = 'host1'
+        self.network_ports = collections.defaultdict(list)
 
 
 class TestSriovNicSwitchRpcCallbacks(base.BaseTestCase):
 
     def setUp(self):
-        super(TestSriovNicSwitchRpcCallbacks, self).setUp()
+        super().setUp()
         self.context = object()
         self.agent = FakeAgent()
-        sg_agent = object()
         self.sriov_rpc_callback = sriov_nic_agent.SriovNicSwitchRpcCallbacks(
-            self.context, self.agent, sg_agent)
+            self.context, self.agent)
         self.device_info = agent_rpc.DeviceInfo(DEVICE_MAC, PCI_SLOT)
 
     def _create_fake_port(self):
@@ -517,7 +515,7 @@ class TestSriovNicSwitchRpcCallbacks(base.BaseTestCase):
                                    'device': ('mac2', 'slot2')}]}
         kwargs = {'context': self.context, 'network': network1}
         self.sriov_rpc_callback.network_update(**kwargs)
-        self.assertEqual(set([('mac1', 'slot1')]), self.agent.updated_devices)
+        self.assertEqual({('mac1', 'slot1')}, self.agent.updated_devices)
 
     def test_binding_activate(self):
         fake_port = self._create_fake_port()
@@ -528,6 +526,12 @@ class TestSriovNicSwitchRpcCallbacks(base.BaseTestCase):
         }
         kwargs = self._create_fake_bindings(fake_port, self.agent.conf.host)
         kwargs['context'] = self.context
+
+        self.agent.network_ports['network_id'].append({
+            'port_id': fake_port['id'],
+            'device': 'fake_device'
+        })
+
         self.sriov_rpc_callback.binding_activate(**kwargs)
         # Assert agent.activated_binding set contains the new binding
         self.assertIn((fake_port['mac_address'],
@@ -538,9 +542,31 @@ class TestSriovNicSwitchRpcCallbacks(base.BaseTestCase):
         fake_port = self._create_fake_port()
         kwargs = self._create_fake_bindings(fake_port, 'other-host')
         kwargs['context'] = self.context
+
+        self.agent.network_ports[self.agent.conf.host].append({
+            'port_id': fake_port['id'],
+            'device': 'fake_device'
+        })
+
         self.sriov_rpc_callback.binding_activate(**kwargs)
         # Assert no bindings were added
         self.assertEqual(set(), self.agent.activated_bindings)
+
+    def test_binding_activate_port_not_in_network(self):
+        fake_port = self._create_fake_port()
+        kwargs = self._create_fake_bindings(fake_port, self.agent.conf.host)
+        kwargs['context'] = self.context
+
+        self.agent.network_ports['network_id'] = []
+
+        with mock.patch.object(sriov_nic_agent.LOG,
+                               'warning') as mock_warning:
+            self.sriov_rpc_callback.binding_activate(**kwargs)
+            # Check that the warning message was logged
+            expected_msg = (
+                "This port is not SRIOV, skip binding for port %s."
+            )
+            mock_warning.assert_called_once_with(expected_msg, fake_port['id'])
 
     def test_binding_deactivate(self):
         # binding_deactivate() basically does nothing
@@ -556,14 +582,14 @@ class TestSriovNicSwitchRpcCallbacks(base.BaseTestCase):
 
 class TestSRIOVAgentExtensionConfig(base.BaseTestCase):
     def setUp(self):
-        super(TestSRIOVAgentExtensionConfig, self).setUp()
+        super().setUp()
         l2_ext_manager.register_opts(cfg.CONF)
         # disable setting up periodic state reporting
         cfg.CONF.set_override('report_interval', 0, group='AGENT')
         cfg.CONF.set_override('extensions', ['qos'], group='agent')
 
     @mock.patch("neutron.plugins.ml2.drivers.mech_sriov.agent.eswitch_manager"
-               ".ESwitchManager.get_assigned_devices_info", return_value=[])
+                ".ESwitchManager.get_assigned_devices_info", return_value=[])
     def test_report_loaded_extension(self, *args):
         with mock.patch.object(agent_rpc.PluginReportStateAPI,
                                'report_state') as mock_report_state:

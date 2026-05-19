@@ -41,14 +41,14 @@ from neutron.services.metering.drivers import utils as driverutils
 LOG = logging.getLogger(__name__)
 
 
-class MeteringPluginRpc(object):
+class MeteringPluginRpc:
 
     def __init__(self, host):
         # NOTE(yamamoto): super.__init__() call here is not only for
         # aesthetics.  Because of multiple inheritances in MeteringAgent,
         # it's actually necessary to initialize parent classes of
         # manager.Manager correctly.
-        super(MeteringPluginRpc, self).__init__(host)
+        super().__init__(host)
         target = oslo_messaging.Target(topic=topics.METERING_PLUGIN,
                                        version='1.0')
         self.client = n_rpc.get_client(target)
@@ -67,20 +67,22 @@ class MeteringAgent(MeteringPluginRpc, manager.Manager):
     def __init__(self, host, conf=None):
         self.conf = conf or cfg.CONF
         self._load_drivers()
-        self.context = context.get_admin_context_without_session()
-        self.metering_loop = loopingcall.FixedIntervalLoopingCall(
-            self._metering_loop
-        )
-        measure_interval = self.conf.measure_interval
-        self.last_report = 0
-        self.metering_loop.start(interval=measure_interval)
         self.host = host
-
         self.label_project_id = {}
         self.routers = {}
         self.metering_infos = {}
         self.metering_labels = {}
-        super(MeteringAgent, self).__init__(host=host)
+        self.last_report = 0
+        self.context = context.get_admin_context_without_session()
+        self.metering_loop = None
+        super().__init__(host=host)
+
+    def init_host(self):
+        super().init_host()
+        self.metering_loop = loopingcall.FixedIntervalLoopingCall(
+            f=self._metering_loop
+        )
+        self.metering_loop.start(interval=self.conf.measure_interval)
 
     def _load_drivers(self):
         """Loads plugin-driver from configuration."""
@@ -347,13 +349,13 @@ class MeteringAgent(MeteringPluginRpc, manager.Manager):
 class MeteringAgentWithStateReport(MeteringAgent):
 
     def __init__(self, host, conf=None):
-        super(MeteringAgentWithStateReport, self).__init__(host=host,
-                                                           conf=conf)
-        self.state_rpc = agent_rpc.PluginReportStateAPI(topics.REPORTS)
+        super().__init__(host=host, conf=conf)
+        self.use_call = True
         self.failed_report_state = False
+        self.state_rpc = None
         self.agent_state = {
             'binary': constants.AGENT_PROCESS_METERING,
-            'host': host,
+            'host': self.host,
             'topic': topics.METERING_AGENT,
             'configurations': {
                 'metering_driver': self.conf.driver,
@@ -363,11 +365,13 @@ class MeteringAgentWithStateReport(MeteringAgent):
             },
             'start_flag': True,
             'agent_type': constants.AGENT_TYPE_METERING}
+
+    def init_host(self):
+        self.state_rpc = agent_rpc.PluginReportStateAPI(topics.REPORTS)
         report_interval = cfg.CONF.AGENT.report_interval
-        self.use_call = True
         if report_interval:
             self.heartbeat = loopingcall.FixedIntervalLoopingCall(
-                self._report_state)
+                f=self._report_state)
             self.heartbeat.start(interval=report_interval)
 
     def _report_state(self):
@@ -400,6 +404,7 @@ def main():
     config.register_agent_state_opts_helper(conf)
     common_config.init(sys.argv[1:])
     config.setup_logging()
+    common_config.setup_gmr()
     config.setup_privsep()
     server = neutron_service.Service.create(
         binary=constants.AGENT_PROCESS_METERING,

@@ -17,6 +17,7 @@ import datetime
 
 from neutron_lib.db import api as db_api
 from oslo_db import exception as db_exc
+from oslo_utils import timeutils
 
 from neutron.common import utils
 from neutron.objects import quota as quota_obj
@@ -28,7 +29,7 @@ UNLIMITED_QUOTA = -1
 
 # Wrapper for utcnow - needed for mocking it in unit tests
 def utcnow():
-    return datetime.datetime.utcnow()
+    return timeutils.utcnow()
 
 
 class QuotaUsageInfo(collections.namedtuple(
@@ -37,8 +38,8 @@ class QuotaUsageInfo(collections.namedtuple(
 
 
 class ReservationInfo(collections.namedtuple(
-    'ReservationInfo', ['reservation_id', 'project_id',
-                        'expiration', 'deltas'])):
+        'ReservationInfo', ['reservation_id', 'project_id',
+                            'expiration', 'deltas'])):
     """Information about a resource reservation."""
 
 
@@ -114,39 +115,21 @@ def set_quota_usage(context, resource, project_id, in_use=None, delta=False):
 
 @db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
-def set_quota_usage_dirty(context, resource, project_id, dirty=True):
-    """Set quota usage dirty bit for a given resource and project.
-
-    :param resource: a resource for which quota usage if tracked
-    :param project_id: project identifier
-    :param dirty: the desired value for the dirty bit (defaults to True)
-    :returns: 1 if the quota usage data were updated, 0 otherwise.
-    """
-    obj = quota_obj.QuotaUsage.get_object(
-        context, resource=resource, project_id=project_id)
-    if obj:
-        obj.dirty = dirty
-        obj.update()
-        return 1
-    return 0
-
-
-@db_api.retry_if_session_inactive()
-@db_api.CONTEXT_WRITER
 def set_resources_quota_usage_dirty(context, resources, project_id,
                                     dirty=True):
-    """Set quota usage dirty bit for a given project and multiple resources.
+    """Set quota usage dirty bit for a given project and one/multiple resources
 
-    :param resources: list of resource for which the dirty bit is going
-                      to be set
+    :param resources: (list of strings, string) list of resources or one single
+                      resource, for which the dirty bit is going to be set
     :param project_id: project identifier
     :param dirty: the desired value for the dirty bit (defaults to True)
     :returns: the number of records for which the bit was actually set.
     """
-    filters = {'project_id': project_id}
+    filters = {}
     if resources:
         filters['resource'] = resources
-    objs = quota_obj.QuotaUsage.get_objects(context, **filters)
+    objs = quota_obj.QuotaUsage.get_objects(context, project_id=project_id,
+                                            **filters)
     for obj in objs:
         obj.dirty = dirty
         obj.update()
@@ -176,7 +159,7 @@ def create_reservation(context, project_id, deltas, expiration=None):
     # This method is usually called from within another transaction.
     # Consider using begin_nested
     expiration = expiration or (
-            utcnow() + datetime.timedelta(0, RESERVATION_EXPIRATION_TIMEOUT))
+        utcnow() + datetime.timedelta(0, RESERVATION_EXPIRATION_TIMEOUT))
     delta_objs = []
     for (resource, delta) in deltas.items():
         delta_objs.append(quota_obj.ResourceDelta(
@@ -188,8 +171,8 @@ def create_reservation(context, project_id, deltas, expiration=None):
     return ReservationInfo(reserv_obj['id'],
                            reserv_obj['project_id'],
                            reserv_obj['expiration'],
-                           dict((delta.resource, delta.amount)
-                                for delta in reserv_obj.resource_deltas))
+                           {delta.resource: delta.amount
+                            for delta in reserv_obj.resource_deltas})
 
 
 @db_api.retry_if_session_inactive()
@@ -200,8 +183,8 @@ def get_reservation(context, reservation_id):
     return ReservationInfo(reserv_obj['id'],
                            reserv_obj['project_id'],
                            reserv_obj['expiration'],
-                           dict((delta.resource, delta.amount)
-                                for delta in reserv_obj.resource_deltas))
+                           {delta.resource: delta.amount
+                            for delta in reserv_obj.resource_deltas})
 
 
 @utils.transaction_guard
@@ -212,13 +195,13 @@ def remove_reservation(context, reservation_id, set_dirty=False):
     if not reservation:
         # TODO(salv-orlando): Raise here and then handle the exception?
         return
-    tenant_id = reservation.project_id
+    project_id = reservation.project_id
     resources = [delta.resource for delta in reservation.resource_deltas]
     reservation.delete()
     if set_dirty:
         # quota_usage for all resource involved in this reservation must
         # be marked as dirty
-        set_resources_quota_usage_dirty(context, resources, tenant_id)
+        set_resources_quota_usage_dirty(context, resources, project_id)
     return 1
 
 

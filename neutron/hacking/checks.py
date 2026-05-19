@@ -37,10 +37,15 @@ tests_imports_dot = re.compile(r"\bimport[\s]+neutron.tests\b")
 tests_imports_from1 = re.compile(r"\bfrom[\s]+neutron.tests\b")
 tests_imports_from2 = re.compile(r"\bfrom[\s]+neutron[\s]+import[\s]+tests\b")
 
-import_mock = re.compile(r"\bimport[\s]+mock\b")
-import_from_mock = re.compile(r"\bfrom[\s]+mock[\s]+import\b")
 import_six = re.compile(r"\bimport[\s]+six\b")
 import_from_six = re.compile(r"\bfrom[\s]+six[\s]+import\b")
+
+import_packaging = re.compile(r"\bimport[\s]+packaging\b")
+import_version_from_packaging = (
+    re.compile(r"\bfrom[\s]+packaging[\s]+import[\s]version\b"))
+
+filter_lazy_subquery = re.compile(r".*lazy=.+subquery")
+filter_subquery_load = re.compile(r".*subqueryload\(")
 
 
 @core.flake8ext
@@ -115,17 +120,6 @@ def check_assertempty(logical_line, filename):
 
 
 @core.flake8ext
-def check_assertisinstance(logical_line, filename):
-    """N331 - Enforce using assertIsInstance."""
-    if 'neutron/tests/' in filename:
-        if re.search(r"assertTrue\(\s*isinstance\(\s*[^,]*,\s*[^,]*\)\)",
-                     logical_line):
-            msg = ("N331: Use assertIsInstance(observed, type) instead "
-                   "of assertTrue(isinstance(observed, type))")
-            yield (0, msg)
-
-
-@core.flake8ext
 def check_assertequal_for_httpcode(logical_line, filename):
     """N332 - Enforce correct ordering for httpcode in assertEqual."""
     msg = ("N332: Use assertEqual(expected_http_code, observed_http_code) "
@@ -149,8 +143,8 @@ def check_oslo_i18n_wrapper(logical_line, filename, noqa):
 
     if (len(split_line) > 1 and split_line[0] in ('import', 'from')):
         if (split_line[1] == bad_i18n_module or
-            modulename != 'neutron' and split_line[1] in ('neutron.i18n',
-                                                          'neutron._i18n')):
+                modulename != 'neutron' and split_line[1] in
+                ('neutron.i18n', 'neutron._i18n')):
             msg = ("N340: %(found)s is found. Use %(module)s._i18n instead."
                    % {'found': split_line[1], 'module': modulename})
             yield (0, msg)
@@ -203,7 +197,7 @@ def check_no_imports_from_tests(logical_line, filename, noqa):
 
     for regex in tests_imports_dot, tests_imports_from1, tests_imports_from2:
         if re.match(regex, logical_line):
-            yield(0, msg)
+            yield (0, msg)
 
 
 @core.flake8ext
@@ -214,7 +208,7 @@ def check_python3_no_filter(logical_line):
            "filter(lambda obj: test(obj), data) on python3.")
 
     if filter_match.match(logical_line):
-        yield(0, msg)
+        yield (0, msg)
 
 
 # TODO(boden): rehome this check to neutron-lib
@@ -236,23 +230,6 @@ def check_no_sqlalchemy_event_import(logical_line, filename, noqa):
 
 
 @core.flake8ext
-def check_no_import_mock(logical_line, filename, noqa):
-    """N347 - Test code must not import mock library
-    """
-    msg = ("N347: Test code must not import mock library")
-
-    if noqa:
-        return
-
-    if 'neutron/tests/' not in filename:
-        return
-
-    for regex in import_mock, import_from_mock:
-        if re.match(regex, logical_line):
-            yield(0, msg)
-
-
-@core.flake8ext
 def check_no_import_six(logical_line, filename, noqa):
     """N348 - Test code must not import six library
     """
@@ -263,4 +240,32 @@ def check_no_import_six(logical_line, filename, noqa):
 
     for regex in import_six, import_from_six:
         if re.match(regex, logical_line):
-            yield(0, msg)
+            yield (0, msg)
+
+
+@core.flake8ext
+def check_no_import_packaging(logical_line, filename, noqa):
+    """N349 - Code must not import packaging library
+    """
+    msg = "N349: Code must not import packaging library"
+
+    if noqa:
+        return
+
+    for regex in import_packaging, import_version_from_packaging:
+        if re.match(regex, logical_line):
+            yield (0, msg)
+
+
+@core.flake8ext
+def check_no_sqlalchemy_lazy_subquery(logical_line):
+    """N350 - Use selectin DB load strategy instead of subquery."""
+
+    msg = ("N350: Use selectin DB load strategy instead of "
+           "subquery with sqlalchemy.")
+
+    if filter_lazy_subquery.match(logical_line):
+        yield (0, msg)
+
+    if filter_subquery_load.match(logical_line):
+        yield (0, msg)

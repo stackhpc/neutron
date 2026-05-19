@@ -15,58 +15,6 @@ from neutron_lib import constants
 
 from neutron.api import extensions
 from neutron.api.v2 import base
-from neutron.pecan_wsgi import controllers
-from neutron.pecan_wsgi.controllers import utils as pecan_utils
-
-
-class FakeSingularCollectionExtension(api_extensions.ExtensionDescriptor):
-
-    COLLECTION = 'topologies'
-    RESOURCE = 'topology'
-
-    RAM = {
-        COLLECTION: {
-            'fake': {'is_visible': True}
-        }
-    }
-
-    @classmethod
-    def get_name(cls):
-        return ""
-
-    @classmethod
-    def get_alias(cls):
-        return "fake-sc"
-
-    @classmethod
-    def get_description(cls):
-        return ""
-
-    @classmethod
-    def get_updated(cls):
-        return "2099-07-23T10:00:00-00:00"
-
-    def get_extended_resources(self, version):
-        if version == "2.0":
-            return self.RAM
-        else:
-            return {}
-
-    def get_pecan_controllers(self):
-        ctrllr = controllers.CollectionsController(
-            self.RESOURCE, self.RESOURCE)
-        return [pecan_utils.PecanResourceExtension(self.RESOURCE, ctrllr)]
-
-
-class FakeSingularCollectionPlugin(object):
-
-    supported_extension_aliases = ['fake-sc']
-
-    def get_topology(self, context, id_, fields=None):
-        return {'fake': id_}
-
-    def get_topologies(self, context, filters=None, fields=None):
-        return [{'fake': 'fake'}]
 
 
 def create_network(context, plugin):
@@ -74,7 +22,7 @@ def create_network(context, plugin):
         context,
         {'network':
          {'name': 'pecannet',
-          'tenant_id': 'tenid',
+          'project_id': 'projid',
           'shared': False,
           'admin_state_up': True,
           'status': 'ACTIVE'}})
@@ -84,7 +32,7 @@ def create_subnet(context, plugin, network_id):
     return plugin.create_subnet(
         context,
         {'subnet':
-         {'tenant_id': 'tenid',
+         {'project_id': 'projid',
           'network_id': network_id,
           'name': 'pecansub',
           'ip_version': constants.IP_VERSION_4,
@@ -103,7 +51,7 @@ def create_router(context, l3_plugin):
         context,
         {'router':
          {'name': 'pecanrtr',
-          'tenant_id': 'tenid',
+          'project_id': 'projid',
           'admin_state_up': True}})
 
 
@@ -200,11 +148,10 @@ class FakeExtension(api_extensions.ExtensionDescriptor):
     def get_extended_resources(self, version):
         if version == "2.0":
             return self.RESOURCE_ATTRIBUTE_MAP
-        else:
-            return {}
+        return {}
 
 
-class FakePlugin(object):
+class FakePlugin:
 
     PLUGIN_TYPE = 'fake-ext-plugin'
     supported_extension_aliases = ['fake-ext']

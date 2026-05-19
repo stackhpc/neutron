@@ -21,6 +21,7 @@ from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import excutils
 from sqlalchemy import exc as sql_exc
+from sqlalchemy import func
 from sqlalchemy.orm import session as se
 
 from neutron._i18n import _
@@ -58,7 +59,7 @@ def _count_resource(context, collection_name, project_id):
         _('No plugins that support counting %s found.') % collection_name)
 
 
-class BaseResource(object, metaclass=abc.ABCMeta):
+class BaseResource(metaclass=abc.ABCMeta):
     """Describe a single resource for quota checking."""
 
     def __init__(self, name, flag, plural_name=None):
@@ -147,7 +148,7 @@ class CountableResource(BaseResource):
                             Dashes are always converted to underscores.
         """
 
-        super(CountableResource, self).__init__(
+        super().__init__(
             name, flag=flag, plural_name=plural_name)
         self._count_func = count
 
@@ -188,7 +189,7 @@ class TrackedResource(BaseResource):
                             Dashes are always converted to underscores.
 
         """
-        super(TrackedResource, self).__init__(
+        super().__init__(
             name, flag=flag, plural_name=plural_name)
         # Register events for addition/removal of records in the model class
         # As project_id is immutable for all Neutron objects there is no need
@@ -222,7 +223,8 @@ class TrackedResource(BaseResource):
             # won't be harmful.
             dirty_projects_snap = self._dirty_projects.copy()
             for project_id in dirty_projects_snap:
-                quota_api.set_quota_usage_dirty(context, self.name, project_id)
+                quota_api.set_resources_quota_usage_dirty(context, self.name,
+                                                          project_id)
         self._out_of_sync_projects |= dirty_projects_snap
         self._dirty_projects -= dirty_projects_snap
 
@@ -255,6 +257,7 @@ class TrackedResource(BaseResource):
                   {'project_id': project_id, 'resource': self.name})
         return usage_info
 
+    @db_api.CONTEXT_WRITER
     def resync(self, context, project_id):
         if (project_id not in self._out_of_sync_projects or
                 not self._track_resource_events):
@@ -295,7 +298,7 @@ class TrackedResource(BaseResource):
                                   'project_id': project_id})
             in_use = context.session.query(
                 self._model_class.project_id).filter_by(
-                    project_id=project_id).count()
+                    project_id=project_id).with_entities(func.count()).scalar()
 
             # Update quota usage, if requested (by default do not do that, as
             # typically one counts before adding a record, and that would mark
@@ -355,7 +358,7 @@ class TrackedResource(BaseResource):
         with db_api.CONTEXT_READER.using(admin_context):
             query = admin_context.session.query(self._model_class.project_id)
             query = query.filter(self._model_class.project_id == project_id)
-            return query.count()
+            return query.with_entities(func.count()).scalar()
 
     def _except_bulk_delete(self, delete_context):
         if delete_context.mapper.class_ == self._model_class:

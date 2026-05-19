@@ -15,17 +15,21 @@
 #    under the License.
 
 from neutron_lib.api.definitions import auto_allocated_topology
-
+from neutron_lib.services import base as service_base
 
 from neutron.services.auto_allocate import db
 
 
-class Plugin(db.AutoAllocatedTopologyMixin):
+class Plugin(service_base.ServicePluginBase,
+             db.AutoAllocatedTopologyMixin):
 
     _instance = None
 
     supported_extension_aliases = [auto_allocated_topology.ALIAS]
 
+    # TODO(ralonsoh): this class should inherit from
+    # ``neutron_lib.services.base.ServicePluginBase``, then this attribute
+    # should be deleted.
     __filter_validation_support = True
 
     @classmethod

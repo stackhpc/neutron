@@ -17,6 +17,7 @@ from neutron_lib import constants
 from neutron_lib.utils import net
 from oslo_config import cfg
 from oslo_service import wsgi
+from oslo_utils import netutils
 
 from neutron._i18n import _
 
@@ -32,7 +33,7 @@ core_opts = [
                       "For example: api_extensions_path = "
                       "extensions:/path/to/more/exts:/even/more/exts. "
                       "The __path__ of neutron.extensions is appended to "
-                      "this, so if your extensions are in there you don't "
+                      "this, so if your extensions are in there you do not "
                       "need to specify them here.")),
     cfg.StrOpt('auth_strategy', default='keystone',
                help=_("The type of authentication to use")),
@@ -49,7 +50,7 @@ core_opts = [
                 help=_("Allow the usage of the bulk API")),
     cfg.StrOpt('pagination_max_limit', default="-1",
                help=_("The maximum number of items returned in a single "
-                      "response, value was 'infinite' or negative integer "
+                      "response, value of 'infinite' or negative integer "
                       "means no limit")),
     cfg.ListOpt('default_availability_zones', default=[],
                 help=_("Default value of availability zone hints. The "
@@ -67,8 +68,7 @@ core_opts = [
                help=_("Maximum number of host routes per subnet")),
     cfg.BoolOpt('ipv6_pd_enabled', default=False,
                 help=_("Warning: This feature is experimental with low test "
-                       "coverage, and the Dibbler client which is used for "
-                       "this feature is no longer maintained! "
+                       "coverage. "
                        "Enables IPv6 Prefix Delegation for automatic subnet "
                        "CIDR allocation. "
                        "Set to True to enable IPv6 Prefix Delegation for "
@@ -77,7 +77,13 @@ core_opts = [
                        "without providing a CIDR or subnetpool ID will be "
                        "given a CIDR via the Prefix Delegation mechanism. "
                        "Note that enabling PD will override the behavior of "
-                       "the default IPv6 subnetpool.")),
+                       "the default IPv6 subnetpool."),
+                deprecated_for_removal=True,
+                deprecated_since='2023.2',
+                deprecated_reason=(
+                    "There is no reference implementation for the feature for "
+                    "any of in-tree drivers."),
+                ),
     cfg.IntOpt('dhcp_lease_duration', default=86400,
                help=_("DHCP lease duration (in seconds). Use -1 to tell "
                       "dnsmasq to use infinite lease times.")),
@@ -101,12 +107,12 @@ core_opts = [
                       "is empty (the default), the URLs are returned "
                       "unchanged.")),
     cfg.BoolOpt('notify_nova_on_port_status_changes', default=True,
-                help=_("Send notification to nova when port status changes")),
+                help=_("Send notification to Nova when port status changes")),
     cfg.BoolOpt('notify_nova_on_port_data_changes', default=True,
-                help=_("Send notification to nova when port data (fixed_ips/"
-                       "floatingip) changes so nova can update its cache.")),
+                help=_("Send notification to Nova when port data (fixed_ips/"
+                       "floatingip) changes so Nova can update its cache.")),
     cfg.IntOpt('send_events_interval', default=2,
-               help=_('Number of seconds between sending events to nova if '
+               help=_('Number of seconds between sending events to Nova if '
                       'there are any events to send.')),
     cfg.StrOpt('setproctitle', default='on',
                help=_("Set process name to match child worker role. "
@@ -119,16 +125,33 @@ core_opts = [
                help=_("Neutron IPAM (IP address management) driver to use. "
                       "By default, the reference implementation of the "
                       "Neutron IPAM driver is used.")),
-    cfg.BoolOpt('vlan_transparent', default=False,
+    cfg.BoolOpt('vlan_transparent', default=None,
+                deprecated_for_removal=True,
+                deprecated_reason=_(
+                     'This option is going to be removed as availability '
+                     'of the `vlan_transparency` in the deployment is '
+                     'now calculated automatically based on the loaded '
+                     'mechanism drivers.'),
+                deprecated_since='2025.2',
                 help=_('If True, then allow plugins that support it to '
                        'create VLAN transparent networks.')),
+    cfg.BoolOpt('vlan_qinq', default=None,
+                deprecated_for_removal=True,
+                deprecated_reason=_(
+                     'This option is going to be removed as availability '
+                     'of the `vlan_qinq` in the deployment is '
+                     'now calculated automatically based on the loaded '
+                     'mechanism drivers.'),
+                deprecated_since='2025.2',
+                help=_('If True, then allow plugins that support it to '
+                       'create VLAN transparent networks using 0x8a88 '
+                       'ethertype.')),
     cfg.BoolOpt('filter_validation', default=True,
                 help=_('If True, then allow plugins to decide '
                        'whether to perform validations on filter parameters. '
                        'Filter validation is enabled if this config '
                        'is turned on and it is supported by all plugins')),
     cfg.IntOpt('global_physnet_mtu', default=constants.DEFAULT_NETWORK_MTU,
-               deprecated_name='segment_mtu', deprecated_group='ml2',
                help=_('MTU of the underlying physical network. Neutron uses '
                       'this value to calculate MTU for all virtual network '
                       'components. For flat and VLAN networks, neutron uses '
@@ -137,7 +160,7 @@ core_opts = [
                       'overlay protocol overhead from this value. Defaults '
                       'to 1500, the standard value for Ethernet.')),
     cfg.IntOpt('http_retries', default=3, min=0,
-               help=_("Number of times client connections (nova, ironic) "
+               help=_("Number of times client connections (Nova, Ironic) "
                       "should be retried on a failed HTTP call. 0 (zero) "
                       "means connection is attempted only once (not retried). "
                       "Setting to any positive integer means that on failure "
@@ -146,11 +169,19 @@ core_opts = [
                       "connect will be 4.")),
     cfg.BoolOpt('enable_traditional_dhcp', default=True,
                 help=_('If False, neutron-server will disable the following '
-                       'DHCP-agent related functions:'
+                       'DHCP-agent related functions: '
                        '1. DHCP provisioning block '
                        '2. DHCP scheduler API extension '
                        '3. Network scheduling mechanism '
                        '4. DHCP RPC/notification')),
+    cfg.StrOpt('my_ip', default=netutils.get_my_ipv4(),
+               help=_('IPv4 address of this host. If no address is provided '
+                      'and one cannot be determined, 127.0.0.1 will be '
+                      'used.')),
+    cfg.StrOpt('my_ipv6', default=netutils.get_my_ipv6(),
+               help=_('IPv6 address of this host. If no address is provided '
+                      'and one cannot be determined, ::1 will be '
+                      'used.')),
 ]
 
 core_cli_opts = [
@@ -171,13 +202,13 @@ NOVA_CONF_SECTION = 'nova'
 
 nova_opts = [
     cfg.StrOpt('region_name',
-               help=_('Name of nova region to use. Useful if keystone manages'
+               help=_('Name of Nova region to use. Useful if Keystone manages'
                       ' more than one region.')),
     cfg.StrOpt('endpoint_type',
                default='public',
                choices=['public', 'admin', 'internal'],
-               help=_('Type of the nova endpoint to use.  This endpoint will'
-                      ' be looked up in the keystone catalog and should be'
+               help=_('Type of the Nova endpoint to use.  This endpoint will'
+                      ' be looked up in the Keystone catalog and should be'
                       ' one of public, internal or admin.')),
 ]
 
@@ -190,13 +221,13 @@ PLACEMENT_CONF_SECTION = 'placement'
 
 placement_opts = [
     cfg.StrOpt('region_name',
-               help=_('Name of placement region to use. Useful if keystone '
+               help=_('Name of placement region to use. Useful if Keystone '
                       'manages more than one region.')),
     cfg.StrOpt('endpoint_type',
                default='public',
                choices=['public', 'admin', 'internal'],
                help=_('Type of the placement endpoint to use.  This endpoint '
-                      'will be looked up in the keystone catalog and should '
+                      'will be looked up in the Keystone catalog and should '
                       'be one of public, internal or admin.')),
 ]
 
@@ -209,7 +240,7 @@ IRONIC_CONF_SECTION = 'ironic'
 
 ironic_opts = [
     cfg.BoolOpt('enable_notifications', default=False,
-                help=_("Send notification events to ironic. (For example on "
+                help=_("Send notification events to Ironic. (For example on "
                        "relevant port status changes.)")),
 ]
 

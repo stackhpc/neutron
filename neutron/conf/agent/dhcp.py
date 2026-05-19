@@ -19,13 +19,13 @@ from oslo_config import cfg
 
 from neutron._i18n import _
 from neutron.conf.agent import common
-
+from neutron.conf.agent.metadata import config as meta_conf
 
 DHCP_AGENT_OPTS = [
     cfg.IntOpt('resync_interval', default=5,
                help=_("The DHCP agent will resync its state with Neutron to "
                       "recover from any transient notification or RPC errors. "
-                      "The interval is maximum number of seconds between "
+                      "The interval is the maximum number of seconds between "
                       "attempts. The resync can be done more often based on "
                       "the events triggered.")),
     cfg.IntOpt('resync_throttle', default=1,
@@ -47,7 +47,7 @@ DHCP_AGENT_OPTS = [
                        "will only be activated when the subnet does not "
                        "contain any router port. The guest instance must be "
                        "configured to request host routes via DHCP (Option "
-                       "121). This option doesn't have any effect when "
+                       "121). This option does not have any effect when "
                        "force_metadata is set to True.")),
     cfg.BoolOpt('force_metadata', default=False,
                 help=_("In some cases the Neutron router is not present to "
@@ -55,7 +55,7 @@ DHCP_AGENT_OPTS = [
                        "used to provide this info. Setting this value will "
                        "force the DHCP server to append specific host routes "
                        "to the DHCP request. If this option is set, then the "
-                       "metadata service will be activated for all the "
+                       "metadata service will be activated for all of the "
                        "networks.")),
     cfg.BoolOpt('enable_metadata_network', default=False,
                 help=_("Allows for serving metadata requests coming from a "
@@ -74,8 +74,7 @@ DHCP_AGENT_OPTS = [
                help=_('Time to sleep between reloading the DHCP allocations. '
                       'This will only be invoked if the value is not 0. '
                       'If a network has N updates in X seconds then '
-                      'we will reload once with the port changes in the X '
-                      'seconds and not N times.')),
+                      'it will reload once and not N times.')),
 ]
 
 DHCP_OPTS = [
@@ -113,7 +112,16 @@ DNSMASQ_OPTS = [
                 help=_("Use broadcast in DHCP replies.")),
     cfg.BoolOpt('dnsmasq_enable_addr6_list', default=False,
                 help=_("Enable dhcp-host entry with list of addresses when "
-                       "port has multiple IPv6 addresses in the same subnet."))
+                       "port has multiple IPv6 addresses in the same "
+                       "subnet.")),
+    cfg.StrOpt('dnsmasq_txt_record', default='',
+               help=_("Return a TXT DNS record "
+                      "(option format: <name>[[,<text>],<text>]). "
+                      "The value of the TXT record is a set of strings, so "
+                      "any number may be included, delimited by commas; use "
+                      "quotes to put commas into a string. Note that the "
+                      "maximum length of a single string is 255 characters, "
+                      "longer strings are split into 255 character chunks."))
 ]
 
 
@@ -122,3 +130,6 @@ def register_agent_dhcp_opts(cfg=cfg.CONF):
     cfg.register_opts(DHCP_OPTS)
     cfg.register_opts(DNSMASQ_OPTS)
     cfg.register_opts(common.DHCP_PROTOCOL_OPTS)
+    meta_conf.register_meta_conf_opts(meta_conf.METADATA_RATE_LIMITING_OPTS,
+                                      cfg=cfg,
+                                      group=meta_conf.RATE_LIMITING_GROUP)

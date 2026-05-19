@@ -31,7 +31,7 @@ from neutron import manager
 LOG = logging.getLogger(__name__)
 
 
-class QosAgentDriver(object, metaclass=abc.ABCMeta):
+class QosAgentDriver(metaclass=abc.ABCMeta):
     """Defines stable abstract interface for QoS Agent Driver.
 
     QoS Agent driver defines the interface to be implemented by Agent
@@ -111,8 +111,8 @@ class QosAgentDriver(object, metaclass=abc.ABCMeta):
     def _handle_rule_delete(self, port, rule_type, ingress=False):
         handler_name = "".join(("delete_", rule_type))
         if ingress:
-            handler_name = "%s_%s" % (handler_name,
-                                      constants.INGRESS_DIRECTION)
+            handler_name = "{}_{}".format(handler_name,
+                                          constants.INGRESS_DIRECTION)
         handler = getattr(self, handler_name)
         handler(port)
 
@@ -138,7 +138,7 @@ class QosAgentDriver(object, metaclass=abc.ABCMeta):
         return rule_direction == constants.INGRESS_DIRECTION
 
 
-class PortPolicyMap(object):
+class PortPolicyMap:
     def __init__(self):
         # we cannot use a dict of sets here because port dicts are not hashable
         self.qos_policy_ports = collections.defaultdict(dict)
@@ -257,7 +257,7 @@ class QosAgentExtension(l2_extension.L2AgentExtension):
 
         qos_policy = self.policy_map.get_policy(
             qos_policy_id) or self.resource_rpc.pull(
-            context, resources.QOS_POLICY, qos_policy_id)
+                context, resources.QOS_POLICY, qos_policy_id)
         if qos_policy is None:
             LOG.info("QoS policy %(qos_policy_id)s applied to port "
                      "%(port_id)s is not available on server, "

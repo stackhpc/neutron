@@ -15,6 +15,7 @@
 import collections
 from unittest import mock
 
+from neutron_lib import constants as lib_const
 from neutron_lib import exceptions
 from neutron_lib.plugins.ml2 import ovs_constants as p_const
 from oslo_serialization import jsonutils
@@ -29,7 +30,7 @@ from neutron.plugins.ml2.drivers.openvswitch.agent.common \
 from neutron.tests import base
 
 
-class OFCTLParamListMatcher(object):
+class OFCTLParamListMatcher:
 
     def _parse(self, params):
         actions_pos = params.find('actions')
@@ -47,7 +48,7 @@ class OFCTLParamListMatcher(object):
     __repr__ = __str__
 
 
-class StringSetMatcher(object):
+class StringSetMatcher:
     """A helper object for unordered CSV strings
 
     Will compare equal if both strings, when read as a comma-separated set
@@ -55,6 +56,7 @@ class StringSetMatcher(object):
 
     Example: "a,b,45" == "b,45,a"
     """
+
     def __init__(self, string, separator=','):
         self.separator = separator
         self.set = set(string.split(self.separator))
@@ -67,7 +69,24 @@ class StringSetMatcher(object):
 
     def __repr__(self):
         sep = '' if self.separator == ',' else " on %s" % self.separator
-        return '<comma-separated string for %s%s>' % (self.set, sep)
+        return f'<comma-separated string for {self.set}{sep}>'
+
+
+class OVS_Lib_Test_Common(base.BaseTestCase):
+    """A test suite to exercise the OVS libraries common functions"""
+
+    def test_get_gre_tunnel_port_type(self):
+        ptype = ovs_lib.get_gre_tunnel_port_type('192.168.1.2', '192.168.1.1')
+        self.assertEqual(lib_const.TYPE_GRE, ptype)
+
+    def test_get_gre_tunnel_port_type_ipv6(self):
+        ptype = ovs_lib.get_gre_tunnel_port_type('2001:db8::1:2',
+                                                 '2001:db8::1:1')
+        self.assertEqual(lib_const.TYPE_GRE_IP6, ptype)
+
+    def test_version_from_protocol(self):
+        ofproto = ovs_lib.version_from_protocol(p_const.OPENFLOW10)
+        self.assertEqual(1, ofproto)
 
 
 class OVS_Lib_Test(base.BaseTestCase):
@@ -78,7 +97,7 @@ class OVS_Lib_Test(base.BaseTestCase):
     """
 
     def setUp(self):
-        super(OVS_Lib_Test, self).setUp()
+        super().setUp()
         self.BR_NAME = "br-int"
 
         # Don't attempt to connect to ovsdb
@@ -140,7 +159,7 @@ class OVS_Lib_Test(base.BaseTestCase):
             ('cookie', 1754),
             ('priority', 3),
             ('tun_id', lsw_id),
-            ('actions', "mod_vlan_vid:%s,output:%s" % (vid, ofport))])
+            ('actions', f"mod_vlan_vid:{vid},output:{ofport}")])
         flow_dict_7 = collections.OrderedDict([
             ('cookie', 1256),
             ('priority', 4),
@@ -367,10 +386,10 @@ class OVS_Lib_Test(base.BaseTestCase):
                                  "%s,in_port=%d" % (cookie_spec, ofport))),
             self._ofctl_mock("del-flows", self.BR_NAME, '-',
                              process_input=StringSetMatcher(
-                                 "%s,tun_id=%s" % (cookie_spec, lsw_id))),
+                                 f"{cookie_spec},tun_id={lsw_id}")),
             self._ofctl_mock("del-flows", self.BR_NAME, '-',
                              process_input=StringSetMatcher(
-                                 "%s,dl_vlan=%s" % (cookie_spec, vid))),
+                                 f"{cookie_spec},dl_vlan={vid}")),
             self._ofctl_mock("del-flows", self.BR_NAME, '-',
                              process_input="%s" % cookie_spec),
         ]
@@ -499,7 +518,7 @@ class OVS_Lib_Test(base.BaseTestCase):
             ovs_row = []
             r["data"].append(ovs_row)
             for cell in row:
-                if isinstance(cell, (str, int, list)):
+                if isinstance(cell, str | int | list):
                     ovs_row.append(cell)
                 elif isinstance(cell, dict):
                     ovs_row.append(["map", cell.items()])
@@ -689,7 +708,7 @@ class OVS_Lib_Test(base.BaseTestCase):
 class TestDeferredOVSBridge(base.BaseTestCase):
 
     def setUp(self):
-        super(TestDeferredOVSBridge, self).setUp()
+        super().setUp()
 
         self.br = mock.Mock()
         self.mock_do_action_flows_by_group_id = mock.patch.object(
@@ -735,8 +754,6 @@ class TestDeferredOVSBridge(base.BaseTestCase):
                 raise Exception()
         except Exception:
             self._verify_mock_call([])
-        else:
-            self.fail('Exception would be reraised')
 
     def test_apply(self):
         expected_calls = [

@@ -114,7 +114,7 @@ ipv6_ra_mode and ipv6_address_mode combinations
      - Not currently implemented in the reference implementation.
    * - dhcpv6-stateful
      - *N/S*
-     - 0,1,1
+     - 0,1,0
      - Off
      - Not currently implemented in the reference implementation.
    * - dhcpv6-stateless
@@ -129,7 +129,7 @@ ipv6_ra_mode and ipv6_address_mode combinations
      - Guest instance obtains IPv6 address from OpenStack managed radvd using SLAAC.
    * - dhcpv6-stateful
      - dhcpv6-stateful
-     - 0,1,1
+     - 0,1,0
      - Off
      - Guest instance obtains IPv6 address from dnsmasq using DHCPv6
        stateful and optional info from dnsmasq using DHCPv6.
@@ -175,20 +175,43 @@ ipv6_ra_mode and ipv6_address_mode combinations
 *M - Managed Address Configuration Flag,*
 *O - Other Configuration Flag*
 
+.. note::
+
+    If the M flag is set to 1, the O flag can be either 1 or 0.
+    This is because the O flag can be ignored when the M flag is set to 1,
+    as mentioned in `RFC 4861 <https://www.rfc-editor.org/rfc/rfc4861#section-4.2>`_
+    below:
+
+    "If the M flag is set, the O flag is redundant and
+    can be ignored because DHCPv6 will return all
+    available configuration information."
+
+    For this reason, the neutron-generated advertisements will have the M flag
+    set to 1 and the O flag set to 0.
+
 Project network considerations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Dataplane
 ---------
 
-Both the Linux bridge and the Open vSwitch dataplane modules support
-forwarding IPv6
+All dataplane modules, including OVN and Open vSwitch,
+support forwarding IPv6
 packets amongst the guests and router ports. Similar to IPv4, there is no
 special configuration or setup required to enable the dataplane to properly
 forward packets from the source to the destination using IPv6. Note that these
 dataplanes will forward Link-local Address (LLA) packets between hosts on the
 same network just fine without any participation or setup by OpenStack
 components after the ports are all connected and MAC addresses learned.
+
+.. warning::
+   The only exception to this is the setting of the MTU value on
+   the network an IPv6 subnet is created on. If the MTU is less than
+   1280 octets (the minimum link MTU value specified in
+   `RFC 8200 <https://www.rfc-editor.org/rfc/rfc8200>`__), then it
+   could lead to issues configuring both IPv6 and IPv4 addresses on
+   the network, leaving the subnets unusable. For that reason, the API
+   validates the MTU value when subnets are created to avoid this issue.
 
 Addresses for subnets
 ---------------------
@@ -327,8 +350,8 @@ follows:
 Setting DHCPv6-stateless for ``ipv6_ra_mode`` configures the neutron
 router with an radvd agent to send Router Advertisements. The list below
 captures the values set for the address configuration flags in the Router
-Advertisement messages in this scenario. Similarly, setting DHCPv6-stateless for
-``ipv6_address_mode`` configures neutron DHCP implementation to provide
+Advertisement messages in this scenario. Similarly, setting DHCPv6-stateless
+for ``ipv6_address_mode`` configures neutron DHCP implementation to provide
 the additional network information.
 
 * Autonomous Address Configuration Flag = 1
@@ -338,19 +361,33 @@ the additional network information.
 Setting DHCPv6-stateful for ``ipv6_ra_mode`` configures the neutron
 router with an radvd agent to send Router Advertisements. The list below
 captures the values set for the address configuration flags in the Router
-Advertisements messages in this scenario. Similarly, setting DHCPv6-stateful for
-``ipv6_address_mode`` configures neutron DHCP implementation to provide
+Advertisements messages in this scenario. Similarly, setting DHCPv6-stateful
+for ``ipv6_address_mode`` configures neutron DHCP implementation to provide
 addresses and additional network information through DHCPv6.
 
 * Autonomous Address Configuration Flag = 0
 * Managed Address Configuration Flag = 1
-* Other Configuration Flag = 1
+* Other Configuration Flag = 0
 
 .. note::
 
     If a router is not created and added to the subnet, DHCPv6 addressing will
     not succeed for instances since no Router Advertisement messages will
     be generated.
+
+.. note::
+
+    If the M flag is set to 1, the O flag can be either 1 or 0.
+    This is because the O flag can be ignored when the M flag is set to 1,
+    as mentioned in `RFC 4861 <https://www.rfc-editor.org/rfc/rfc4861#section-4.2>`_
+    below:
+
+    "If the M flag is set, the O flag is redundant and
+    can be ignored because DHCPv6 will return all
+    available configuration information."
+
+    For this reason, the neutron-generated advertisements will have the M flag
+    set to 1 and the O flag set to 0.
 
 Router support
 ~~~~~~~~~~~~~~
@@ -485,13 +522,6 @@ addresses are generated using an EUI64-based value.
 Other types of guests might have similar configuration options, please
 consult your distribution documentation for more information.
 
-There are no provisions for an IPv6-based metadata service similar to what is
-provided for IPv4. In the case of dual-stacked guests though it is always
-possible to use the IPv4 metadata service instead. IPv6-only guests will have
-to use another method for metadata injection such as using a configuration
-drive, which is described in the Nova documentation on
-`config-drive <https://docs.openstack.org/nova/latest/user/config-drive.html>`__.
-
 Unlike IPv4, the MTU of a given network can be conveyed in both the Router
 Advertisement messages sent by the router, as well as in DHCP messages.
 
@@ -513,9 +543,9 @@ Prefix delegation
 
 .. warning::
 
-   This feature is experimental with low test coverage, and the Dibbler client
-   which is used for this feature is no longer maintained. For details see:
-   https://github.com/tomaszmrugalski/dibbler#project-status
+   This feature is experimental with low test coverage. There is currently no
+   reference implementation that would implement the feature in the tree. A
+   third party driver may have to be used to utilize it.
 
 From the Liberty release onwards, OpenStack Networking supports IPv6 prefix
 delegation. This section describes the configuration and workflow steps
@@ -523,12 +553,6 @@ necessary to use IPv6 prefix delegation to provide automatic allocation of
 subnet CIDRs. This allows you as the OpenStack administrator to rely on an
 external (to the OpenStack Networking service) DHCPv6 server to manage your
 project network prefixes.
-
-.. note::
-
-   Prefix delegation became available in the Liberty release, it is
-   not available in the Kilo release. HA and DVR routers
-   are not currently supported by this feature.
 
 Configuring OpenStack Networking for prefix delegation
 ------------------------------------------------------
@@ -541,15 +565,7 @@ To enable prefix delegation, edit the ``/etc/neutron/neutron.conf`` file.
 
 .. note::
 
-   If you are not using the default dibbler-based driver for prefix
-   delegation, then you also need to set the driver in
-   ``/etc/neutron/neutron.conf``:
-
-   .. code-block:: console
-
-      pd_dhcp_driver = <class path to driver>
-
-   Drivers other than the default one may require extra configuration.
+   Drivers may require extra configuration.
 
 This tells OpenStack Networking to use the prefix delegation mechanism for
 subnet allocation when the user does not provide a CIDR or subnet pool id when
@@ -565,10 +581,6 @@ For the purposes of this guide we are using the open-source DHCPv6 server,
 Dibbler. Dibbler is available in many Linux package managers, or from source at
 `tomaszmrugalski/dibbler <https://github.com/tomaszmrugalski/dibbler>`_.
 
-When using the reference implementation of the OpenStack Networking prefix
-delegation driver, Dibbler must also be installed on your OpenStack Networking
-node(s) to serve as a DHCPv6 client. Version 1.0.1 or higher is required.
-
 This guide assumes that you are running a Dibbler server on the network node
 where the external network bridge exists. If you already have a prefix
 delegation capable DHCPv6 server in place, then you can skip the following
@@ -579,7 +591,7 @@ Configuring the Dibbler server
 
 After installing Dibbler, edit the ``/etc/dibbler/server.conf`` file:
 
-.. code-block:: none
+.. code-block::
 
     script "/var/lib/dibbler/pd-server.sh"
 
@@ -693,18 +705,19 @@ First, create a network and IPv6 subnet:
    +---------------------------+--------------------------------------+
 
    $ openstack subnet create --ip-version 6 --ipv6-ra-mode slaac \
-   --ipv6-address-mode slaac --use-default-subnet-pool \
+   --ipv6-address-mode slaac --use-prefix-delegation \
    --network ipv6-pd ipv6-pd-1
    +------------------------+--------------------------------------+
    | Field                  | Value                                |
    +------------------------+--------------------------------------+
-   | allocation_pools       | ::2-::ffff:ffff:ffff:ffff            |
+   | allocation_pools       | ::1-::ffff:ffff:ffff:ffff            |
    | cidr                   | ::/64                                |
    | created_at             | 2017-01-25T19:31:53Z                 |
    | description            |                                      |
    | dns_nameservers        |                                      |
+   | dns_publish_fixed_ip   | None                                 |
    | enable_dhcp            | True                                 |
-   | gateway_ip             | ::1                                  |
+   | gateway_ip             | ::                                   |
    | headers                |                                      |
    | host_routes            |                                      |
    | id                     | 1319510d-c92c-4532-bf5d-8bcf3da761a1 |
@@ -717,9 +730,8 @@ First, create a network and IPv6 subnet:
    | revision_number        | 2                                    |
    | service_types          |                                      |
    | subnetpool_id          | prefix_delegation                    |
-   | tags                   | []                                   |
+   | tags                   |                                      |
    | updated_at             | 2017-01-25T19:31:53Z                 |
-   | use_default_subnetpool | True                                 |
    +------------------------+--------------------------------------+
 
 The subnet is initially created with a temporary CIDR before one can be

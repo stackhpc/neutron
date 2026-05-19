@@ -22,7 +22,7 @@ from neutron.tests.unit.conf.policies import test_base as base
 class NetworkAPITestCase(base.PolicyBaseTestCase):
 
     def setUp(self):
-        super(NetworkAPITestCase, self).setUp()
+        super().setUp()
         self.target = {'project_id': self.project_id}
         self.alt_target = {'project_id': self.alt_project_id}
 
@@ -30,7 +30,7 @@ class NetworkAPITestCase(base.PolicyBaseTestCase):
 class SystemAdminTests(NetworkAPITestCase):
 
     def setUp(self):
-        super(SystemAdminTests, self).setUp()
+        super().setUp()
         self.context = self.system_admin_ctx
 
     def test_create_network(self):
@@ -128,6 +128,15 @@ class SystemAdminTests(NetworkAPITestCase):
             self.context, 'create_network:provider:segmentation_id',
             self.alt_target)
 
+    def test_create_network_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'create_network:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'create_network:tags',
+            self.alt_target)
+
     def test_get_network(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -138,18 +147,6 @@ class SystemAdminTests(NetworkAPITestCase):
             base_policy.InvalidScope,
             policy.enforce,
             self.context, 'get_network',
-            self.alt_target)
-
-    def test_get_network_external(self):
-        self.assertRaises(
-            base_policy.InvalidScope,
-            policy.enforce,
-            self.context, 'get_network:router:external',
-            self.target)
-        self.assertRaises(
-            base_policy.InvalidScope,
-            policy.enforce,
-            self.context, 'get_network:router:external',
             self.alt_target)
 
     def test_get_network_segments(self):
@@ -194,6 +191,18 @@ class SystemAdminTests(NetworkAPITestCase):
             base_policy.InvalidScope,
             policy.enforce,
             self.context, 'get_network:provider:segmentation_id',
+            self.alt_target)
+
+    def test_get_network_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'get_network:tags',
+            self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'get_network:tags',
             self.alt_target)
 
     def test_update_network(self):
@@ -291,6 +300,15 @@ class SystemAdminTests(NetworkAPITestCase):
             self.context, 'update_network:port_security_enabled',
             self.alt_target)
 
+    def test_update_network_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'update_network:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'update_network:tags',
+            self.alt_target)
+
     def test_delete_network(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -299,25 +317,34 @@ class SystemAdminTests(NetworkAPITestCase):
             base_policy.InvalidScope,
             policy.enforce, self.context, 'delete_network', self.alt_target)
 
+    def test_delete_network_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'delete_network:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'delete_network:tags',
+            self.alt_target)
+
 
 class SystemMemberTests(SystemAdminTests):
 
     def setUp(self):
-        super(SystemMemberTests, self).setUp()
+        super().setUp()
         self.context = self.system_member_ctx
 
 
 class SystemReaderTests(SystemMemberTests):
 
     def setUp(self):
-        super(SystemReaderTests, self).setUp()
+        super().setUp()
         self.context = self.system_reader_ctx
 
 
 class AdminTests(NetworkAPITestCase):
 
     def setUp(self):
-        super(AdminTests, self).setUp()
+        super().setUp()
         self.context = self.project_admin_ctx
 
     def test_create_network(self):
@@ -397,27 +424,18 @@ class AdminTests(NetworkAPITestCase):
                            'create_network:provider:segmentation_id',
                            self.alt_target))
 
+    def test_create_network_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_network:tags', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'create_network:tags',
+                           self.alt_target))
+
     def test_get_network(self):
         self.assertTrue(
             policy.enforce(self.context, 'get_network', self.target))
         self.assertTrue(
             policy.enforce(self.context, 'get_network', self.alt_target))
-
-    def test_get_network_external(self):
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'get_network:router:external', self.target))
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'get_network:router:external', self.alt_target))
-
-    def test_get_network_segments(self):
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'get_network:segments', self.target))
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'get_network:segments', self.alt_target))
 
     def test_get_network_provider_network_type(self):
         self.assertTrue(
@@ -448,6 +466,12 @@ class AdminTests(NetworkAPITestCase):
             policy.enforce(self.context,
                            'get_network:provider:segmentation_id',
                            self.alt_target))
+
+    def test_get_network_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_network:tags', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'get_network:tags', self.alt_target))
 
     def test_update_network(self):
         self.assertTrue(
@@ -526,18 +550,32 @@ class AdminTests(NetworkAPITestCase):
                            'update_network:port_security_enabled',
                            self.alt_target))
 
+    def test_update_network_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_network:tags', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'update_network:tags',
+                           self.alt_target))
+
     def test_delete_network(self):
         self.assertTrue(
             policy.enforce(self.context, 'delete_network', self.target))
         self.assertTrue(
             policy.enforce(self.context, 'delete_network', self.alt_target))
 
+    def test_delete_network_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_network:tags', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_network:tags',
+                           self.alt_target))
 
-class ProjectMemberTests(AdminTests):
+
+class ProjectManagerTests(AdminTests):
 
     def setUp(self):
-        super(ProjectMemberTests, self).setUp()
-        self.context = self.project_member_ctx
+        super().setUp()
+        self.context = self.project_manager_ctx
 
     def test_create_network(self):
         self.assertTrue(
@@ -633,6 +671,14 @@ class ProjectMemberTests(AdminTests):
             self.context, 'create_network:provider:segmentation_id',
             self.alt_target)
 
+    def test_create_network_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_network:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:tags', self.alt_target)
+
     def test_get_network(self):
         self.assertTrue(
             policy.enforce(self.context, 'get_network', self.target))
@@ -640,15 +686,6 @@ class ProjectMemberTests(AdminTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'get_network', self.alt_target)
-
-    def test_get_network_external(self):
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'get_network:router:external', self.target))
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce,
-            self.context, 'get_network:router:external', self.alt_target)
 
     def test_get_network_segments(self):
         self.assertRaises(
@@ -693,6 +730,14 @@ class ProjectMemberTests(AdminTests):
             policy.enforce,
             self.context, 'get_network:provider:segmentation_id',
             self.alt_target)
+
+    def test_get_network_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_network:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_network:tags', self.alt_target)
 
     def test_update_network(self):
         self.assertTrue(
@@ -788,6 +833,14 @@ class ProjectMemberTests(AdminTests):
             self.context, 'update_network:port_security_enabled',
             self.alt_target)
 
+    def test_update_network_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_network:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:tags', self.alt_target)
+
     def test_delete_network(self):
         self.assertTrue(
             policy.enforce(self.context, 'delete_network', self.target))
@@ -796,11 +849,26 @@ class ProjectMemberTests(AdminTests):
             policy.enforce,
             self.context, 'delete_network', self.alt_target)
 
+    def test_delete_network_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_network:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'delete_network:tags', self.alt_target)
+
+
+class ProjectMemberTests(ProjectManagerTests):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.project_member_ctx
+
 
 class ProjectReaderTests(ProjectMemberTests):
 
     def setUp(self):
-        super(ProjectReaderTests, self).setUp()
+        super().setUp()
         self.context = self.project_reader_ctx
 
     def test_create_network(self):
@@ -823,6 +891,15 @@ class ProjectReaderTests(ProjectMemberTests):
             self.context, 'create_network:port_security_enabled',
             self.alt_target)
 
+    def test_create_network_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_network:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_network:tags',
+            self.alt_target)
+
     def test_update_network(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
@@ -843,6 +920,15 @@ class ProjectReaderTests(ProjectMemberTests):
             self.context, 'update_network:port_security_enabled',
             self.alt_target)
 
+    def test_update_network_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_network:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_network:tags',
+            self.alt_target)
+
     def test_delete_network(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
@@ -850,3 +936,171 @@ class ProjectReaderTests(ProjectMemberTests):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'delete_network', self.alt_target)
+
+    def test_delete_network_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'delete_network:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'delete_network:tags',
+            self.alt_target)
+
+
+class ServiceRoleTests(NetworkAPITestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.service_ctx
+
+    def test_create_network(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_network', self.target)
+
+    def test_create_network_shared(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:shared', self.target)
+
+    def test_create_network_external(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:router:external', self.target)
+
+    def test_create_network_default(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:is_default', self.target)
+
+    def test_create_network_port_security_enabled(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:port_security_enabled',
+            self.target)
+
+    def test_create_network_segments(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:segments', self.target)
+
+    def test_create_network_provider_network_type(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:provider:network_type', self.target)
+
+    def test_create_network_provider_physical_network(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:provider:physical_network',
+            self.target)
+
+    def test_create_network_provider_segmentation_id(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_network:provider:segmentation_id',
+            self.target)
+
+    def test_create_network_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_network:tags', self.target)
+
+    def test_get_network(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_network', self.target))
+
+    def test_get_network_segments(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_network:segments', self.target)
+
+    def test_get_network_provider_network_type(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_network:provider:network_type', self.target)
+
+    def test_get_network_provider_physical_network(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_network:provider:physical_network',
+            self.target)
+
+    def test_get_network_provider_segmentation_id(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_network:provider:segmentation_id',
+            self.target)
+
+    def test_update_network(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_network', self.target)
+
+    def test_update_network_segments(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:segments', self.target)
+
+    def test_update_network_shared(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:shared', self.target)
+
+    def test_update_network_provider_network_type(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:provider:network_type', self.target)
+
+    def test_update_network_provider_physical_network(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:provider:physical_network',
+            self.target)
+
+    def test_update_network_provider_segmentation_id(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:provider:segmentation_id',
+            self.target)
+
+    def test_update_network_external(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:router:external', self.target)
+
+    def test_update_network_default(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:is_default', self.target)
+
+    def test_update_network_port_security_enabled(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_network:port_security_enabled',
+            self.target)
+
+    def test_delete_network(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'delete_network', self.target)

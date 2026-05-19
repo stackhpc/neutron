@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import copy
-import random
+import secrets
 
 from neutron_lib.agent import topics
 from neutron_lib.api import extensions
@@ -63,7 +63,7 @@ METHOD_PRIORITY_MAP = {
 LOG = logging.getLogger(__name__)
 
 
-class DhcpAgentNotifyAPI(object):
+class DhcpAgentNotifyAPI:
     """API for plugin to notify DHCP agent.
 
     This class implements the client side of an rpc interface.  The server side
@@ -87,6 +87,8 @@ class DhcpAgentNotifyAPI(object):
         self._plugin = plugin
         target = oslo_messaging.Target(topic=topic, version='1.0')
         self.client = n_rpc.get_client(target)
+        if not cfg.CONF.dhcp_agent_notification:
+            return
         # register callbacks for router interface changes
         registry.subscribe(self._after_router_interface_created,
                            resources.ROUTER_INTERFACE, events.AFTER_CREATE)
@@ -101,8 +103,6 @@ class DhcpAgentNotifyAPI(object):
             resources.SUBNET,
             resources.SUBNETS,
         )
-        if not cfg.CONF.dhcp_agent_notification:
-            return
         for resource in callback_resources:
             registry.subscribe(self._send_dhcp_notification,
                                resource, events.BEFORE_RESPONSE)
@@ -230,7 +230,7 @@ class DhcpAgentNotifyAPI(object):
 
             if method == 'port_create_end' and enabled_agents:
                 high_agent = enabled_agents.pop(
-                    random.randint(0, len(enabled_agents) - 1))
+                    secrets.SystemRandom().randint(0, len(enabled_agents) - 1))
                 self._notify_high_priority_agent(
                     context, copy.deepcopy(payload), high_agent)
             for agent in enabled_agents:
@@ -279,6 +279,7 @@ class DhcpAgentNotifyAPI(object):
         port = payload.metadata.get('port')
         self._notify_agents(payload.context, 'port_delete_end',
                             {'port_id': port['id'],
+                             'fixed_ips': port['fixed_ips'],
                              'network_id': port['network_id']},
                             port['network_id'])
 

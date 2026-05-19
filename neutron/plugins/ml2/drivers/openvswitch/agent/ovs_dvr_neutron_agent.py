@@ -28,13 +28,14 @@ from osprofiler import profiler
 from neutron.agent.common import ovs_lib
 from neutron.agent.linux.openvswitch_firewall import firewall as ovs_firewall
 from neutron.common import utils as n_utils
+from neutron.ipam import utils as ipam_utils
 
 LOG = logging.getLogger(__name__)
 
 
 # A class to represent a DVR-hosted subnet including vif_ports resident on
 # that subnet
-class LocalDVRSubnetMapping(object):
+class LocalDVRSubnetMapping:
     def __init__(self, subnet, csnat_ofport=ovs_constants.OFPORT_INVALID):
         # set of compute ports on this dvr subnet
         self.compute_ports = {}
@@ -87,7 +88,7 @@ class LocalDVRSubnetMapping(object):
         return self.dvr_ports
 
 
-class OVSPort(object):
+class OVSPort:
     def __init__(self, id, ofport, mac, device_owner):
         self.id = id
         self.mac = mac
@@ -136,7 +137,7 @@ class OVSPort(object):
 
 
 @profiler.trace_cls("ovs_dvr_agent")
-class OVSDVRNeutronAgent(object):
+class OVSDVRNeutronAgent:
     '''Implements OVS-based DVR (Distributed Virtual Router) agent'''
     # history
     #   1.0 Initial version
@@ -264,16 +265,20 @@ class OVSDVRNeutronAgent(object):
         if not self.enable_tunneling:
             return
 
-        self.tun_br.install_goto(dest_table_id=ovs_constants.DVR_PROCESS,
-                                 priority=1,
-                                 in_port=self.patch_int_ofport)
+        self._setup_dvr_flows_on_tun_br(self.tun_br, self.patch_int_ofport)
+
+    @staticmethod
+    def _setup_dvr_flows_on_tun_br(tun_br, patch_int_ofport):
+        tun_br.install_goto(dest_table_id=ovs_constants.DVR_PROCESS,
+                            priority=1,
+                            in_port=patch_int_ofport)
 
         # table-miss should be sent to learning table
-        self.tun_br.install_goto(table_id=ovs_constants.DVR_NOT_LEARN,
-                                 dest_table_id=ovs_constants.LEARN_FROM_TUN)
+        tun_br.install_goto(table_id=ovs_constants.DVR_NOT_LEARN,
+                            dest_table_id=ovs_constants.LEARN_FROM_TUN)
 
-        self.tun_br.install_goto(table_id=ovs_constants.DVR_PROCESS,
-                                 dest_table_id=ovs_constants.PATCH_LV_TO_TUN)
+        tun_br.install_goto(table_id=ovs_constants.DVR_PROCESS,
+                            dest_table_id=ovs_constants.PATCH_LV_TO_TUN)
 
     def setup_dvr_flows_on_phys_br(self, bridge_mappings=None):
         '''Setup up initial dvr flows into br-phys'''
@@ -307,7 +312,7 @@ class OVSDVRNeutronAgent(object):
 
     def _add_arp_dvr_mac_for_phys_br(self, physical_network, mac):
         self.int_br.add_dvr_gateway_mac_arp_vlan(
-                mac=mac, port=self.int_ofports[physical_network])
+            mac=mac, port=self.int_ofports[physical_network])
 
     def _remove_dvr_mac_for_phys_br(self, physical_network, mac):
         # REVISIT(yamamoto): match in_port as well?
@@ -322,7 +327,7 @@ class OVSDVRNeutronAgent(object):
 
     def _add_arp_dvr_mac_for_tun_br(self, mac):
         self.int_br.add_dvr_gateway_mac_arp_tun(
-                mac=mac, port=self.patch_tun_ofport)
+            mac=mac, port=self.patch_tun_ofport)
 
     def _remove_dvr_mac_for_tun_br(self, mac):
         self.int_br.remove_dvr_mac_tun(mac=mac, port=self.patch_tun_ofport)
@@ -526,6 +531,12 @@ class OVSDVRNeutronAgent(object):
 
     def _bind_port_on_dvr_subnet(self, port, lvm, fixed_ips,
                                  device_owner):
+        ports = self.plugin_rpc.get_ports(self.context,
+                                          filters={'id': [port.vif_id]})
+        aaps = []
+        if len(ports) == 1:
+            aaps = ports[0].get("allowed_address_pairs", [])
+
         # Handle new compute port added use-case
         subnet_uuid = None
         for ips in fixed_ips:
@@ -562,12 +573,24 @@ class OVSDVRNeutronAgent(object):
             if lvm.network_type in ovs_constants.DVR_PHYSICAL_NETWORK_TYPES:
                 vlan_to_use = lvm.segmentation_id
             # create a rule for this vm port
+            dst_port = ovsport.get_ofport()
             self.int_br.install_dvr_to_src_mac(
                 network_type=lvm.network_type,
                 vlan_tag=vlan_to_use,
                 gateway_mac=subnet_info['gateway_mac'],
                 dst_mac=ovsport.get_mac(),
-                dst_port=ovsport.get_ofport())
+                dst_port=dst_port)
+            for aap in aaps:
+                aap_ip_cidr = netaddr.IPNetwork(aap['ip_address'])
+                if n_utils.is_cidr_host(str(aap_ip_cidr.cidr)):
+                    if ipam_utils.check_subnet_ip(
+                            ldm.subnet['cidr'], str(aap_ip_cidr.ip)):
+                        self.int_br.install_dvr_to_src_mac(
+                            network_type=lvm.network_type,
+                            vlan_tag=vlan_to_use,
+                            gateway_mac=subnet_info['gateway_mac'],
+                            dst_mac=aap["mac_address"],
+                            dst_port=dst_port)
 
     def _bind_centralized_snat_port_on_dvr_subnet(self, port, lvm,
                                                   fixed_ips, device_owner):
@@ -761,6 +784,12 @@ class OVSDVRNeutronAgent(object):
         self.local_ports.pop(port.vif_id, None)
 
     def _unbind_port_on_dvr_subnet(self, port, lvm):
+        ports = self.plugin_rpc.get_ports(self.context,
+                                          filters={'id': [port.vif_id]})
+        aaps = []
+        if len(ports) == 1:
+            aaps = ports[0].get("allowed_address_pairs", [])
+
         ovsport = self.local_ports[port.vif_id]
         # This confirms that this compute port being removed belonged
         # to a dvr hosted subnet.
@@ -770,6 +799,16 @@ class OVSDVRNeutronAgent(object):
         for sub_uuid in subnet_ids:
             if sub_uuid not in self.local_dvr_map:
                 continue
+            if aaps:
+                local_compute_ports = (
+                    self.plugin_rpc.get_ports_on_host_by_subnet(
+                        self.context, self.host, sub_uuid))
+                local_aap_macs = set()
+                for lport in local_compute_ports:
+                    if lport['id'] != port.vif_id:
+                        local_aap_macs.update({
+                            aap["mac_address"] for aap in lport.get(
+                                "allowed_address_pairs", [])})
             ldm = self.local_dvr_map[sub_uuid]
             ldm.remove_compute_ofport(port.vif_id)
             vlan_to_use = lvm.vlan
@@ -779,6 +818,15 @@ class OVSDVRNeutronAgent(object):
             self.int_br.delete_dvr_to_src_mac(
                 network_type=lvm.network_type,
                 vlan_tag=vlan_to_use, dst_mac=ovsport.get_mac())
+        for aap in aaps:
+            aap_ip_cidr = netaddr.IPNetwork(aap['ip_address'])
+            if n_utils.is_cidr_host(str(aap_ip_cidr.cidr)):
+                if ipam_utils.check_subnet_ip(ldm.subnet['cidr'],
+                                              str(aap_ip_cidr.ip)):
+                    if aap["mac_address"] not in local_aap_macs:
+                        self.int_br.delete_dvr_to_src_mac(
+                            network_type=lvm.network_type,
+                            vlan_tag=vlan_to_use, dst_mac=aap["mac_address"])
         # release port state
         self.local_ports.pop(port.vif_id, None)
 

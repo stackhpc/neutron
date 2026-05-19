@@ -13,6 +13,8 @@
 
 from unittest import mock
 
+from neutron_lib import constants as n_const
+
 from neutron.agent.linux import ipset_manager
 from neutron.tests import base
 
@@ -30,7 +32,7 @@ FAKE_IPS = [('10.0.0.1', 'fa:16:3e:aa:bb:c1'),
 
 class BaseIpsetManagerTest(base.BaseTestCase):
     def setUp(self):
-        super(BaseIpsetManagerTest, self).setUp()
+        super().setUp()
         self.ipset = ipset_manager.IpsetManager()
         self.execute = mock.patch.object(self.ipset, "execute").start()
         self.expected_calls = []
@@ -65,7 +67,7 @@ class BaseIpsetManagerTest(base.BaseTestCase):
 
     def expect_set(self, addresses):
         temp_input = ['create %s hash:net family inet' % TEST_SET_NAME_NEW]
-        temp_input.extend('add %s %s' % (TEST_SET_NAME_NEW, ip)
+        temp_input.extend(f'add {TEST_SET_NAME_NEW} {ip}'
                           for ip in self.ipset._sanitize_addresses(addresses))
         input = '\n'.join(temp_input)
         self.expected_calls.extend([
@@ -146,9 +148,9 @@ class IpsetManagerTestCase(BaseIpsetManagerTest):
         self.verify_mock_calls()
 
     def test_set_members_adding_all_zero_ipv4(self):
-        self.expect_set([('0.0.0.0/0', 'fa:16:3e:aa:bb:c1'), ])
+        self.expect_set([(n_const.IPv4_ANY, 'fa:16:3e:aa:bb:c1'), ])
         self.ipset.set_members(TEST_SET_ID, ETHERTYPE,
-                               [('0.0.0.0/0', 'fa:16:3e:aa:bb:c1'), ])
+                               [(n_const.IPv4_ANY, 'fa:16:3e:aa:bb:c1'), ])
         self.verify_mock_calls()
 
     def test_set_members_adding_all_zero_ipv6(self):

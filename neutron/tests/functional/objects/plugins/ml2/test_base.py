@@ -20,7 +20,8 @@ from neutron_lib import context
 from neutron.tests.unit import testlib_api
 
 
-class _SegmentAllocation(testlib_api.SqlTestCase):
+class SegmentAllocation(testlib_api.SqlTestCase,
+                        testlib_api.MySQLTestCaseMixin):
 
     PHYSNETS = ('phys1', 'phys2')
     NUM_SEGIDS = 10
@@ -31,7 +32,7 @@ class _SegmentAllocation(testlib_api.SqlTestCase):
             self.skipTest('No allocation class defined')
         super().setUp()
         self.context = context.Context(user_id='usier_id',
-                                       tenant_id='tenant_id')
+                                       project_id='project_id')
         self.segid_field = (
             self.segment_allocation_class.get_segmentation_id().name)
         self.is_vlan = ('physical_network' in
@@ -68,7 +69,7 @@ class _SegmentAllocation(testlib_api.SqlTestCase):
         self._create_segments(self.NUM_SEGIDS, self.PHYSNETS)
         for _ in range(len(self.segments)):
             unalloc = m_get(self.context)
-            segment = dict((k, unalloc[k]) for k in self.primary_keys)
+            segment = {k: unalloc[k] for k in self.primary_keys}
             m_alloc(self.context, **segment)
             if self.is_vlan:
                 self.segments.remove((unalloc['physical_network'],
@@ -78,13 +79,3 @@ class _SegmentAllocation(testlib_api.SqlTestCase):
 
         self.assertEqual(0, len(self.segments))
         self.assertIsNone(m_get(self.context))
-
-
-class _SegmentAllocationMySQL(_SegmentAllocation,
-                              testlib_api.MySQLTestCaseMixin):
-    pass
-
-
-class _SegmentAllocationPostgreSQL(_SegmentAllocation,
-                                   testlib_api.PostgreSQLTestCaseMixin):
-    pass

@@ -13,8 +13,8 @@ the SNAT service to a backup DVR/SNAT router on an l3-agent running on a
 different node.
 
 SNAT high availability is implemented in a manner similar to the
-:ref:`deploy-lb-ha-vrrp` and :ref:`deploy-ovs-ha-vrrp` examples where
-``keepalived`` uses VRRP to provide quick failover of SNAT services.
+:ref:`deploy-ovs-ha-vrrp` example where ``keepalived`` uses VRRP to provide
+quick failover of SNAT services.
 
 During normal operation, the primary router periodically transmits *heartbeat*
 packets over a hidden project network that connects all HA routers for a
@@ -85,7 +85,7 @@ Controller node configuration
 
       [ml2]
       type_drivers = flat,vxlan
-      tenant_network_types = vxlan
+      project_network_types = vxlan
       mechanism_drivers = openvswitch,l2population
       extension_drivers = port_security
 
@@ -100,7 +100,7 @@ Controller node configuration
 
    .. note::
 
-      The first value in the ``tenant_network_types`` option becomes the
+      The first value in the ``project_network_types`` option becomes the
       default project network type when a regular user creates a network.
 
 Network nodes
@@ -129,7 +129,6 @@ Network nodes
 
       [DEFAULT]
       ha_vrrp_auth_password = password
-      interface_driver = openvswitch
       agent_mode = dvr_snat
 
 
@@ -151,14 +150,13 @@ Compute nodes
       l2_population = True
 
       [securitygroup]
-      firewall_driver = neutron.agent.linux.iptables_firewall.OVSHybridIptablesFirewallDriver
+      firewall_driver = iptables_hybrid
 
 #. Configure the L3 agent. Add the following to ``/etc/neutron/l3_agent.ini``:
 
    .. code-block:: ini
 
       [DEFAULT]
-      interface_driver = openvswitch
       agent_mode = dvr
 
    Replace ``TUNNEL_INTERFACE_IP_ADDRESS`` with the IP address of the interface

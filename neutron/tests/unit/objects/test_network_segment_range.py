@@ -18,9 +18,12 @@ from unittest import mock
 
 from neutron_lib import constants
 from neutron_lib import exceptions as n_exc
+from neutron_lib.objects import exceptions as obj_exc
 from neutron_lib.utils import helpers
+from oslo_utils import timeutils
 from oslo_utils import uuidutils
 
+from neutron.common import utils as n_utils
 from neutron.objects import network as net_obj
 from neutron.objects import network_segment_range
 from neutron.objects.plugins.ml2 import base as ml2_base
@@ -28,7 +31,7 @@ from neutron.objects.plugins.ml2 import vlanallocation as vlan_alloc_obj
 from neutron.tests.unit.objects import test_base as obj_test_base
 from neutron.tests.unit import testlib_api
 
-TEST_TENANT_ID = '46f70361-ba71-4bd0-9769-3573fd227c4b'
+TEST_PROJECT_ID = '46f70361-ba71-4bd0-9769-3573fd227c4b'
 TEST_PHYSICAL_NETWORK = 'phys_net'
 NUM_ALLOCATIONS = 3
 
@@ -51,7 +54,7 @@ class NetworkSegmentRangeIfaceObjectTestCase(
             return_value={})
         self.mock_get_used_allocation_mapping = (
             self._mock_get_used_allocation_mapping.start())
-        super(NetworkSegmentRangeIfaceObjectTestCase, self).setUp()
+        super().setUp()
         # `project_id` and `physical_network` attributes in
         # network_segment_range are nullable, depending on the value of
         # `shared` and `network_type` respectively.
@@ -62,7 +65,7 @@ class NetworkSegmentRangeIfaceObjectTestCase(
         # Alternatives can be skipping those tests when executing
         # NetworkSegmentRangeIfaceObjectTestCase, or making base test case
         # adjustments.
-        self.update_obj_fields({'project_id': TEST_TENANT_ID,
+        self.update_obj_fields({'project_id': TEST_PROJECT_ID,
                                 'physical_network': TEST_PHYSICAL_NETWORK})
         self.extra_fields_not_in_dict = ['tenant_id']
 
@@ -107,15 +110,19 @@ class NetworkSegmentRangeDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
 
     def _create_network_segment_range(
             self, minimum, maximum, network_type=None, physical_network=None,
-            project_id=None, default=False, shared=False):
+            project_id=None, default=False, shared=False, start_time=None):
         kwargs = self.get_random_db_fields()
+        created_at = (n_utils.ts_to_datetime(start_time) if start_time else
+                      timeutils.utcnow())
         kwargs.update({'network_type': network_type or constants.TYPE_VLAN,
                        'physical_network': physical_network or 'foo',
                        'minimum': minimum,
                        'maximum': maximum,
                        'default': default,
                        'shared': shared,
-                       'project_id': project_id})
+                       'project_id': project_id,
+                       'created_at': created_at,
+                       })
         db_obj = self._test_class.db_model(**kwargs)
         obj_fields = self._test_class.modify_fields_from_db(db_obj)
         obj = self._test_class(self.context, **obj_fields)
@@ -207,7 +214,7 @@ class NetworkSegmentRangeDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
         for subclass in ml2_base.SegmentAllocation.__subclasses__():
             # Build segment ranges: default one and project specific ones.
             for name, ranges in self.segment_ranges.items():
-                default = True if name == 'default' else False
+                default = name == 'default'
                 project = name if not default else None
                 if default and not default_range:
                     continue
@@ -251,7 +258,8 @@ class NetworkSegmentRangeDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
         allocated = []
         for allocation in random.sample(
                 allocations, k=(num_of_allocations or NUM_ALLOCATIONS)):
-            segment = dict((k, allocation[k]) for k in primary_keys)
+            # pylint: disable=unsubscriptable-object
+            segment = {k: allocation[k] for k in primary_keys}
             allocated.append(segment)
             self.assertEqual(1, subclass.allocate(self.context, **segment))
         return allocated
@@ -398,3 +406,39 @@ class NetworkSegmentRangeDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
             self.assertEqual(len(available_ids), len(allocations))
             for alloc in allocations:
                 self.assertIn(alloc.segmentation_id, available_ids)
+
+    def test_delete_expired_default_network_segment_ranges(self):
+        start_time = n_utils.datetime_to_ts(timeutils.utcnow())
+        num_ranges = 5
+        for network_type in network_segment_range.models_map.keys():
+            for idx in range(num_ranges):
+                try:
+                    obj = self._create_network_segment_range(
+                        1, 10, network_type=network_type, default=True,
+                        shared=True, start_time=start_time - idx)
+                    obj.create()
+                except obj_exc.NeutronDbObjectDuplicateEntry:
+                    pass
+            ranges = network_segment_range.NetworkSegmentRange.get_objects(
+                self.context, default=True, shared=True,
+                network_type=network_type)
+            # No duplicated entry in DB at all
+            self.assertEqual(1, len(ranges))
+
+    def test_new_default(self):
+        start_time = n_utils.datetime_to_ts(timeutils.utcnow())
+        for network_type in network_segment_range.models_map.keys():
+            physical_network = ('foo' if network_type == constants.TYPE_VLAN
+                                else None)
+            ranges = network_segment_range.NetworkSegmentRange.get_objects(
+                self.context, network_type=network_type)
+            self.assertEqual(0, len(ranges))
+
+            # The method "new_default" is idempotent, call it twice.
+            for _ in range(2):
+                network_segment_range.NetworkSegmentRange.new_default(
+                    self.context, network_type, physical_network,
+                    1, 10, start_time)
+                ranges = network_segment_range.NetworkSegmentRange.get_objects(
+                    self.context, network_type=network_type)
+                self.assertEqual(1, len(ranges))

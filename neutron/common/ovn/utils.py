@@ -12,19 +12,23 @@
 
 import collections
 import copy
+import functools
 import inspect
 import os
+import random
+import typing
 
 import netaddr
 from neutron_lib.api.definitions import external_net
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
-from neutron_lib.api.definitions import l3
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.api.definitions import provider_net
 from neutron_lib.api import validators
 from neutron_lib import constants as const
 from neutron_lib import context as n_context
 from neutron_lib import exceptions as n_exc
+from neutron_lib.plugins import constants as plugin_constants
 from neutron_lib.plugins import directory
 from neutron_lib.utils import net as n_utils
 from oslo_concurrency import processutils
@@ -34,9 +38,11 @@ from oslo_serialization import jsonutils
 from oslo_utils import netutils
 from oslo_utils import strutils
 from ovsdbapp import constants as ovsdbapp_const
+from pecan import util as pecan_util
 import tenacity
 
 from neutron._i18n import _
+from neutron.common import _constants as n_const
 from neutron.common.ovn import constants
 from neutron.common.ovn import exceptions as ovn_exc
 from neutron.common import utils as common_utils
@@ -55,9 +61,38 @@ AddrPairsDiff = collections.namedtuple(
 
 PortExtraDHCPValidation = collections.namedtuple(
     'PortExtraDHCPValidation', ['failed', 'invalid_ipv4', 'invalid_ipv6'])
+BPInfo = collections.namedtuple(
+    'BPInfo', ['bp_param', 'vnic_type', 'capabilities'])
+
+_OVS_PERSIST_UUID = _SENTINEL = object()
 
 
-class OvsdbClientCommand(object):
+class HAChassisGroupInfo:
+    def __init__(self,
+                 group_name: str,
+                 chassis_list: list[typing.Any],
+                 az_hints: list[str],
+                 ignore_chassis: set[str],
+                 external_ids: dict[str, typing.Any],
+                 priority: dict[str, typing.Any] | None = None):
+        if priority:
+            # If present, the "priority" dictionary must contain all the
+            # chassis names present in "chassis_list".
+            ch_name_list = [ch.name for ch in chassis_list]
+            if sorted(ch_name_list) != sorted(list(priority.keys())):
+                raise RuntimeError(_(
+                    'In a "HAChassisGroupInfo", the "chassis_list" must have '
+                    'the same chassis as the "priority" dictionary'))
+
+        self.group_name = group_name
+        self.chassis_list = chassis_list
+        self.az_hints = az_hints
+        self.ignore_chassis = ignore_chassis
+        self.external_ids = external_ids
+        self.priority = priority
+
+
+class OvsdbClientCommand:
     _CONNECTION = 0
     _PRIVATE_KEY = 1
     _CERTIFICATE = 2
@@ -91,13 +126,15 @@ class OvsdbClientCommand(object):
             db = command[0]
         except IndexError:
             raise KeyError(
-                _("%s or %s schema must be specified in the command %s" % (
-                    cls.OVN_Northbound, cls.OVN_Southbound, command)))
+                _("{} or {} schema must be specified in the "
+                  "command {}").format(
+                    cls.OVN_Northbound, cls.OVN_Southbound, command))
 
         if db not in (cls.OVN_Northbound, cls.OVN_Southbound):
             raise KeyError(
-                _("%s or %s schema must be specified in the command %s" % (
-                    cls.OVN_Northbound, cls.OVN_Southbound, command)))
+                _("{} or {} schema must be specified in the "
+                  "command {}").format(
+                    cls.OVN_Northbound, cls.OVN_Southbound, command))
 
         cmd = ['ovsdb-client',
                cls.COMMAND,
@@ -121,13 +158,74 @@ class OvsdbClientTransactCommand(OvsdbClientCommand):
     COMMAND = 'transact'
 
 
+def ovn_context(txn_var_name='txn', idl_var_name='idl'):
+    """Provide an OVN IDL transaction context
+
+    This decorator provides an OVN IDL database transaction context if the
+    'txn_var_name' variable, that should have an
+    ``ovsdbapp.backend.ovs_idl.transaction.Transaction`` derived object, is
+    empty. In that case (an empty transaction), that means the decorated method
+    has been called outside a transaction. In this case, the decorator creates
+    a transaction from the provided IDL and assigns it to the 'txn_var_name'
+    variable.
+    """
+    def decorator(f):
+        signature = inspect.signature(f)
+        if (txn_var_name not in signature.parameters or
+                idl_var_name not in signature.parameters):
+            raise RuntimeError(
+                _('Could not find variables %(txn)s and %(idl)s in the method '
+                  'signature') %
+                {'txn': txn_var_name, 'idl': idl_var_name})
+
+        def retrieve_parameter(param_name, _args, _kwargs):
+            # Position of the parameter "param_name" in the "args" tuple.
+            param_index = pecan_util.getargspec(f).args.index(param_name)
+            try:  # Parameter passed as a positional argument.
+                value = _args[param_index]
+            except IndexError:  # Parameter passed as keyword argument.
+                # Reset the "param_index" value, that means the parameter is
+                # passed as keyword and if needed, it will be replaced in
+                # "kwargs".
+                param_index = None
+                try:
+                    value = _kwargs[param_name]
+                except KeyError:
+                    # Parameter is not passed as keyword nor positional, read
+                    # the keyword default value.
+                    value = signature.parameters[param_name].default
+
+            return value, param_index
+
+        @functools.wraps(f)
+        def wrapped(*args, **kwargs):
+            _txn, txn_index = retrieve_parameter(txn_var_name, args, kwargs)
+            _idl, idl_index = retrieve_parameter(idl_var_name, args, kwargs)
+            if not _txn and not _idl:
+                msg = (_('If no transaction is defined, it is needed at least '
+                         'an IDL connection'))
+                raise RuntimeError(msg)
+
+            if not _txn:
+                with _idl.transaction(check_error=True) as new_txn:
+                    if txn_index:
+                        args = (args[:txn_index] + (new_txn,) +
+                                args[txn_index + 1:])
+                    else:
+                        kwargs[txn_var_name] = new_txn
+                    return f(*args, **kwargs)
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
 def ovn_name(id):
     # The name of the OVN entry will be neutron-<UUID>
     # This is due to the fact that the OVN application checks if the name
     # is a UUID. If so then there will be no matches.
     # We prefix the UUID to enable us to use the Neutron UUID when
     # updating, deleting etc.
-    return "%s%s" % (constants.OVN_NAME_PREFIX, id)
+    return f"{constants.OVN_NAME_PREFIX}{id}"
 
 
 def ovn_lrouter_port_name(id):
@@ -154,6 +252,11 @@ def ovn_provnet_port_name(network_id):
     return constants.OVN_PROVNET_PORT_NAME_PREFIX + '%s' % network_id
 
 
+def ovn_extport_chassis_group_name(port_id):
+    # The name of the HA Chassis Group entry will be neutron-extport-<UUID>
+    return constants.OVN_HA_CH_GROUP_EXTPORT_PREFIX + '%s' % port_id
+
+
 def ovn_vhu_sockpath(sock_dir, port_id):
     # Frame the socket path of a virtio socket
     return os.path.join(
@@ -169,7 +272,7 @@ def ovn_addrset_name(sg_id, ip_version):
     #   as-<ip version>-<security group uuid>
     # with all '-' replaced with '_'. This replacement is necessary
     # because OVN doesn't support '-' in an address set name.
-    return ('as-%s-%s' % (ip_version, sg_id)).replace('-', '_')
+    return (f'as-{ip_version}-{sg_id}').replace('-', '_')
 
 
 def ovn_pg_addrset_name(sg_id, ip_version):
@@ -178,7 +281,16 @@ def ovn_pg_addrset_name(sg_id, ip_version):
     #   pg-<security group uuid>-<ip version>
     # with all '-' replaced with '_'. This replacement is necessary
     # because OVN doesn't support '-' in an address set name.
-    return ('pg-%s-%s' % (sg_id, ip_version)).replace('-', '_')
+    return (f'pg-{sg_id}-{ip_version}').replace('-', '_')
+
+
+def ovn_ag_addrset_name(ag_id, ip_version):
+    # The name of the address set for the given address group id and ip
+    # version. The format is:
+    #   ag-<address group uuid>-<ip version>
+    # with all '-' replaced with '_'. This replacement is necessary
+    # because OVN doesn't support '-' in an address set name.
+    return ('ag-{}-{}'.format(ag_id, ip_version)).replace('-', '_')
 
 
 def ovn_port_group_name(sg_id):
@@ -235,6 +347,10 @@ def is_dhcp_option_quoted(opt_value):
     return opt_value.startswith('"') and opt_value.endswith('"')
 
 
+def is_dhcp_option_a_map(opt_value):
+    return opt_value.startswith('{') and opt_value.endswith('}')
+
+
 def get_lsp_dhcp_opts(port, ip_version):
     # Get dhcp options from Neutron port, for setting DHCP_Options row
     # in OVN.
@@ -265,7 +381,7 @@ def get_lsp_dhcp_opts(port, ip_version):
 
             if edo['opt_name'] not in mapping:
                 LOG.warning('The DHCP option %(opt_name)s on port %(port)s '
-                            'is not suppported by OVN, ignoring it',
+                            'is not supported by OVN, ignoring it',
                             {'opt_name': edo['opt_name'], 'port': port['id']})
                 continue
 
@@ -273,6 +389,9 @@ def get_lsp_dhcp_opts(port, ip_version):
             if (opt in constants.OVN_STR_TYPE_DHCP_OPTS and
                     not is_dhcp_option_quoted(edo['opt_value'])):
                 edo['opt_value'] = '"%s"' % edo['opt_value']
+            elif (opt in constants.OVN_MAP_TYPE_DHCP_OPTS and
+                  not is_dhcp_option_a_map(edo['opt_value'])):
+                edo['opt_value'] = '{%s}' % edo['opt_value']
             lsp_dhcp_opts[opt] = edo['opt_value']
 
     return (lsp_dhcp_disabled, lsp_dhcp_opts)
@@ -296,8 +415,34 @@ def get_lsp_security_groups(port, skip_trusted_port=True):
                   ) else port.get('security_groups', [])
 
 
+def is_lsp_enabled(lsp):
+    """Return if a Logical Switch Port is enabled
+
+    This method mimics the OVN northd method ``lsp_is_enabled``. The "enabled"
+    field can have three values:
+    * []: from older OVN versions, in this case the LSP is enabled by default.
+    * [True]: the LSP is enabled.
+    * [False]: the LSP is disabled.
+
+    :param lsp: ``ovs.db.Row`` with a Logical Switch Port register.
+    :return: True if the port is enabled, False if not.
+    """
+    return not lsp.enabled or lsp.enabled == [True]
+
+
+def is_lsp_up(lsp):
+    """Return if a Logical Switch Port is UP
+
+    This method mimics the OVN northd method ``lsp_is_up``.
+
+    :param lsp: ``ovs.db.Row`` with a Logical Switch Port register.
+    :return: True if the port is UP, False if not.
+    """
+    return lsp.up == [True]
+
+
 def is_snat_enabled(router):
-    return router.get(l3.EXTERNAL_GW_INFO, {}).get('enable_snat', True)
+    return router['enable_snat']
 
 
 def is_port_security_enabled(port):
@@ -309,10 +454,17 @@ def is_security_groups_enabled(port):
 
 
 def validate_and_get_data_from_binding_profile(port):
+    """Validate the port binding profile
+
+    :param port: (dict) Neutron port dictionary.
+    :returns: (namedtuple BPInfo: dict, string, list) a tuple with the
+              dictionary of the port profile, the VNIC type and a list of port
+              capabilities.
+    """
     if (constants.OVN_PORT_BINDING_PROFILE not in port or
             not validators.is_attr_set(
                 port[constants.OVN_PORT_BINDING_PROFILE])):
-        return {}
+        return BPInfo({}, None, [])
     param_set = {}
     param_dict = {}
     vnic_type = port.get(portbindings.VNIC_TYPE, portbindings.VNIC_NORMAL)
@@ -336,7 +488,9 @@ def validate_and_get_data_from_binding_profile(port):
         if pbp_param_set.vnic_type:
             if pbp_param_set.vnic_type != vnic_type:
                 continue
-            if capabilities and pbp_param_set.capability not in capabilities:
+            if (capabilities and
+                    pbp_param_set.capability is not None and
+                    pbp_param_set.capability not in capabilities):
                 continue
         param_set = pbp_param_set.param_set
         param_keys = param_set.keys()
@@ -354,7 +508,7 @@ def validate_and_get_data_from_binding_profile(port):
         break
 
     if not param_dict:
-        return {}
+        return BPInfo({}, vnic_type, capabilities)
 
     # With this example param_set:
     #
@@ -406,7 +560,7 @@ def validate_and_get_data_from_binding_profile(port):
                     'an integer between 0 and 4095, inclusive') % tag
             raise n_exc.InvalidInput(error_message=msg)
 
-    return param_dict
+    return BPInfo(param_dict, vnic_type, capabilities)
 
 
 def is_dhcp_options_ignored(subnet):
@@ -428,10 +582,10 @@ def get_revision_number(resource, resource_type):
                          constants.TYPE_ROUTERS,
                          constants.TYPE_ROUTER_PORTS,
                          constants.TYPE_SECURITY_GROUPS,
+                         constants.TYPE_ADDRESS_GROUPS,
                          constants.TYPE_FLOATINGIPS, constants.TYPE_SUBNETS):
         return resource['revision_number']
-    else:
-        raise ovn_exc.UnknownResourceType(resource_type=resource_type)
+    raise ovn_exc.UnknownResourceType(resource_type=resource_type)
 
 
 def remove_macs_from_lsp_addresses(addresses):
@@ -444,9 +598,7 @@ def remove_macs_from_lsp_addresses(addresses):
     """
     ip_list = []
     for addr in addresses:
-        ip_list.extend([x for x in addr.split() if
-                       (netutils.is_valid_ipv4(x) or
-                        netutils.is_valid_ipv6(x))])
+        ip_list.extend([x for x in addr.split() if netutils.is_valid_ip(x)])
     return ip_list
 
 
@@ -460,6 +612,13 @@ def get_allowed_address_pairs_ip_addresses(port):
             if 'ip_address' in x]
 
 
+def get_lsp_ips(ovn_port):
+    """Return (primary_ips, port_security_ips) from an OVN port."""
+    primary = remove_macs_from_lsp_addresses(ovn_port.addresses)
+    ps = remove_macs_from_lsp_addresses(ovn_port.port_security)
+    return primary, ps
+
+
 def get_allowed_address_pairs_ip_addresses_from_ovn_port(ovn_port):
     """Return a list of IP addresses from ovn port.
 
@@ -469,42 +628,36 @@ def get_allowed_address_pairs_ip_addresses_from_ovn_port(ovn_port):
     :param ovn_port: A OVN port
     :returns: A list of IP addresses (v4 and v6)
     """
-    addresses = remove_macs_from_lsp_addresses(ovn_port.addresses)
-    port_security = remove_macs_from_lsp_addresses(ovn_port.port_security)
-    return [x for x in port_security if x not in addresses]
+    primary, ps = get_lsp_ips(ovn_port)
+    return [x for x in ps if x not in primary]
 
 
 def get_ovn_port_security_groups(ovn_port, skip_trusted_port=True):
     info = {'security_groups': ovn_port.external_ids.get(
-            constants.OVN_SG_IDS_EXT_ID_KEY, '').split(),
+                constants.OVN_SG_IDS_EXT_ID_KEY, '').split(),
             'device_owner': ovn_port.external_ids.get(
-            constants.OVN_DEVICE_OWNER_EXT_ID_KEY, '')}
+                constants.OVN_DEVICE_OWNER_EXT_ID_KEY, '')}
     return get_lsp_security_groups(info, skip_trusted_port=skip_trusted_port)
 
 
-def get_ovn_port_addresses(ovn_port):
-    addresses = remove_macs_from_lsp_addresses(ovn_port.addresses)
-    port_security = remove_macs_from_lsp_addresses(ovn_port.port_security)
-    return list(set(addresses + port_security))
+def get_virtual_port_parents(context, virtual_ip, subnet_id, port_id):
+    plugin = directory.get_plugin()
+    filters = {'fixed_ips': {'subnet_id': [subnet_id]},
+               'allowed_address_pairs': {'ip_address': virtual_ip}}
+    ports = plugin.get_ports(context, filters=filters)
+    parents = [p['id'] for p in ports]
+    if parents:
+        LOG.debug("Parents of %s are %s", port_id, ", ".join(parents))
+    return parents
 
 
-def get_virtual_port_parents(nb_idl, virtual_ip, network_id, port_id):
-    ls = nb_idl.ls_get(ovn_name(network_id)).execute(check_error=True)
-    return [lsp.name for lsp in ls.ports
-            if lsp.name != port_id and
-            virtual_ip in get_ovn_port_addresses(lsp)]
-
-
-def sort_ips_by_version(addresses):
-    ip_map = {'ip4': [], 'ip6': []}
-    for addr in addresses:
-        ip_version = netaddr.IPNetwork(addr).version
-        ip_map['ip%d' % ip_version].append(addr)
-    return ip_map
-
-
-def is_lsp_router_port(port):
-    return port.get('device_owner') in const.ROUTER_PORT_OWNERS
+def is_lsp_router_port(neutron_port=None, lsp=None):
+    if neutron_port:
+        return neutron_port.get('device_owner') in const.ROUTER_PORT_OWNERS
+    if lsp:
+        return (lsp.external_ids.get(constants.OVN_DEVICE_OWNER_EXT_ID_KEY) in
+                const.ROUTER_PORT_OWNERS)
+    return False
 
 
 def get_lrouter_ext_gw_static_route(ovn_router):
@@ -526,8 +679,11 @@ def get_lrouter_non_gw_routes(ovn_router):
                 external_ids.get(constants.OVN_ROUTER_IS_EXT_GW, 'false')):
             continue
 
-        routes.append({'destination': route.ip_prefix,
-                       'nexthop': route.nexthop})
+        # NOTE(tpsilva): only add Neutron-managed routes
+        if strutils.bool_from_string(
+                external_ids.get(constants.OVN_LRSR_EXT_ID_KEY, 'false')):
+            routes.append({'destination': route.ip_prefix,
+                           'nexthop': route.nexthop})
     return routes
 
 
@@ -540,7 +696,7 @@ def get_system_dns_resolvers(resolver_file=DNS_RESOLVER_FILE):
     if not os.path.exists(resolver_file):
         return resolvers
 
-    with open(resolver_file, 'r') as rconf:
+    with open(resolver_file) as rconf:
         for line in rconf.readlines():
             if not line.startswith('nameserver'):
                 continue
@@ -549,6 +705,8 @@ def get_system_dns_resolvers(resolver_file=DNS_RESOLVER_FILE):
             valid_ip = (netutils.is_valid_ipv4(line, strict=True) or
                         netutils.is_valid_ipv6(line))
             if valid_ip:
+                if netutils.is_valid_ipv6(line):
+                    line = netutils.get_noscope_ipv6(line)
                 resolvers.append(line)
 
     return resolvers
@@ -580,15 +738,27 @@ def get_port_subnet_ids(port):
     return [f['subnet_id'] for f in fixed_ips]
 
 
-def get_method_class(method):
-    if not inspect.ismethod(method):
+def get_method_class(method_or_class):
+    if not inspect.ismethod(method_or_class):
+        if inspect.isclass(method_or_class):
+            return method_or_class
         return
-    return method.__self__.__class__
+    return method_or_class.__self__.__class__
 
 
 def ovn_metadata_name(id_):
     """Return the OVN metadata name based on an id."""
     return 'metadata-%s' % id_
+
+
+def is_ovn_metadata_port(port):
+    return (port['device_owner'] == const.DEVICE_OWNER_DISTRIBUTED and
+            port['device_id'].startswith(constants.OVN_METADATA_PREFIX))
+
+
+def is_ovn_lb_hm_port(port):
+    return (port['device_owner'] == constants.OVN_LB_HM_PORT_DISTRIBUTED and
+            port['device_id'].startswith('ovn-lb-hm'))
 
 
 def is_gateway_chassis_invalid(chassis_name, gw_chassis,
@@ -610,22 +780,32 @@ def is_gateway_chassis_invalid(chassis_name, gw_chassis,
     @type     chassis_with_azs: {}
     @return   Boolean
     """
-
-    if chassis_name == constants.OVN_GATEWAY_INVALID_CHASSIS:
+    if chassis_name not in chassis_physnets:
         return True
-    elif chassis_name not in chassis_physnets:
+    if physnet and physnet not in chassis_physnets.get(chassis_name):
         return True
-    elif physnet and physnet not in chassis_physnets.get(chassis_name):
+    if gw_chassis and chassis_name not in gw_chassis:
         return True
-    elif gw_chassis and chassis_name not in gw_chassis:
-        return True
-    elif az_hints and not set(az_hints) & set(chassis_with_azs.get(
+    if az_hints and not set(az_hints) & set(chassis_with_azs.get(
             chassis_name, [])):
         return True
     return False
 
 
 def is_provider_network(network):
+    """Check if given network is provider network
+    :param network: (str, dict) it can be given as network object or as string
+                    with network ID only. In the latter case, network object
+                    will be loaded from the database
+    """
+    if isinstance(network, str):
+        ctx = n_context.get_admin_context()
+        plugin = directory.get_plugin()
+        network = plugin.get_network(ctx, network)
+    return network.get(provider_net.PHYSICAL_NETWORK, False)
+
+
+def is_external_network(network):
     return network.get(external_net.EXTERNAL, False)
 
 
@@ -641,13 +821,44 @@ def compute_address_pairs_diff(ovn_port, neutron_port):
 
 def get_ovn_cms_options(chassis):
     """Return the list of CMS options in a Chassis."""
-    return [opt.strip() for opt in get_ovn_chassis_other_config(chassis).get(
+    return [opt.strip() for opt in chassis.other_config.get(
         constants.OVN_CMS_OPTIONS, '').split(',')]
+
+
+def get_ovn_bridge_from_chassis_private(chassis_private):
+    """Return the OVN bridge used by the local OVN controller
+
+    This information is stored in the Chassis_Private register by the OVN
+    Metadata agent. The default value returned, if not present, is "br-int".
+    NOTE: the default value is not reading the local ``OVS.integration_bridge``
+    configuration knob, that could be different.
+    """
+    return (chassis_private.external_ids.get(constants.OVN_AGENT_OVN_BRIDGE) or
+            n_const.DEFAULT_BR_INT)
+
+
+def get_datapath_type(hostname, sb_idl):
+    """Return the local OVS integration bridge datapath type
+
+    If the datapath type is not stored in the ``Chassis`` register or
+    the register is still not created, the default value returned is "".
+    """
+    chassis = sb_idl.db_find(
+        'Chassis', ('hostname', '=', hostname)).execute(check_error=True)
+    return (
+        chassis[0].get('other_config', {}).get(constants.OVN_DATAPATH_TYPE, '')
+        if chassis else '')
 
 
 def is_gateway_chassis(chassis):
     """Check if the given chassis is a gateway chassis"""
     return constants.CMS_OPT_CHASSIS_AS_GW in get_ovn_cms_options(chassis)
+
+
+def is_extport_host_chassis(chassis):
+    """Check if the given Chassis is marked to host external ports"""
+    return (constants.CMS_OPT_CHASSIS_AS_EXTPORT_HOST in
+            get_ovn_cms_options(chassis))
 
 
 def get_port_capabilities(port):
@@ -703,7 +914,7 @@ def get_chassis_in_azs(chassis_list, az_list):
     return chassis
 
 
-def get_gateway_chassis_without_azs(chassis_list):
+def get_chassis_without_azs(chassis_list):
     """Return a set of Chassis that does not belong to any AZs.
 
     Filter a list of Chassis and return only the Chassis that does not
@@ -712,8 +923,18 @@ def get_gateway_chassis_without_azs(chassis_list):
     :param chassis_list: A list of Chassis objects
     :returns: A set of Chassis names
     """
-    return {ch.name for ch in chassis_list if is_gateway_chassis(ch) and not
+    return {ch.name for ch in chassis_list if not
             get_chassis_availability_zones(ch)}
+
+
+def get_chassis_priority(chassis_list):
+    """Given a chassis list, returns a dictionary with chassis name and prio
+
+    The chassis list is ordered according to the priority: the first one is the
+    highest priority chassis, the last one is the lowest priority chassis.
+    """
+    return {chassis: prio + 1 for prio, chassis
+            in enumerate(reversed(chassis_list))}
 
 
 def parse_ovn_lb_port_forwarding(ovn_rtr_lb_pfs):
@@ -729,14 +950,18 @@ def parse_ovn_lb_port_forwarding(ovn_rtr_lb_pfs):
         ovn_vips = ovn_lb.vips
         for vip, ips in ovn_vips.items():
             for ip in ips.split(','):
-                fip_dict_proto.add("{} {}".format(vip, ip))
+                fip_dict_proto.add(f"{vip} {ip}")
         fip_dict[protocol] = fip_dict_proto
         result[fip_id] = fip_dict
     return result
 
 
+def get_neutron_name(ovn_name):
+    return ovn_name.replace('neutron-', '', 1)
+
+
 def get_network_name_from_datapath(datapath):
-    return datapath.external_ids['name'].replace('neutron-', '')
+    return get_neutron_name(datapath.external_ids['name'])
 
 
 def is_port_external(port):
@@ -833,9 +1058,522 @@ def create_neutron_pg_drop():
     OvsdbClientTransactCommand.run(command)
 
 
-def get_ovn_chassis_other_config(chassis):
-    # NOTE(ralonsoh): LP#1990229 to be removed when min OVN version is 22.09
+def get_subnets_address_scopes(context, subnets_by_id, fixed_ips, ml2_plugin):
+    """Returns the IPv4 and IPv6 address scopes of several subnets.
+
+    The subnets hosted on the same network must be allocated from the same
+    subnet pool (from ``NetworkSubnetPoolAffinityError`` exception). That
+    applies per IP version (it means it is possible to have two subnet pools,
+    one for IPv4 and one for IPv6).
+
+    :param context: neutron api request context
+    :param subnets_by_id: (dict) of subnets {subnet_id: subnet, ...}
+    :param fixed_ips: (list of dict) fixed IPs of several subnets (usually
+                      belonging to a network but not mandatory)
+    :param ml2_plugin: (``Ml2Plugin``) ML2 plugin instance
+    :return: (tuple of 2 strings) IPv4 and IPv6 address scope IDs
+    """
+    address4_scope_id, address6_scope_id = '', ''
+    if not subnets_by_id:
+        return address4_scope_id, address6_scope_id
+
+    for fixed_ip in fixed_ips:
+        subnet_id = fixed_ip.get('subnet_id')
+        subnet = subnets_by_id.get(subnet_id)
+        if not subnet or not subnet['subnetpool_id']:
+            continue
+
+        try:
+            subnet_pool = ml2_plugin.get_subnetpool(context,
+                                                    id=subnet['subnetpool_id'])
+            if subnet_pool['address_scope_id']:
+                if subnet_pool['ip_version'] == const.IP_VERSION_4:
+                    address4_scope_id = subnet_pool['address_scope_id']
+                else:
+                    address6_scope_id = subnet_pool['address_scope_id']
+        except n_exc.SubnetPoolNotFound:
+            # swallow the exception and just continue if the
+            # lookup failed
+            pass
+
+    return address4_scope_id, address6_scope_id
+
+
+def get_high_prio_chassis_in_ha_chassis_group(ha_chassis_group):
+    """Returns (name, priority) of the highest priority HA_Chassis"""
+    hc_list = []
+    for ha_chassis in ha_chassis_group.ha_chassis:
+        hc_list.append((ha_chassis.chassis_name, ha_chassis.priority))
+    hc_list = sorted(hc_list, key=lambda x: x[1], reverse=True)
     try:
-        return chassis.other_config
-    except AttributeError:
-        return chassis.external_ids
+        return hc_list[0]
+    except IndexError:
+        return None, None
+
+
+def _filter_candidates_for_ha_chassis_group(hcg_info):
+    """Filter a list of chassis candidates for a given HA Chassis Group.
+
+    Filter a list of chassis candidates for a given HA Chassis Group taking
+    in consideration availability zones if present.
+
+    :param hcg_info: A instance of HAChassisGroupInfo
+    :returns: A list of chassis
+    """
+    if hcg_info.az_hints:
+        candidates = get_chassis_in_azs(hcg_info.chassis_list,
+                                        hcg_info.az_hints)
+        LOG.debug('Taking in consideration the AZs "%s" for HA '
+                  'Chassis Group %s', ','.join(hcg_info.az_hints),
+                  hcg_info.group_name)
+    else:
+        candidates = get_chassis_without_azs(hcg_info.chassis_list)
+
+    # Remove the ignored Chassis, if present
+    if hcg_info.ignore_chassis:
+        LOG.debug('Ignoring chassis %s for HA Chassis Group %s',
+                  ', '.join(hcg_info.ignore_chassis), hcg_info.group_name)
+        candidates = candidates - hcg_info.ignore_chassis
+
+    return candidates
+
+
+def _sync_ha_chassis_group(nb_idl, hcg_info, txn):
+    """Return the UUID of the HA Chassis Group or the HA Chassis Group cmd.
+
+    This method will return (or create and then return) the appropriate HA
+    Chassis Group for the resource specified in ``HAChassisGroupInfo``,
+    which can be generated from a network or a router.
+
+    :param nb_idl: OVN NB IDL
+    :param hcg_info: HA Chassis Group information named tuple
+                     (``HAChassisGroupInfo``)
+    :param txn: The ovsdbapp transaction object
+    :returns: The HA Chassis Group UUID or the HA Chassis Group command object,
+              The name of the Chassis with the highest priority (could be None)
+    """
+    def get_priority(ch_name):
+        nonlocal priority
+        if hcg_info.priority:
+            return hcg_info.priority[ch_name]
+
+        _priority = int(priority)
+        priority -= 1
+        return _priority
+
+    # If there are Chassis marked for hosting external ports create a HA
+    # Chassis Group per external port, otherwise do it at the network level
+    candidates = _filter_candidates_for_ha_chassis_group(hcg_info)
+
+    # Try to get the HA Chassis Group or create if it doesn't exist
+    ha_ch_grp_cmd = None
+    ha_ch_grp = nb_idl.lookup('HA_Chassis_Group', hcg_info.group_name,
+                              default=None)
+    if ha_ch_grp is None:
+        ha_ch_grp_cmd = txn.add(nb_idl.ha_chassis_group_add(
+            hcg_info.group_name, may_exist=True,
+            external_ids=hcg_info.external_ids))
+    else:
+        # Update the external_ids.
+        txn.add(nb_idl.db_set('HA_Chassis_Group', hcg_info.group_name,
+                              ('external_ids', hcg_info.external_ids)))
+
+    max_chassis_number = constants.MAX_CHASSIS_IN_HA_GROUP
+    priority = constants.HA_CHASSIS_GROUP_HIGHEST_PRIORITY
+    high_prio_ch_name = None
+
+    # Check if the HA Chassis Group existed before. If so, re-calculate
+    # the candidates in case something changed and keep the highest priority
+    # chassis in the group (if it's an eligible candidate) with the highest
+    # priority to avoid external ports from moving around
+    ch_existing_dict = {
+        ha_chassis.chassis_name: ha_chassis.priority for
+        ha_chassis in ha_ch_grp.ha_chassis} if ha_ch_grp else {}
+    ch_delete = set(ch_existing_dict) - candidates
+    ch_keep = set(ch_existing_dict) & candidates
+
+    # The maximum number of HA_Chassis is MAX_CHASSIS_IN_HA_GROUP; check the
+    # HCG doesn't have more than this number. In that case, remove the lower
+    # priority ones.
+    if len(ch_keep) > constants.MAX_CHASSIS_IN_HA_GROUP:
+        ch_keep_dict = {k: ch_existing_dict[k] for k in ch_keep}
+        ch_keep_list_ordered = sorted(list(ch_keep_dict.items()),
+                                      key=lambda x: x[1], reverse=True)
+        ch_keep_list_ordered = [k[0] for k in ch_keep_list_ordered]
+        ch_excess_list = ch_keep_list_ordered[
+            constants.MAX_CHASSIS_IN_HA_GROUP:]
+        # Reduce the ch_keep list to just MAX_CHASSIS_IN_HA_GROUP length by
+        # removing lower priority HA_Chassis.
+        ch_keep -= set(ch_excess_list)
+        # Add the removed HA_Chassis to the list to be deleted.
+        ch_delete |= set(ch_excess_list)
+
+    # The number of chassis to add will depend on the chassis to keep and the
+    # maximum chassis number.
+    ch_add_list = list(candidates - set(ch_existing_dict))
+    if ch_add_list:
+        num_to_add = min(max_chassis_number - len(ch_keep), len(ch_add_list))
+        ch_add_list = random.sample(ch_add_list, num_to_add)
+
+    # Delete chassis.
+    for ch in ch_delete:
+        txn.add(nb_idl.ha_chassis_group_del_chassis(
+            hcg_info.group_name, ch, if_exists=True))
+
+    # Create an ordered list (by priority) of chassis names. This list will
+    # contain:
+    # * First the current chassis to be kept and this list will be ordered
+    #   with the current order; if the highest priority chassis is present,
+    #   it will keep the highest priority again.
+    # * Second, the new chassis to be added. Because "ch_add" has been randomly
+    #   generated, this order will be used.
+    for _delete in ch_delete:
+        ch_existing_dict.pop(_delete)
+    ch_ordered_list = sorted(list(ch_existing_dict.items()),
+                             key=lambda x: x[1], reverse=True)
+    ch_ordered_list = [ch[0] for ch in ch_ordered_list] + ch_add_list
+    for ch in ch_ordered_list:
+        txn.add(nb_idl.ha_chassis_group_add_chassis(
+            hcg_info.group_name, ch, priority=get_priority(ch)))
+        if not high_prio_ch_name:
+            high_prio_ch_name = ch
+
+    LOG.info('HA Chassis Group %s synchronized; highest priority chassis %s',
+             hcg_info.group_name, high_prio_ch_name)
+    # Return the existing register UUID or the HA chassis group creation
+    # command (see ovsdbapp ``HAChassisGroupAddChassisCommand`` class).
+    return ha_ch_grp.uuid if ha_ch_grp else ha_ch_grp_cmd, high_prio_ch_name
+
+
+@ovn_context(idl_var_name='nb_idl')
+def sync_ha_chassis_group_router(context, nb_idl, sb_idl, router_id, txn):
+    """Syncs the HA Chassis Group for a given router"""
+    chassis_list = sb_idl.get_gateway_chassis_from_cms_options(
+        name_only=False)
+    group_name = ovn_name(router_id)
+    LOG.debug('HA Chassis Group %s is based on router %s',
+              group_name, router_id)
+    plugin = directory.get_plugin(plugin_constants.L3)
+    resource = plugin.get_router(context, router_id,
+                                 fields=['availability_zone_hints'])
+    az_hints = common_utils.get_az_hints(resource)
+    external_ids = {constants.OVN_AZ_HINTS_EXT_ID_KEY: ','.join(az_hints),
+                    constants.OVN_ROUTER_ID_EXT_ID_KEY: router_id}
+    hcg_info = HAChassisGroupInfo(
+        group_name=group_name, chassis_list=chassis_list, az_hints=az_hints,
+        ignore_chassis=set(), external_ids=external_ids)
+    return _sync_ha_chassis_group(nb_idl, hcg_info, txn)
+
+
+@ovn_context(idl_var_name='nb_idl')
+def sync_ha_chassis_group_network(context, nb_idl, sb_idl, port_id,
+                                  network_id, txn):
+    """Syncs the HA_Chassis_Group for a given network"""
+    # If there is a network associated HA_Chassis_Group, the port will use it
+    # instead of creating a new one or updating it.
+    group_name = ovn_name(network_id)
+    hcg = nb_idl.lookup('HA_Chassis_Group', group_name, default=None)
+    if hcg:
+        router_id = hcg.external_ids.get(constants.OVN_ROUTER_ID_EXT_ID_KEY)
+        if router_id:
+            # If the HA_Chassis_Group is linked to a router, do not modify it.
+            ch_name, _ = get_high_prio_chassis_in_ha_chassis_group(hcg)
+            return hcg.uuid, ch_name
+
+    # If there are Chassis marked for hosting external ports create a HA
+    # Chassis Group per external port, otherwise do it at the network
+    # level
+    chassis_list = sb_idl.get_extport_chassis_from_cms_options()
+    if chassis_list:
+        group_name = ovn_extport_chassis_group_name(port_id)
+        # Check if the port is bound to a chassis and if so, ignore that
+        # chassis when building the HA Chassis Group to ensure the
+        # external port is bound to a different chassis than the VM
+        ignore_chassis = sb_idl.get_chassis_host_for_port(port_id)
+        LOG.debug('HA Chassis Group %s is based on external port %s '
+                  '(network %s)', group_name, port_id, network_id)
+    else:
+        chassis_list = sb_idl.get_gateway_chassis_from_cms_options(
+            name_only=False)
+        ignore_chassis = set()
+        # Filter out chassis with not matching physnets
+        chassis_physnets = sb_idl.get_chassis_and_physnets()
+        ls = nb_idl.get_lswitch(group_name)
+        physnet = ls.external_ids.get(constants.OVN_PHYSNET_EXT_ID_KEY)
+        if physnet:
+            for ch in chassis_list:
+                if physnet not in chassis_physnets[ch.name]:
+                    ignore_chassis.add(ch.name)
+        LOG.debug('HA Chassis Group %s is based on network %s',
+                  group_name, network_id)
+
+    plugin = directory.get_plugin()
+    resource = plugin.get_network(context, network_id)
+    az_hints = common_utils.get_az_hints(resource)
+    external_ids = {constants.OVN_AZ_HINTS_EXT_ID_KEY: ','.join(az_hints),
+                    constants.OVN_NETWORK_ID_EXT_ID_KEY: network_id,
+                    }
+    hcg_info = HAChassisGroupInfo(
+        group_name=group_name, chassis_list=chassis_list, az_hints=az_hints,
+        ignore_chassis=ignore_chassis, external_ids=external_ids)
+    return _sync_ha_chassis_group(nb_idl, hcg_info, txn)
+
+
+@ovn_context(idl_var_name='nb_idl')
+def sync_ha_chassis_group_network_unified(context, nb_idl, sb_idl, network_id,
+                                          router_id, chassis_prio, txn):
+    """Creates a single HA_Chassis_Group for a given network
+
+    This method creates a single HA_Chassis_Group for a network. This method
+    is called when a network with external ports is connected to a router;
+    in order to provide N/S connectivity all external ports need to be bound
+    to the same chassis as the gateway Logical_Router_Port.
+
+    The chassis list and the priority is already provided. This method checks
+    if all gateway chassis provided have external connectivity to this network.
+    """
+    chassis_physnets = sb_idl.get_chassis_and_physnets()
+    group_name = ovn_name(network_id)
+    ls = nb_idl.get_lswitch(group_name)
+
+    # It is expected to be called for a non-tunnelled network with a physical
+    # network assigned.
+    physnet = ls.external_ids.get(constants.OVN_PHYSNET_EXT_ID_KEY)
+    if physnet:
+        missing_mappings = set()
+        for ch_name in chassis_prio:
+            if physnet not in chassis_physnets[ch_name]:
+                missing_mappings.add(ch_name)
+
+        if missing_mappings:
+            LOG.warning('The following chassis do not have mapped the '
+                        'physical network %s: %s', physnet, missing_mappings)
+
+    chassis_list = [sb_idl.lookup('Chassis', ch_name, None)
+                    for ch_name in chassis_prio.keys()]
+    plugin = directory.get_plugin()
+    resource = plugin.get_network(context, network_id)
+    az_hints = common_utils.get_az_hints(resource)
+    external_ids = {constants.OVN_AZ_HINTS_EXT_ID_KEY: ','.join(az_hints),
+                    constants.OVN_NETWORK_ID_EXT_ID_KEY: network_id,
+                    constants.OVN_ROUTER_ID_EXT_ID_KEY: router_id,
+                    }
+    hcg_info = HAChassisGroupInfo(
+        group_name=group_name, chassis_list=chassis_list, az_hints=az_hints,
+        ignore_chassis=set(), external_ids=external_ids, priority=chassis_prio)
+    return _sync_ha_chassis_group(nb_idl, hcg_info, txn)
+
+
+def get_port_type_virtual_and_parents(context, subnets_by_id, fixed_ips,
+                                      port_id):
+    """Returns if a port is type virtual and its corresponding parents.
+
+    :param subnets_by_id: (dict) of subnets {subnet_id: subnet, ...}
+    :param fixed_ips: (list of dict) fixed IPs of several subnets (usually
+                      belonging to a network but not mandatory)
+    :param port_id: (string) port ID
+    :return: (tuple, three strings) (1) the virtual type ('' if not virtual),
+             (2) the virtual IP address and (3) the virtual parents
+    """
+    port_type, virtual_ip, virtual_parents = '', None, None
+    if not subnets_by_id:
+        return port_type, virtual_ip, virtual_parents
+
+    for fixed_ip in fixed_ips:
+        if fixed_ip.get('subnet_id') not in subnets_by_id:
+            continue
+
+        # Check if the port being created is a virtual port
+        parents = get_virtual_port_parents(context,
+            fixed_ip['ip_address'], fixed_ip['subnet_id'], port_id)
+        if not parents:
+            continue
+
+        port_type = constants.LSP_TYPE_VIRTUAL
+        virtual_ip = fixed_ip['ip_address']
+        virtual_parents = ','.join(parents)
+        break
+
+    return port_type, virtual_ip, virtual_parents
+
+
+def determine_bind_host(sb_idl, port, port_context=None):
+    """Determine which host the port should be bound to.
+
+    Traditionally it has been Nova's responsibility to create Virtual
+    Interfaces (VIFs) as part of instance life cycle, and subsequently
+    manage plug/unplug operations on the Open vSwitch integration bridge.
+    For the traditional topology the bind host will be the same as the
+    hypervisor hosting the instance.
+
+    With the advent of SmartNIC DPUs which are connected to multiple
+    distinct CPUs we can have a topology where the instance runs on one
+    host and Open vSwitch and OVN runs on a different host, the SmartNIC
+    DPU control plane CPU.  In the SmartNIC DPU topology the bind host will
+    be different than the hypervisor host.
+
+    This helper accepts both a port Dict and optionally a PortContext
+    instance so that it can be used both before and after a port is bound.
+
+    :param sb_idl: OVN Southbound IDL
+    :type sb_idl: ``OvsdbSbOvnIdl``
+    :param port: Port Dictionary
+    :type port: Dict[str,any]
+    :param port_context: PortContext instance describing the port
+    :type port_context: api.PortContext
+    :returns: FQDN or Hostname to bind port to.
+    :rtype: str
+    :raises: n_exc.InvalidInput, RuntimeError
+    """
+    # Note that we use port_context.host below when called from bind_port
+    port = port_context.current if port_context else port
+    vnic_type = port.get(portbindings.VNIC_TYPE, portbindings.VNIC_NORMAL)
+    if vnic_type != portbindings.VNIC_REMOTE_MANAGED:
+        # The ``PortContext`` ``host`` property contains handling of
+        # special cases.
+        return port_context.host if port_context else port.get(
+            portbindings.HOST_ID, '')
+
+    bp_info = validate_and_get_data_from_binding_profile(port)
+    if constants.VIF_DETAILS_CARD_SERIAL_NUMBER in bp_info.bp_param:
+        return sb_idl.get_chassis_by_card_serial_from_cms_options(
+            bp_info.bp_param[
+                constants.VIF_DETAILS_CARD_SERIAL_NUMBER]).hostname
+    return ''
+
+
+def validate_port_binding_and_virtual_port(
+        port_context, ml2_plugin, port, original_port):
+    """If the port is type=virtual and it is bound, raise BadRequest"""
+    # If the port receives an update of the device ID and the binding profile
+    # host ID fields, at the same time, this is because Nova is trying to bind
+    # the port to a VM (device ID) in a host (host ID).
+    if not (port['device_id'] != original_port['device_id'] and
+            port[portbindings.HOST_ID] != original_port[portbindings.HOST_ID]):
+        return
+
+    fixed_ips = port.get('fixed_ips', [])
+    subnet_ids = {fixed_ip['subnet_id'] for fixed_ip in fixed_ips
+                  if 'subnet_id' in fixed_ip}
+    if not subnet_ids:
+        # If the port has no fixed_ips/subnets, it cannot be virtual.
+        return
+
+    subnets = ml2_plugin.get_subnets(port_context.plugin_context,
+                                     filters={'id': list(subnet_ids)})
+    subnets_by_id = {subnet['id']: subnet for subnet in subnets}
+    port_type, _, _ = get_port_type_virtual_and_parents(
+        port_context.plugin_context, subnets_by_id, fixed_ips, port['id'])
+    if port_type == constants.LSP_TYPE_VIRTUAL:
+        raise n_exc.BadRequest(
+            resource='port',
+            msg='A virtual logical switch port cannot be bound to a host')
+
+
+def validate_port_allowed_address_pairs_vrrp_mac(port):
+    """Validate that virtual MACs in allowed address pairs are RFC 5798 VRRP.
+
+    When an allowed address pair has a MAC address different from the port's
+    MAC address, it is treated as a VRRP virtual MAC. This function validates
+    that such MACs belong to the RFC 5798 ranges:
+      - IPv4 VRRP: 00:00:5e:00:01:XX
+      - IPv6 VRRP: 00:00:5e:00:02:XX
+    """
+    port_mac = port.get('mac_address', '')
+    for aap in port.get('allowed_address_pairs', []):
+        aap_mac = aap.get('mac_address', '')
+        if not aap_mac or aap_mac == port_mac:
+            continue
+        mac_lower = aap_mac.lower()
+        # An AAP always have "ip_address".
+        ip_version = common_utils.get_ip_version(aap['ip_address'])
+        if ip_version == const.IP_VERSION_4:
+            expected_prefix = constants.VRRP_VIRTUAL_MAC_PREFIX_IPV4
+        else:
+            expected_prefix = constants.VRRP_VIRTUAL_MAC_PREFIX_IPV6
+        if not mac_lower.startswith(expected_prefix):
+            raise ovn_exc.InvalidVirtualMACAddress(mac_address=aap_mac)
+
+
+def get_requested_chassis(requested_chassis):
+    """Returns a list with the items in the LSP.options:requested-chassis"""
+    if isinstance(requested_chassis, str):
+        return requested_chassis.split(',')
+    return []
+
+
+def is_ovn_provider_router(router):
+    flavor_id = router.get('flavor_id')
+    return flavor_id is None or flavor_id is const.ATTR_NOT_SPECIFIED
+
+
+def validate_port_forwarding_configuration():
+    if not ovn_conf.is_ovn_distributed_floating_ip():
+        return
+
+    pf_plugin_names = [
+        'port_forwarding',
+        'neutron.services.portforwarding.pf_plugin.PortForwardingPlugin']
+    if not any(plugin in pf_plugin_names
+               for plugin in cfg.CONF.service_plugins):
+        return
+
+    provider_network_types = ['vlan', 'flat']
+    if any(net_type in provider_network_types
+           for net_type in cfg.CONF.ml2.project_network_types):
+        raise ovn_exc.InvalidPortForwardingConfiguration()
+
+
+def ovs_persist_uuid_supported(nb_idl):
+    # OVS 3.1+ contain the persist_uuid feature that allows choosing the UUID
+    # that will be stored in the DB. It was broken prior to 3.1.5/3.2.3/3.3.1
+    # so this will return True only for the fixed version. As actually testing
+    # the fix requires committing a transaction, an implementation detail is
+    # tested. This can be removed once a fixed version is required.
+    global _OVS_PERSIST_UUID
+    if _OVS_PERSIST_UUID is _SENTINEL:
+        _OVS_PERSIST_UUID = isinstance(
+            next(iter(nb_idl.tables["NB_Global"].rows.data.values())), list)
+        LOG.debug("OVS persist_uuid supported=%s", _OVS_PERSIST_UUID)
+    return _OVS_PERSIST_UUID
+
+
+def get_logical_router_port_ha_chassis(nb_idl, lrp, priorities=None):
+    """Get the list of chassis hosting this Logical_Router_Port.
+
+    :param nb_idl: (``OvsdbNbOvnIdl``) OVN Northbound IDL
+    :param lrp: Logical_Router_Port
+    :param priorities: (list of int) a list of HA_Chassis chassis priorities
+           to search for
+    :return: List of tuples (chassis_name, priority) sorted by priority. If
+             ``priorities`` is set then only chassis matching of these
+             priorities are returned.
+    """
+    chassis = []
+    lrp = nb_idl.lookup('Logical_Router_Port', lrp.name, default=None)
+    if not lrp or not lrp.ha_chassis_group:
+        return chassis
+
+    for hc in lrp.ha_chassis_group[0].ha_chassis:
+        if priorities and hc.priority not in priorities:
+            continue
+        chassis.append((hc.chassis_name, hc.priority))
+
+    return chassis
+
+
+def get_mac_and_ips_from_port_binding(port_binding):
+    """Get the MAC address and IP addresses from a Port_Binding row.
+
+    :param port_binding: Port_Binding row
+    :return: Tuple (MAC address, list of IP addresses)
+    :raises: ValueError if the MAC address is invalid
+    """
+    try:
+        mac_list = port_binding.mac[0].split(' ')
+        mac = mac_list[0]
+    except IndexError:
+        raise ValueError(_("mac column is empty"))
+    if not netaddr.valid_mac(mac):
+        raise ValueError(_("Invalid MAC address: %s"), mac)
+    return mac, mac_list[1:]

@@ -20,21 +20,12 @@ from neutron_lib.callbacks import resources
 from neutron_lib.db import api as db_api
 from neutron_lib.db import resource_extend
 from oslo_config import cfg
-import sqlalchemy as sa
-from sqlalchemy import sql
 
 from neutron.conf.db import l3_gwmode_db
 from neutron.db import l3_db
-from neutron.db.models import l3 as l3_models
 
 
 l3_gwmode_db.register_db_l3_gwmode_opts()
-
-
-# Modify the Router Data Model adding the enable_snat attribute
-setattr(l3_models.Router, 'enable_snat',
-        sa.Column(sa.Boolean, default=True, server_default=sql.true(),
-                  nullable=False))
 
 
 @resource_extend.has_resource_extenders
@@ -71,7 +62,7 @@ class L3_NAT_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
                                  desired_state=router))
 
         # Calls superclass, pass router db object for avoiding re-loading
-        super(L3_NAT_dbonly_mixin, self)._update_router_gw_info(
+        super()._update_router_gw_info(
             context, router_id, info, request_body, router=router)
         # Returning the router might come back useful if this
         # method is overridden in child classes
@@ -85,7 +76,7 @@ class L3_NAT_dbonly_mixin(l3_db.L3_NAT_dbonly_mixin):
         return cfg.CONF.enable_snat_by_default
 
     def _build_routers_list(self, context, routers, gw_ports):
-        routers = super(L3_NAT_dbonly_mixin, self)._build_routers_list(
+        routers = super()._build_routers_list(
             context, routers, gw_ports)
         for rtr in routers:
             gw_port_id = rtr['gw_port_id']

@@ -23,15 +23,14 @@ LOG = logging.getLogger(__name__)
 
 
 @registry.has_registry_receivers
-class ServerSideRpcBackend(object):
+class ServerSideRpcBackend:
     """The Neutron Server RPC backend."""
 
     def __init__(self):
         """Initialize an RPC backend for the Neutron Server."""
-        self._skeleton = server.TrunkSkeleton()
         self._stub = server.TrunkStub()
 
-        LOG.debug("RPC backend initialized for trunk plugin")
+        LOG.debug("RPC notifier initialized for trunk plugin")
 
         for event_type in (events.AFTER_CREATE, events.AFTER_DELETE):
             registry.subscribe(self.process_event,
@@ -42,7 +41,7 @@ class ServerSideRpcBackend(object):
     # Set up listeners to trunk events: they dispatch RPC messages
     # to agents as needed. These are designed to work with any
     # agent-based driver that may integrate with the trunk service
-    # plugin, e.g. linux bridge or ovs.
+    # plugin, e.g. ovs.
 
     def process_event(self, resource, event, trunk_plugin, payload):
         """Emit RPC notifications to registered subscribers."""

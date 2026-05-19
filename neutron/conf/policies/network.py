@@ -10,6 +10,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -21,19 +22,36 @@ The network API now supports system scope and default roles.
 
 COLLECTION_PATH = '/networks'
 RESOURCE_PATH = '/networks/{id}'
+TAGS_PATH = RESOURCE_PATH + '/tags'
+TAG_PATH = RESOURCE_PATH + '/tags/{tag_id}'
 
-ACTION_POST = [
+ACTION_POST: list[policy.Operation] = [
     {'method': 'POST', 'path': COLLECTION_PATH},
 ]
-ACTION_PUT = [
+ACTION_PUT: list[policy.Operation] = [
     {'method': 'PUT', 'path': RESOURCE_PATH},
 ]
-ACTION_DELETE = [
+ACTION_DELETE: list[policy.Operation] = [
     {'method': 'DELETE', 'path': RESOURCE_PATH},
 ]
-ACTION_GET = [
+ACTION_GET: list[policy.Operation] = [
     {'method': 'GET', 'path': COLLECTION_PATH},
     {'method': 'GET', 'path': RESOURCE_PATH},
+]
+ACTION_GET_TAGS: list[policy.Operation] = [
+    {'method': 'GET', 'path': TAGS_PATH},
+    {'method': 'GET', 'path': TAG_PATH},
+]
+ACTION_PUT_TAGS: list[policy.Operation] = [
+    {'method': 'PUT', 'path': TAGS_PATH},
+    {'method': 'PUT', 'path': TAG_PATH},
+]
+ACTION_POST_TAGS: list[policy.Operation] = [
+    {'method': 'POST', 'path': TAGS_PATH},
+]
+ACTION_DELETE_TAGS: list[policy.Operation] = [
+    {'method': 'DELETE', 'path': TAGS_PATH},
+    {'method': 'DELETE', 'path': TAG_PATH},
 ]
 
 
@@ -45,15 +63,13 @@ rules = [
 
     policy.DocumentedRuleDefault(
         name='create_network',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Create a network',
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network',
-            check_str=base.RULE_ANY,
+            check_str=neutron_policy.RULE_ANY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -65,7 +81,7 @@ rules = [
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network:shared',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -77,7 +93,7 @@ rules = [
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network:router:external',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -89,15 +105,13 @@ rules = [
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network:is_default',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='create_network:port_security_enabled',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description=(
             'Specify ``port_security_enabled`` '
@@ -106,7 +120,7 @@ rules = [
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network:port_security_enabled',
-            check_str=base.RULE_ANY,
+            check_str=neutron_policy.RULE_ANY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -118,7 +132,7 @@ rules = [
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network:segments',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -133,7 +147,7 @@ rules = [
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network:provider:network_type',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -148,7 +162,7 @@ rules = [
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network:provider:physical_network',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -162,44 +176,42 @@ rules = [
         operations=ACTION_POST,
         deprecated_rule=policy.DeprecatedRule(
             name='create_network:provider:segmentation_id',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='create_network:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description='Create the network tags',
+        operations=ACTION_POST_TAGS,
+        deprecated_rule=policy.DeprecatedRule(
+            name='create_networks_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
     ),
 
     policy.DocumentedRuleDefault(
         name='get_network',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_READER,
+        check_str=neutron_policy.policy_or(
+            base.ADMIN_OR_PROJECT_READER,
+            base.SERVICE,
             'rule:shared',
             'rule:external',
-            base.RULE_ADVSVC
+            neutron_policy.RULE_ADVSVC
         ),
         scope_types=['project'],
         description='Get a network',
         operations=ACTION_GET,
         deprecated_rule=policy.DeprecatedRule(
             name='get_network',
-            check_str=base.policy_or(
-                base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.policy_or(
+                neutron_policy.RULE_ADMIN_OR_OWNER,
                 'rule:shared',
                 'rule:external',
-                base.RULE_ADVSVC),
-            deprecated_reason=DEPRECATED_REASON,
-            deprecated_since=versionutils.deprecated.WALLABY)
-    ),
-    policy.DocumentedRuleDefault(
-        name='get_network:router:external',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_READER),
-        scope_types=['project'],
-        description='Get ``router:external`` attribute of a network',
-        operations=ACTION_GET,
-        deprecated_rule=policy.DeprecatedRule(
-            name='get_network:router:external',
-            check_str=base.RULE_ANY,
+                neutron_policy.RULE_ADVSVC),
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -211,7 +223,7 @@ rules = [
         operations=ACTION_GET,
         deprecated_rule=policy.DeprecatedRule(
             name='get_network:segments',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -223,7 +235,7 @@ rules = [
         operations=ACTION_GET,
         deprecated_rule=policy.DeprecatedRule(
             name='get_network:provider:network_type',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -235,7 +247,7 @@ rules = [
         operations=ACTION_GET,
         deprecated_rule=policy.DeprecatedRule(
             name='get_network:provider:physical_network',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -247,22 +259,37 @@ rules = [
         operations=ACTION_GET,
         deprecated_rule=policy.DeprecatedRule(
             name='get_network:provider:segmentation_id',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='get_network:tags',
+        check_str=neutron_policy.policy_or(
+            base.ADMIN_OR_PROJECT_READER,
+            'rule:shared',
+            'rule:external',
+            neutron_policy.RULE_ADVSVC
+        ),
+        scope_types=['project'],
+        description='Get the network tags',
+        operations=ACTION_GET_TAGS,
+        deprecated_rule=policy.DeprecatedRule(
+            name='get_networks_tags',
+            check_str=base.ADMIN_OR_PROJECT_READER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
     ),
 
     policy.DocumentedRuleDefault(
         name='update_network',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Update a network',
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -274,7 +301,7 @@ rules = [
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network:segments',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -286,7 +313,7 @@ rules = [
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network:shared',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -298,7 +325,7 @@ rules = [
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network:provider:network_type',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -313,7 +340,7 @@ rules = [
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network:provider:physical_network',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -328,7 +355,7 @@ rules = [
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network:provider:segmentation_id',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -340,7 +367,7 @@ rules = [
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network:router:external',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
@@ -352,38 +379,59 @@ rules = [
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network:is_default',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='update_network:port_security_enabled',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Update ``port_security_enabled`` attribute of a network',
         operations=ACTION_PUT,
         deprecated_rule=policy.DeprecatedRule(
             name='update_network:port_security_enabled',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='update_network:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description='Update the network tags',
+        operations=ACTION_PUT_TAGS,
+        deprecated_rule=policy.DeprecatedRule(
+            name='update_networks_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
     ),
 
     policy.DocumentedRuleDefault(
         name='delete_network',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         scope_types=['project'],
         description='Delete a network',
         operations=ACTION_DELETE,
         deprecated_rule=policy.DeprecatedRule(
             name='delete_network',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        # This should be just "update_network:tags" probably
+        name='delete_network:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description='Delete the network tags',
+        operations=ACTION_DELETE_TAGS,
+        deprecated_rule=policy.DeprecatedRule(
+            name='delete_networks_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
     ),
 ]
 

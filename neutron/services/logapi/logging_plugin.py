@@ -38,10 +38,9 @@ class LoggingPlugin(log_ext.LoggingPluginBase):
 
     __native_pagination_support = True
     __native_sorting_support = True
-    __filter_validation_support = True
 
     def __init__(self):
-        super(LoggingPlugin, self).__init__()
+        super().__init__()
         self.driver_manager = driver_mgr.LoggingServiceDriverManager()
         self.validator_mgr = validators.ResourceValidateRequest.get_instance()
 
@@ -49,6 +48,9 @@ class LoggingPlugin(log_ext.LoggingPluginBase):
     def supported_logging_types(self):
         # supported_logging_types are be dynamically loaded from log_drivers
         return self.driver_manager.supported_logging_types
+
+    def start_rpc_listeners(self):
+        return self.driver_manager._start_rpc_listeners()
 
     def _clean_logs(self, context, sg_id=None, port_id=None):
         with db_api.CONTEXT_WRITER.using(context):

@@ -50,7 +50,7 @@ HOSTNAME = 'myhost'
 class QosExtensionBaseTestCase(test_agent.BasicRouterOperationsFramework):
 
     def setUp(self):
-        super(QosExtensionBaseTestCase, self).setUp()
+        super().setUp()
 
         self.fip_qos_ext = fip_qos.FipQosAgentExtension()
         self.context = context.get_admin_context()
@@ -143,8 +143,9 @@ class FipQosExtensionInitializeTestCase(QosExtensionBaseTestCase):
     @mock.patch.object(registry, 'register')
     @mock.patch.object(resources_rpc, 'ResourcesPushRpcCallback')
     def test_initialize_subscribed_to_rpc(self, rpc_mock, subscribe_mock):
-        with mock.patch.object(n_rpc, 'Connection',
-                        return_value=self.connection) as create_connection:
+        with mock.patch.object(
+                n_rpc, 'Connection',
+                return_value=self.connection) as create_connection:
             self.fip_qos_ext.initialize(
                 self.connection, lib_const.L3_AGENT_MODE)
             create_connection.assert_has_calls([mock.call()])
@@ -161,7 +162,7 @@ class FipQosExtensionInitializeTestCase(QosExtensionBaseTestCase):
 class FipQosExtensionTestCase(QosExtensionBaseTestCase):
 
     def setUp(self):
-        super(FipQosExtensionTestCase, self).setUp()
+        super().setUp()
         self.fip_qos_ext.initialize(
             self.connection, lib_const.L3_AGENT_MODE)
         self._set_pull_mock()
@@ -406,22 +407,22 @@ class FipQosExtensionTestCase(QosExtensionBaseTestCase):
 class RouterFipRateLimitMapsTestCase(base.BaseTestCase):
 
     def setUp(self):
-        super(RouterFipRateLimitMapsTestCase, self).setUp()
+        super().setUp()
         self.policy_map = fip_qos.RouterFipRateLimitMaps()
 
     def _check_policy_map_fip(self, router_id, fip_res):
         if router_id is None:
             self.assertIsNone(self.policy_map.get_router_id_by_fip(fip_res))
-            self.assertTrue(fip_res not in self.policy_map._fips_2_router)
+            self.assertNotIn(fip_res, self.policy_map._fips_2_router)
             for router_fips in self.policy_map._router_2_fips.values():
-                self.assertTrue(fip_res not in router_fips)
+                self.assertNotIn(fip_res, router_fips)
         else:
             self.assertEqual(router_id,
                              self.policy_map.get_router_id_by_fip(fip_res))
             self.assertEqual(router_id,
                              self.policy_map._fips_2_router[fip_res])
-            self.assertTrue(fip_res in
-                            self.policy_map._router_2_fips[router_id])
+            self.assertIn(fip_res,
+                          self.policy_map._router_2_fips[router_id])
 
     def test_get_router_id_by_fip(self):
         router_id_1, router_id_2 = _uuid(), _uuid()

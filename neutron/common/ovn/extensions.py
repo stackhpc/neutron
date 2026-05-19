@@ -17,65 +17,98 @@ from neutron_lib.api.definitions import agent as agent_def
 from neutron_lib.api.definitions import allowedaddresspairs
 from neutron_lib.api.definitions import auto_allocated_topology
 from neutron_lib.api.definitions import availability_zone as az_def
+from neutron_lib.api.definitions import bgp
+from neutron_lib.api.definitions import bgp_4byte_asn
+from neutron_lib.api.definitions import bgp_dragentscheduler
 from neutron_lib.api.definitions import default_subnetpools
+from neutron_lib.api.definitions import dhcpagentscheduler
 from neutron_lib.api.definitions import dns
 from neutron_lib.api.definitions import dns_domain_keywords
 from neutron_lib.api.definitions import dns_domain_ports
+from neutron_lib.api.definitions import empty_string_filtering
 from neutron_lib.api.definitions import expose_port_forwarding_in_fip
 from neutron_lib.api.definitions import external_net
 from neutron_lib.api.definitions import extra_dhcp_opt
 from neutron_lib.api.definitions import extraroute
+from neutron_lib.api.definitions import extraroute_atomic
 from neutron_lib.api.definitions import filter_validation
 from neutron_lib.api.definitions import fip_pf_description
 from neutron_lib.api.definitions import fip_pf_detail
 from neutron_lib.api.definitions import fip_pf_port_range
 from neutron_lib.api.definitions import fip_port_details
+from neutron_lib.api.definitions import firewall_v2
+from neutron_lib.api.definitions import firewall_v2_stdattrs
+from neutron_lib.api.definitions import flavors
 from neutron_lib.api.definitions import floating_ip_port_forwarding
 from neutron_lib.api.definitions import floatingip_pools
+from neutron_lib.api.definitions import ip_allocation
 from neutron_lib.api.definitions import l3
+from neutron_lib.api.definitions import l3_enable_default_route_bfd
+from neutron_lib.api.definitions import l3_enable_default_route_ecmp
 from neutron_lib.api.definitions import l3_ext_gw_mode
+from neutron_lib.api.definitions import l3_ext_gw_multihoming
+from neutron_lib.api.definitions import l3_ext_ha_mode
+from neutron_lib.api.definitions import l3_flavors
 from neutron_lib.api.definitions import logging
 from neutron_lib.api.definitions import multiprovidernet
 from neutron_lib.api.definitions import network_availability_zone
+from neutron_lib.api.definitions import network_ha
 from neutron_lib.api.definitions import network_ip_availability
 from neutron_lib.api.definitions import network_mtu
 from neutron_lib.api.definitions import network_mtu_writable
 from neutron_lib.api.definitions import pagination
 from neutron_lib.api.definitions import port_device_profile
+from neutron_lib.api.definitions import port_hardware_offload_type
 from neutron_lib.api.definitions import port_mac_address_regenerate
 from neutron_lib.api.definitions import port_numa_affinity_policy
+from neutron_lib.api.definitions import port_numa_affinity_policy_socket
 from neutron_lib.api.definitions import port_resource_request
 from neutron_lib.api.definitions import port_security
+from neutron_lib.api.definitions import port_trusted_vif
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import portbindings_extended as pbe_ext
 from neutron_lib.api.definitions import project_id
 from neutron_lib.api.definitions import provider_net
+from neutron_lib.api.definitions import qinq
 from neutron_lib.api.definitions import qos
 from neutron_lib.api.definitions import qos_bw_limit_direction
+from neutron_lib.api.definitions import qos_bw_minimum_ingress
 from neutron_lib.api.definitions import qos_default
 from neutron_lib.api.definitions import qos_gateway_ip
 from neutron_lib.api.definitions import qos_rule_type_details
 from neutron_lib.api.definitions import qos_rule_type_filter
 from neutron_lib.api.definitions import qos_rules_alias
 from neutron_lib.api.definitions import quota_check_limit
+from neutron_lib.api.definitions import quota_check_limit_default
 from neutron_lib.api.definitions import rbac_address_scope
 from neutron_lib.api.definitions import rbac_security_groups
 from neutron_lib.api.definitions import router_availability_zone as raz_def
+from neutron_lib.api.definitions import router_enable_snat
 from neutron_lib.api.definitions import security_groups_normalized_cidr
 from neutron_lib.api.definitions import security_groups_remote_address_group
+from neutron_lib.api.definitions import \
+    security_groups_rules_belongs_to_default_sg
 from neutron_lib.api.definitions import security_groups_shared_filtering
 from neutron_lib.api.definitions import segment as seg_def
 from neutron_lib.api.definitions import sorting
 from neutron_lib.api.definitions import stateful_security_group
 from neutron_lib.api.definitions import subnet_dns_publish_fixed_ip
+from neutron_lib.api.definitions import subnet_external_network
 from neutron_lib.api.definitions import subnet_service_types
+from neutron_lib.api.definitions import subnetpool_prefix_ops
+from neutron_lib.api.definitions import tag_creation
+from neutron_lib.api.definitions import tap_mirror
+from neutron_lib.api.definitions import tap_mirror_both_direction
 from neutron_lib.api.definitions import trunk
+from neutron_lib.api.definitions import uplink_status_propagation
+from neutron_lib.api.definitions import uplink_status_propagation_updatable
 from neutron_lib.api.definitions import vlantransparent
 from neutron_lib.api.definitions import vpn
 from neutron_lib.api.definitions import vpn_endpoint_groups
 from neutron_lib import constants
 
 from neutron.extensions import quotasv2_detail
+from neutron.extensions import security_groups_default_rules
 
 # NOTE(russellb) This remains in its own file (vs constants.py) because we want
 # to be able to easily import it and export the info without any dependencies
@@ -86,6 +119,7 @@ from neutron.extensions import quotasv2_detail
 ML2_SUPPORTED_API_EXTENSIONS_OVN_L3 = [
     l3.ALIAS,
     extraroute.ALIAS,
+    extraroute_atomic.ALIAS,
     l3_ext_gw_mode.ALIAS,
     fip_pf_detail.ALIAS,
     fip_port_details.ALIAS,
@@ -102,6 +136,13 @@ ML2_SUPPORTED_API_EXTENSIONS_OVN_L3 = [
     agent_def.ALIAS,
     az_def.ALIAS,
     raz_def.ALIAS,
+    flavors.ALIAS,
+    l3_flavors.ALIAS,
+    l3_ext_gw_multihoming.ALIAS,
+    l3_enable_default_route_bfd.ALIAS,
+    l3_enable_default_route_ecmp.ALIAS,
+    l3_ext_ha_mode.ALIAS,
+    router_enable_snat.ALIAS,
 ]
 ML2_SUPPORTED_API_EXTENSIONS = [
     address_group.ALIAS,
@@ -113,44 +154,58 @@ ML2_SUPPORTED_API_EXTENSIONS = [
     portbindings.ALIAS,
     pbe_ext.ALIAS,
     default_subnetpools.ALIAS,
+    dhcpagentscheduler.ALIAS,
     dns.ALIAS,
+    empty_string_filtering.ALIAS,
     external_net.ALIAS,
     extra_dhcp_opt.ALIAS,
     filter_validation.ALIAS,
     multiprovidernet.ALIAS,
+    network_ha.ALIAS,
     network_mtu.ALIAS,
     network_mtu_writable.ALIAS,
     network_availability_zone.ALIAS,
     network_ip_availability.ALIAS,
     port_device_profile.ALIAS,
+    port_hardware_offload_type.ALIAS,
     port_mac_address_regenerate.ALIAS,
     port_numa_affinity_policy.ALIAS,
+    port_numa_affinity_policy_socket.ALIAS,
     port_security.ALIAS,
+    port_trusted_vif.ALIAS,
     provider_net.ALIAS,
     port_resource_request.ALIAS,
+    qinq.ALIAS,
     qos.ALIAS,
     qos_bw_limit_direction.ALIAS,
+    qos_bw_minimum_ingress.ALIAS,
     qos_default.ALIAS,
     qos_rule_type_details.ALIAS,
     qos_rule_type_filter.ALIAS,
     qos_rules_alias.ALIAS,
     'quotas',
     quota_check_limit.ALIAS,
+    quota_check_limit_default.ALIAS,
     quotasv2_detail.ALIAS,
     rbac_address_scope.ALIAS,
     'rbac-policies',
     rbac_security_groups.ALIAS,
     'standard-attr-revisions',
     'security-group',
+    security_groups_default_rules.ALIAS,
     security_groups_normalized_cidr.ALIAS,
     security_groups_remote_address_group.ALIAS,
+    security_groups_rules_belongs_to_default_sg.ALIAS,
     security_groups_shared_filtering.ALIAS,
     stateful_security_group.ALIAS,
     'standard-attr-description',
     constants.SUBNET_ALLOCATION_EXT_ALIAS,
     'standard-attr-tag',
     'standard-attr-timestamp',
+    subnetpool_prefix_ops.ALIAS,
+    subnet_external_network.ALIAS,
     subnet_service_types.ALIAS,
+    tag_creation.ALIAS,
     trunk.ALIAS,
     seg_def.ALIAS,
     expose_port_forwarding_in_fip.ALIAS,
@@ -161,4 +216,14 @@ ML2_SUPPORTED_API_EXTENSIONS = [
     logging.ALIAS,
     vpn.ALIAS,
     vpn_endpoint_groups.ALIAS,
+    bgp.ALIAS,
+    bgp_4byte_asn.ALIAS,
+    bgp_dragentscheduler.ALIAS,
+    firewall_v2.ALIAS,
+    firewall_v2_stdattrs.ALIAS,
+    uplink_status_propagation.ALIAS,
+    uplink_status_propagation_updatable.ALIAS,
+    tap_mirror.ALIAS,
+    tap_mirror_both_direction.ALIAS,
+    ip_allocation.ALIAS,
 ]

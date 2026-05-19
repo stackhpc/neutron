@@ -14,6 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import math
 from unittest import mock
 
@@ -43,14 +44,19 @@ class Ml2SecurityGroupsTestCase(test_sg.SecurityGroupDBTestCase):
         self.notifier = mock.Mock()
         notifier_cls.return_value = self.notifier
         self.useFixture(fixture.APIDefinitionFixture())
-        super(Ml2SecurityGroupsTestCase, self).setUp('ml2')
+        super().setUp('ml2')
+        plugin = directory.get_plugin()
+        mock.patch.object(
+            plugin, 'get_default_security_group_rules',
+            return_value=copy.deepcopy(
+                test_sg.RULES_TEMPLATE_FOR_CUSTOM_SG)).start()
 
 
 class TestMl2SecurityGroups(Ml2SecurityGroupsTestCase,
                             test_sg.TestSecurityGroups,
                             test_sg_rpc.SGNotificationTestMixin):
     def setUp(self):
-        super(TestMl2SecurityGroups, self).setUp()
+        super().setUp()
         self.ctx = context.get_admin_context()
         plugin = directory.get_plugin()
         plugin.start_rpc_listeners()
@@ -76,7 +82,8 @@ class TestMl2SecurityGroups(Ml2SecurityGroupsTestCase,
                 ]
                 plugin = directory.get_plugin()
                 # should match full ID and starting chars
-                ports = plugin.get_ports_from_devices(self.ctx,
+                ports = plugin.get_ports_from_devices(
+                    self.ctx,
                     [orig_ports[0]['id'], orig_ports[1]['id'][0:8],
                      orig_ports[2]['id']])
                 self.assertEqual(len(orig_ports), len(ports))
@@ -90,6 +97,28 @@ class TestMl2SecurityGroups(Ml2SecurityGroupsTestCase,
                     self.assertEqual([p['fixed_ips'][0]['ip_address']],
                                      port_dict['fixed_ips'])
                     self._delete('ports', p['id'])
+
+    def test_default_security_group_rules(self):
+        plugin = directory.get_plugin()
+        with mock.patch.object(
+                plugin, 'get_default_security_group_rules',
+                return_value=copy.deepcopy(
+                    test_sg.RULES_TEMPLATE_FOR_DEFAULT_SG)):
+            super().test_default_security_group_rules()
+
+    def test_get_security_group(self):
+        plugin = directory.get_plugin()
+        with mock.patch.object(
+                plugin, 'get_default_security_group_rules',
+                return_value=[]):
+            super().test_get_security_group()
+
+    def test_create_security_group_rules_admin_project(self):
+        plugin = directory.get_plugin()
+        with mock.patch.object(
+                plugin, 'get_default_security_group_rules',
+                return_value=[]):
+            super().test_create_security_group_rules_admin_project()
 
     def test_security_group_get_ports_from_devices_with_bad_id(self):
         plugin = directory.get_plugin()
@@ -114,8 +143,9 @@ class TestMl2SecurityGroups(Ml2SecurityGroupsTestCase,
                     mock.patch(
                         'neutron.plugins.ml2.db.get_sg_ids_grouped_by_port',
                         return_value={}) as get_mock:
-                plugin.get_ports_from_devices(self.ctx,
-                    ['%s%s' % (const.TAP_DEVICE_PREFIX, i)
+                plugin.get_ports_from_devices(
+                    self.ctx,
+                    [f'{const.TAP_DEVICE_PREFIX}{i}'
                      for i in range(ports_to_query)])
                 all_call_args = [x[1][1] for x in get_mock.mock_calls]
                 last_call_args = all_call_args.pop()
@@ -159,7 +189,8 @@ class TestMl2SecurityGroups(Ml2SecurityGroupsTestCase,
             self.assertFalse(self.was_active)
             self._delete(
                 'security-groups',
-                self._list('security-groups')['security_groups'][0]['id'])
+                self._list('security-groups')['security_groups'][0]['id'],
+                as_admin=True)
             with self.port(subnet=s):
                 self.assertFalse(self.was_active)
 

@@ -49,7 +49,7 @@ class NetworkSegment(standard_attr.HasStandardAttributes,
                      nullable=True)
     network = orm.relationship(models_v2.Network,
                                backref=orm.backref("segments",
-                                                   lazy='subquery',
+                                                   lazy='selectin',
                                                    cascade='delete'))
     api_collections = [segment.COLLECTION_NAME]
 
@@ -58,8 +58,9 @@ class NetworkSegment(standard_attr.HasStandardAttributes,
             network_id,
             network_type,
             physical_network,
+            segment_index,
             name='uniq_networksegment0network_id0'
-                 'network_type0physical_network'),
+                 'network_type0physnet0sidx'),
         model_base.BASEV2.__table_args__
     )
 
@@ -70,11 +71,9 @@ class SegmentHostMapping(model_base.BASEV2):
                            sa.ForeignKey('networksegments.id',
                                          ondelete="CASCADE"),
                            primary_key=True,
-                           index=True,
                            nullable=False)
     host = sa.Column(sa.String(255),
                      primary_key=True,
-                     index=True,
                      nullable=False)
 
     # Add a relationship to the NetworkSegment model in order to instruct
@@ -82,6 +81,6 @@ class SegmentHostMapping(model_base.BASEV2):
     network_segment = orm.relationship(
         NetworkSegment, load_on_pending=True,
         backref=orm.backref("segment_host_mapping",
-                            lazy='subquery',
+                            lazy='selectin',
                             cascade='delete'))
     revises_on_change = ('network_segment', )

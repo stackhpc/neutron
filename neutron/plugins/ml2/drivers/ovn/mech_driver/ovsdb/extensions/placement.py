@@ -21,6 +21,7 @@ from neutron_lib.placement import utils as placement_utils
 from neutron_lib.plugins import constants as plugins_constants
 from neutron_lib.plugins import directory
 from neutron_lib.utils import helpers
+from oslo_config import cfg
 from oslo_log import log as logging
 from ovsdbapp.backend.ovs_idl import event as row_event
 
@@ -38,12 +39,11 @@ def _parse_ovn_cms_options(chassis):
     return {n_const.RP_BANDWIDTHS: _parse_bandwidths(cms_options),
             n_const.RP_INVENTORY_DEFAULTS: _parse_inventory_defaults(
                 cms_options),
-            ovn_const.RP_HYPERVISORS: _parse_hypervisors(cms_options)}
+            n_const.RP_HYPERVISORS: _parse_hypervisors(cms_options)}
 
 
 def _parse_bridge_mappings(chassis):
-    other_config = ovn_utils.get_ovn_chassis_other_config(chassis)
-    bridge_mappings = other_config.get('ovn-bridge-mappings', '')
+    bridge_mappings = chassis.other_config.get('ovn-bridge-mappings', '')
     bridge_mappings = helpers.parse_mappings(bridge_mappings.split(','))
     return {k: [v] for k, v in bridge_mappings.items()}
 
@@ -80,7 +80,7 @@ def _parse_inventory_defaults(cms_options):
 
 
 def _parse_hypervisors(cms_options):
-    hyperv = _parse_placement_option(ovn_const.RP_HYPERVISORS, cms_options)
+    hyperv = _parse_placement_option(n_const.RP_HYPERVISORS, cms_options)
     if not hyperv:
         return {}
 
@@ -97,21 +97,21 @@ def _send_deferred_batch(state):
             LOG.debug('Placement client: %s', str(deferred))
             deferred.execute()
         except Exception:
-            LOG.exception('Placement client call failed: %s', str(deferred))
+            LOG.error('Placement client call failed: %s', str(deferred))
 
 
 def dict_chassis_config(state):
     if state:
         return {n_const.RP_BANDWIDTHS: state._rp_bandwidths,
                 n_const.RP_INVENTORY_DEFAULTS: state._rp_inventory_defaults,
-                ovn_const.RP_HYPERVISORS: state._hypervisor_rps}
+                n_const.RP_HYPERVISORS: state._hypervisor_rps}
 
 
 class ChassisBandwidthConfigEvent(row_event.RowEvent):
     """Chassis create update event to track the bandwidth config changes."""
 
-    def __init__(self, placement_extension):
-        self._placement_extension = placement_extension
+    def __init__(self, driver):
+        self._driver = driver
         # NOTE(ralonsoh): BW resource provider information is stored in
         # "Chassis", not "Chassis_Private".
         table = 'Chassis'
@@ -119,20 +119,53 @@ class ChassisBandwidthConfigEvent(row_event.RowEvent):
         super().__init__(events, table, None)
         self.event_name = 'ChassisBandwidthConfigEvent'
 
+    @property
+    def placement_extension(self):
+        if self._driver._post_fork_event.is_set():
+            return self._driver._ovn_client.placement_extension
+
+    @property
+    def placement_extension_enabled(self):
+        return self.placement_extension and self.placement_extension.enabled
+
+    def match_fn(self, event, row, old=None):
+        if event == self.ROW_CREATE:
+            return True
+
+        # If the OVNMechanismDriver OVNClient has not been instantiated, the
+        # update event is skipped.
+        if not self.placement_extension_enabled:
+            return False
+        if old and hasattr(old, 'other_config'):
+            row_bw = _parse_ovn_cms_options(row)
+            old_bw = _parse_ovn_cms_options(old)
+            if row_bw != old_bw:
+                return True
+        return False
+
     def run(self, event, row, old):
-        name2uuid = self._placement_extension.name2uuid()
-        state = self._placement_extension.build_placement_state(row, name2uuid)
+        if event == self.ROW_CREATE:
+            # It is possible that a Chassis create event is received before
+            # the OVNMechanismDriver OVNClient has been instantiated. Wait for
+            # it and check the Placement extension.
+            self._driver._post_fork_event.wait()
+            if not self.placement_extension_enabled:
+                return
+
+        name2uuid = self.placement_extension.name2uuid()
+        state = self.placement_extension.build_placement_state(row, name2uuid,
+                                                               chassis_old=old)
         if not state:
             return
 
         _send_deferred_batch(state)
         ch_config = dict_chassis_config(state)
-        LOG.debug('OVN chassis %(chassis)s Placement configuration modified: '
-                  '%(config)s', {'chassis': row.name, 'config': ch_config})
+        LOG.info('OVN chassis %(chassis)s Placement configuration modified: '
+                 '%(config)s', {'chassis': row.name, 'config': ch_config})
 
 
 @common_utils.SingletonDecorator
-class OVNClientPlacementExtension(object):
+class OVNClientPlacementExtension:
     """OVN client Placement API extension"""
 
     def __init__(self, driver):
@@ -153,18 +186,7 @@ class OVNClientPlacementExtension(object):
         self._plugin = None
         self.uuid_ns = ovn_const.OVN_RP_UUID
         self.supported_vnic_types = ovn_const.OVN_SUPPORTED_VNIC_TYPES
-        if not self.enabled:
-            return
-
-        if not self._config_event:
-            self._config_event = ChassisBandwidthConfigEvent(self)
-            try:
-                self._driver._sb_idl.idl.notify_handler.watch_events(
-                    [self._config_event])
-            except AttributeError:
-                # "sb_idl.idl.notify_handler" is not present in the
-                # MaintenanceWorker.
-                pass
+        self._rp_tun_name = cfg.CONF.ml2.tunnelled_network_rp_name
 
     @property
     def placement_plugin(self):
@@ -196,6 +218,8 @@ class OVNClientPlacementExtension(object):
         name2uuid = self.name2uuid()
         for ch in self._driver._sb_idl.chassis_list().execute(
                 check_error=True):
+            # TODO(ralonsoh): retrieve the OVN controller agent current RP
+            # information and delete any child RP not present in the chassis.
             state = self.build_placement_state(ch, name2uuid)
             if state:
                 chassis[ch.name] = state
@@ -214,9 +238,10 @@ class OVNClientPlacementExtension(object):
         chassis = self.get_chassis_config()
         for state in chassis.values():
             _send_deferred_batch(state)
-        msg = ', '.join(['Chassis %s: %s' % (name, dict_chassis_config(state))
-                         for (name, state) in chassis.items()]) or '(no info)'
-        LOG.debug('OVN chassis Placement initial configuration: %s', msg)
+        msg = ', '.join(['Chassis {}: {}'.format(
+            name, dict_chassis_config(state))
+            for (name, state) in chassis.items()]) or '(no info)'
+        LOG.info('OVN chassis Placement initial configuration: %s', msg)
         return chassis
 
     def name2uuid(self, name=None):
@@ -232,20 +257,48 @@ class OVNClientPlacementExtension(object):
                  '(name:uuid):%s ', _name2uuid)
         return _name2uuid
 
-    def build_placement_state(self, chassis, name2uuid):
+    def build_placement_state(self, chassis, name2uuid, chassis_old=None):
         bridge_mappings = _parse_bridge_mappings(chassis)
         cms_options = _parse_ovn_cms_options(chassis)
+        try:
+            cms_options_old = _parse_ovn_cms_options(chassis_old)
+        except AttributeError:
+            cms_options_old = {}
+
+        rp_new = set(cms_options.get(n_const.RP_BANDWIDTHS, {}).keys())
+        rp_old = set(cms_options_old.get(n_const.RP_BANDWIDTHS, {}).keys())
+        rp_deleted = rp_old - rp_new
+        rp_hyp_deleted = {
+            device: hyperv for device, hyperv in
+            cms_options_old.get(n_const.RP_HYPERVISORS, {}).items() if
+            device in rp_deleted}
+
         LOG.debug('Building placement options for chassis %s: %s',
                   chassis.name, cms_options)
         hypervisor_rps = {}
-        for device, hyperv in cms_options[ovn_const.RP_HYPERVISORS].items():
+
+        # ML2/OVN can also track tunnelled networks bandwidth. The key
+        # RP_TUNNELLED must be defined in "resource_provider_bandwidths" and
+        # "resource_provider_hypervisors". E.g.:
+        #   ovn-cms-options =
+        #     resource_provider_bandwidths=br-ex:100:200;rp_tunnelled:300:400
+        #     resource_provider_hypervisors=br-ex:host1,rp_tunnelled:host1
+        rp_hypervisors = itertools.chain(
+            cms_options[n_const.RP_HYPERVISORS].items(),
+            rp_hyp_deleted.items())
+        for device, hyperv in rp_hypervisors:
             try:
                 hypervisor_rps[device] = {'name': hyperv,
                                           'uuid': name2uuid[hyperv]}
             except (KeyError, AttributeError):
                 continue
 
-        bridges = set(itertools.chain(*bridge_mappings.values()))
+        rp_devices = set(itertools.chain(*bridge_mappings.values()))
+        # If "ml2.tunnelled_network_rp_name" is present in configured resource
+        # providers, that means this ML2/OVN host will track the tunnelled
+        # networks available bandwidth.
+        if self._rp_tun_name in hypervisor_rps:
+            rp_devices.add(self._rp_tun_name)
         # Remove "cms_options[RP_BANDWIDTHS]" not present in "hypervisor_rps"
         # and "bridge_mappings". If we don't have a way to match the RP bridge
         # with a host ("hypervisor_rps") or a way to match the RP bridge with
@@ -253,8 +306,8 @@ class OVNClientPlacementExtension(object):
         rp_bw = cms_options[n_const.RP_BANDWIDTHS]
         if rp_bw:
             cms_options[n_const.RP_BANDWIDTHS] = {
-                device: bw for device, bw in rp_bw.items() if
-                device in hypervisor_rps and device in bridges}
+                rp_device: bw for rp_device, bw in rp_bw.items() if
+                rp_device in hypervisor_rps and rp_device in rp_devices}
 
         # NOTE(ralonsoh): OVN only reports min BW RPs; packet processing RPs
         # will be added in a future implementation. If no RP_BANDWIDTHS values
@@ -270,4 +323,6 @@ class OVNClientPlacementExtension(object):
             hypervisor_rps=hypervisor_rps,
             device_mappings=bridge_mappings,
             supported_vnic_types=self.supported_vnic_types,
-            client=self.placement_plugin._placement_client)
+            client=self.placement_plugin._placement_client,
+            rp_deleted=rp_deleted,
+        )

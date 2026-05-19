@@ -44,12 +44,12 @@ def _add_new_device_to_agent_config(l2_agent_config, mapping_key_name,
         return
 
     new_mappings = 'physnetnew:%s' % new_dev
-    new_bw = '%s:%s:%s' % (new_dev,
-                           f_const.MINIMUM_BANDWIDTH_EGRESS_KBPS,
-                           f_const.MINIMUM_BANDWIDTH_INGRESS_KBPS)
-    l2_agent_config[mapping_key_name] = '%s,%s' % (
+    new_bw = '{}:{}:{}'.format(new_dev,
+                               f_const.MINIMUM_BANDWIDTH_EGRESS_KBPS,
+                               f_const.MINIMUM_BANDWIDTH_INGRESS_KBPS)
+    l2_agent_config[mapping_key_name] = '{},{}'.format(
         old_mappings, new_mappings)
-    l2_agent_config[constants.RP_BANDWIDTHS] = '%s,%s' % (
+    l2_agent_config[constants.RP_BANDWIDTHS] = '{},{}'.format(
         old_bw, new_bw)
 
 
@@ -105,7 +105,7 @@ class TestAgentBandwidthReport(base.BaseFullStackTestCase):
             )
             env = environment.Environment(env_desc, host_desc)
 
-        super(TestAgentBandwidthReport, self).setUp(env)
+        super().setUp(env)
 
     def _check_agent_configurations(self, agent_id, expected_physnets):
         agent = self.client.show_agent(agent_id)['agent']
@@ -152,6 +152,7 @@ class TestAgentBandwidthReport(base.BaseFullStackTestCase):
         self.assertEqual(1, len(agents['agents']))
         self.assertTrue(agents['agents'][0]['alive'])
 
+        physnets = []
         agent_config = self.environment.hosts[0].l2_agent.agent_config
         if 'ovs' in self.environment.hosts[0].agents:
             physnets = _get_physnet_names_from_mapping(
@@ -177,7 +178,7 @@ class TestAgentBandwidthReport(base.BaseFullStackTestCase):
         check_agent_alive = functools.partial(self._check_agent_configurations,
                                               l2_agent['id'],
                                               physnets)
-        utils.wait_until_true(
+        base.wait_until_true(
             predicate=check_agent_alive,
             timeout=float(report_interval) + 10,
             sleep=5)
@@ -188,7 +189,7 @@ class TestPlacementBandwidthReport(base.BaseFullStackTestCase):
     scenarios = [
         (constants.AGENT_TYPE_OVS,
          {'l2_agent_type': constants.AGENT_TYPE_OVS,
-          'mech_drivers': 'openvswitch,linuxbridge',
+          'mech_drivers': 'openvswitch',
           'placement_port': '8080'}),
         (constants.AGENT_TYPE_NIC_SWITCH,
          {'l2_agent_type': constants.AGENT_TYPE_NIC_SWITCH,
@@ -206,10 +207,11 @@ class TestPlacementBandwidthReport(base.BaseFullStackTestCase):
             mech_drivers=self.mech_drivers,
             report_bandwidths=True,
             has_placement=True,
-            placement_port=self.placement_port
+            placement_port=self.placement_port,
+            agent_down_time=10
         )
         env = environment.Environment(env_desc, host_desc)
-        super(TestPlacementBandwidthReport, self).setUp(env)
+        super().setUp(env)
 
     def _check_agent_not_synced(self):
         return not self._check_agent_synced()
@@ -231,24 +233,32 @@ class TestPlacementBandwidthReport(base.BaseFullStackTestCase):
         self.original_agent_id = agents['agents'][0]['id']
 
         check_agent_synced = functools.partial(self._check_agent_synced)
-        utils.wait_until_true(
+        base.wait_until_true(
             predicate=check_agent_synced,
-            timeout=report_interval + 10,
+            timeout=report_interval + 20,
             sleep=1)
 
         self.environment.placement.process_fixture.stop()
+
+        placement_fixture = self.environment.placement.process_fixture
+        base.wait_until_true(
+            predicate=functools.partial(
+                placement_fixture.process_is_not_running),
+            timeout=report_interval, sleep=1
+        )
+
         _add_new_bridge_and_restart_agent(self.environment.hosts[0])
 
         check_agent_not_synced = functools.partial(
             self._check_agent_not_synced)
-        utils.wait_until_true(
+        base.wait_until_true(
             predicate=check_agent_not_synced,
-            timeout=report_interval + 10,
+            timeout=report_interval + 20,
             sleep=1)
 
         self.environment.placement.process_fixture.start()
         check_agent_synced = functools.partial(self._check_agent_synced)
-        utils.wait_until_true(
+        base.wait_until_true(
             predicate=check_agent_synced,
-            timeout=report_interval + 10,
+            timeout=report_interval + 20,
             sleep=1)

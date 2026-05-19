@@ -1,7 +1,7 @@
 .. _adv-config-sfc:
 
 =========================
-Service function chaining
+Service Function Chaining
 =========================
 
 Service function chain (SFC) essentially refers to the
@@ -323,9 +323,9 @@ Update a port chain or port pair group
     SFC steers traffic matching the additional flow classifier to the
     port pair groups in the port chain.
 
-* Use the :command:`openstack sfc port pair group set` command to perform dynamic
-  scale-out or scale-in operations by adding or removing port pairs on a port
-  pair group.
+* Use the :command:`openstack sfc port pair group set` command to perform
+  dynamic scale-out or scale-in operations by adding or removing port pairs
+  on a port pair group.
 
   .. code-block:: console
 

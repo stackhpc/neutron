@@ -37,6 +37,7 @@ from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import placement as placement_exc
 from neutron_lib.placement import client as placement_client
 from neutron_lib.plugins import directory
+from neutron_lib.services import base as service_base
 from novaclient import client as nova_client
 from novaclient import exceptions as nova_exc
 from oslo_config import cfg
@@ -64,7 +65,9 @@ MAX_INVENTORY_UPDATE_RETRIES = 10
 
 @resource_extend.has_resource_extenders
 @registry.has_registry_receivers
-class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
+class Plugin(service_base.ServicePluginBase,
+             db.SegmentDbMixin,
+             segment.SegmentPluginBase):
 
     _instance = None
 
@@ -77,11 +80,21 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
 
     __native_pagination_support = True
     __native_sorting_support = True
+    # TODO(ralonsoh): this class should inherit from
+    # ``neutron_lib.services.base.ServicePluginBase``, then this attribute
+    # should be deleted.
     __filter_validation_support = True
 
     def __init__(self):
         self.nova_updater = NovaSegmentNotifier()
         self.segment_host_routes = SegmentHostRoutes()
+
+    def get_plugin_description(self):
+        return 'Segments service plugin'
+
+    @classmethod
+    def get_plugin_type(cls):
+        return 'segments'
 
     @staticmethod
     @resource_extend.extends([net_def.COLLECTION_NAME])
@@ -161,7 +174,7 @@ class Plugin(db.SegmentDbMixin, segment.SegmentPluginBase):
             raise n_exc.SubnetInUse(subnet_id=subnet.id)
 
 
-class Event(object):
+class Event:
 
     def __init__(self, method, segment_ids, total=None, reserved=None,
                  segment_host_mappings=None, host=None):
@@ -177,7 +190,7 @@ class Event(object):
 
 
 @registry.has_registry_receivers
-class NovaSegmentNotifier(object):
+class NovaSegmentNotifier:
 
     def __init__(self):
         self.p_client, self.n_client = self._get_clients()
@@ -393,13 +406,18 @@ class NovaSegmentNotifier(object):
             LOG.info('Segment %s resource provider not found; error: %s',
                      event.segment_id, str(exc))
 
+    @staticmethod
+    def _payload_segment_ids(payload, key):
+        # NOTE(twilson) My assumption is that this is to guarantee the subnets
+        # passed exist in at least one subnet
+        subnets = subnet_obj.Subnet.get_objects(
+            payload.context, segment_id=payload.metadata.get(key))
+        return {s.segment_id for s in subnets}
+
     @registry.receives(resources.SEGMENT_HOST_MAPPING, [events.AFTER_CREATE])
     def _notify_host_addition_to_aggregate(self, resource, event, trigger,
                                            payload=None):
-        subnets = subnet_obj.Subnet.get_objects(
-            payload.context,
-            segment_id=payload.metadata.get('current_segment_ids'))
-        segment_ids = {s.segment_id for s in subnets}
+        segment_ids = self._payload_segment_ids(payload, 'current_segment_ids')
         self.batch_notifier.queue_event(
             Event(self._add_host_to_aggregate,
                   segment_ids, host=payload.metadata.get('host')))
@@ -418,6 +436,29 @@ class NovaSegmentNotifier(object):
             except nova_exc.Conflict:
                 LOG.info('Host %(host)s already exists in aggregate for '
                          'routed network segment %(segment_id)s',
+                         {'host': event.host, 'segment_id': segment_id})
+
+    @registry.receives(resources.SEGMENT_HOST_MAPPING, [events.AFTER_DELETE])
+    def _notify_host_removal_from_aggregate(self, resource, event, trigger,
+                                            payload=None):
+        segment_ids = self._payload_segment_ids(payload, 'deleted_segment_ids')
+        self.batch_notifier.queue_event(
+            Event(self._remove_host_from_aggregate,
+                  segment_ids, host=payload.metadata.get('host')))
+
+    def _remove_host_from_aggregate(self, event):
+        for segment_id in event.segment_ids:
+            aggregate_id = self._get_aggregate_id(segment_id)
+            if not aggregate_id:
+                LOG.info('When removing host %(host)s, aggregate not found '
+                         'for routed network segment %(segment_id)s',
+                         {'host': event.host, 'segment_id': segment_id})
+                continue
+            try:
+                self.n_client.aggregates.remove_host(aggregate_id, event.host)
+            except nova_exc.NotFound:
+                LOG.info('Host %(host)s is not in aggregate for '
+                         'routed network segment %(segment_ids)s',
                          {'host': event.host, 'segment_id': segment_id})
 
     @registry.receives(resources.PORT, [events.AFTER_CREATE,
@@ -498,7 +539,7 @@ class NovaSegmentNotifier(object):
 
 
 @registry.has_registry_receivers
-class SegmentHostRoutes(object):
+class SegmentHostRoutes:
 
     def _get_subnets(self, context, network_id):
         return subnet_obj.Subnet.get_objects(context, network_id=network_id)
@@ -574,10 +615,10 @@ class SegmentHostRoutes(object):
                                  routed network
         :returns True if host_routes and calc_host_routes are not equal
         """
-        return ((set((route['destination'],
-                      route['nexthop']) for route in host_routes) !=
-                 set((route['destination'],
-                      route['nexthop']) for route in calc_host_routes)))
+        return ({(route['destination'],
+                  route['nexthop']) for route in host_routes} !=
+                {(route['destination'],
+                  route['nexthop']) for route in calc_host_routes})
 
     def _update_routed_network_host_routes(self, context, network_id,
                                            deleted_cidr=None):
@@ -657,7 +698,7 @@ class SegmentHostRoutes(object):
                 host_routes=copy.deepcopy(host_routes),
                 gateway_ip=gateway_ip,
                 old_gateway_ip=orig_gateway_ip if (
-                        gateway_ip != orig_gateway_ip) else None)
+                    gateway_ip != orig_gateway_ip) else None)
             if self._host_routes_need_update(host_routes, calc_host_routes):
                 subnet['host_routes'] = calc_host_routes
 

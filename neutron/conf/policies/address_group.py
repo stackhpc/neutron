@@ -10,6 +10,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -18,9 +19,11 @@ from neutron.conf.policies import base
 
 AG_COLLECTION_PATH = '/address-groups'
 AG_RESOURCE_PATH = '/address-groups/{id}'
+AG_ADD_ADDRESSES_PATH = '/address-groups/{id}/add_addresses'
+AG_REMOVE_ADDRESSES_PATH = '/address-groups/{id}/remove_addresses'
 
 DEPRECATION_REASON = (
-    "The Address scope API now supports system scope and default roles.")
+    "The Address group API now supports system scope and default roles.")
 
 
 rules = [
@@ -30,9 +33,26 @@ rules = [
         'Definition of a shared address group'
     ),
     policy.DocumentedRuleDefault(
+        name='create_address_group',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        description='Create an address group',
+        operations=[
+            {
+                'method': 'POST',
+                'path': AG_COLLECTION_PATH,
+            },
+        ],
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='create_address_group',
+            check_str=neutron_policy.RULE_ANY,
+            deprecated_reason=DEPRECATION_REASON,
+            deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
         name='get_address_group',
-        check_str=base.policy_or(
-            base.PROJECT_READER,
+        check_str=neutron_policy.policy_or(
+            base.ADMIN_OR_PROJECT_READER,
             'rule:shared_address_groups'),
         description='Get an address group',
         operations=[
@@ -48,8 +68,77 @@ rules = [
         scope_types=['project'],
         deprecated_rule=policy.DeprecatedRule(
             name='get_address_group',
-            check_str=base.policy_or(base.RULE_ADMIN_OR_OWNER,
-                                     'rule:shared_address_groups'),
+            check_str=neutron_policy.policy_or(
+                neutron_policy.RULE_ADMIN_OR_OWNER,
+                'rule:shared_address_groups'),
+            deprecated_reason=DEPRECATION_REASON,
+            deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='update_address_group',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        description='Update an address group',
+        operations=[
+            {
+                'method': 'PUT',
+                'path': AG_RESOURCE_PATH,
+            },
+        ],
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='update_address_group',
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
+            deprecated_reason=DEPRECATION_REASON,
+            deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='delete_address_group',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        description='Delete an address group',
+        operations=[
+            {
+                'method': 'DELETE',
+                'path': AG_RESOURCE_PATH,
+            },
+        ],
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='delete_address_group',
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
+            deprecated_reason=DEPRECATION_REASON,
+            deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='add_addresses',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        description='Add addresses to an address group',
+        operations=[
+            {
+                'method': 'PUT',
+                'path': AG_ADD_ADDRESSES_PATH,
+            },
+        ],
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='add_addresses',
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
+            deprecated_reason=DEPRECATION_REASON,
+            deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='remove_addresses',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        description='Remove addresses from an address group',
+        operations=[
+            {
+                'method': 'PUT',
+                'path': AG_REMOVE_ADDRESSES_PATH,
+            },
+        ],
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='remove_addresses',
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),

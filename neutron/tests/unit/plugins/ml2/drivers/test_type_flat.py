@@ -32,13 +32,13 @@ CORE_PLUGIN = 'neutron.db.db_base_plugin_v2.NeutronDbPluginV2'
 class FlatTypeTest(testlib_api.SqlTestCase):
 
     def setUp(self):
-        super(FlatTypeTest, self).setUp()
+        super().setUp()
         self.setup_coreplugin(CORE_PLUGIN)
         cfg.CONF.set_override('flat_networks', FLAT_NETWORKS,
                               group='ml2_type_flat')
         self.driver = type_flat.FlatTypeDriver()
         self.context = context.Context()
-        self.driver.physnet_mtus = []
+        self.driver.physnet_mtus = {}
 
     def _get_allocation(self, context, segment):
         return flat_obj.FlatAllocation.get_object(
@@ -121,9 +121,8 @@ class FlatTypeTest(testlib_api.SqlTestCase):
                           self.driver.reserve_provider_segment,
                           self.context, segment)
 
-    def test_allocate_tenant_segment(self):
-        observed = self.driver.allocate_tenant_segment(self.context)
-        self.assertIsNone(observed)
+    def test_allocate_project_segment(self):
+        self.assertIsNone(self.driver.allocate_tenant_segment(self.context))
 
     def test_get_mtu(self):
         cfg.CONF.set_override('global_physnet_mtu', 1475)
@@ -146,23 +145,13 @@ class FlatTypeTest(testlib_api.SqlTestCase):
         self.driver.physnet_mtus = {}
         self.assertEqual(0, self.driver.get_mtu('physnet1'))
 
-    def test_parse_physical_network_mtus(self):
-        cfg.CONF.set_override(
-            'physical_network_mtus',
-            ['physnet1:1500', 'physnet2:1500', 'physnet3:9000'],
-            group='ml2')
-        driver = type_flat.FlatTypeDriver()
-        self.assertEqual('1500', driver.physnet_mtus['physnet1'])
-        self.assertEqual('1500', driver.physnet_mtus['physnet2'])
-        self.assertEqual('9000', driver.physnet_mtus['physnet3'])
-
 
 class FlatTypeDefaultTest(base.BaseTestCase):
 
     def setUp(self):
-        super(FlatTypeDefaultTest, self).setUp()
+        super().setUp()
         self.driver = type_flat.FlatTypeDriver()
-        self.driver.physnet_mtus = []
+        self.driver.physnet_mtus = {}
 
     def test_validate_provider_segment_default(self):
         segment = {api.NETWORK_TYPE: p_const.TYPE_FLAT,

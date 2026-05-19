@@ -17,14 +17,14 @@ from oslo_config import cfg
 
 from neutron._i18n import _
 
-# Default timeout for ovsdb commands
+# Default timeout for OVSDB commands
 DEFAULT_OVSDB_TIMEOUT = 10
 
 OPTS = [
     cfg.IntOpt('ovsdb_timeout',
                default=DEFAULT_OVSDB_TIMEOUT,
-               help=_('Timeout in seconds for ovsdb commands. '
-                      'If the timeout expires, ovsdb commands will fail with '
+               help=_('Timeout in seconds for OVSDB commands. '
+                      'If the timeout expires, OVSDB commands will fail with '
                       'ALARMCLOCK error.')),
     cfg.IntOpt('bridge_mac_table_size',
                default=50000,
@@ -37,15 +37,40 @@ OPTS = [
                 help=_('Enable IGMP snooping for integration bridge. If this '
                        'option is set to True, support for Internet Group '
                        'Management Protocol (IGMP) is enabled in integration '
-                       'bridge. '
-                       'Setting this option to True will also enable Open '
-                       'vSwitch mcast-snooping-disable-flood-unregistered '
-                       'flag. This option will disable flooding of '
+                       'bridge.')),
+    cfg.BoolOpt('igmp_flood', default=False,
+                help=_('Multicast packets (except reports) are '
+                       'unconditionally forwarded to the ports bridging a '
+                       'logical network to a physical network.')),
+    cfg.BoolOpt('igmp_flood_reports', default=True,
+                help=_('Multicast reports are unconditionally forwarded '
+                       'to the ports bridging a logical network to a '
+                       'physical network.')),
+    cfg.BoolOpt('igmp_flood_unregistered', default=False,
+                help=_('This option enables or disables flooding of '
                        'unregistered multicast packets to all ports. '
-                       'The switch will send unregistered multicast packets '
-                       'only to ports connected to multicast routers.')),
+                       'If False, The switch will send unregistered '
+                       'multicast packets only to ports connected to '
+                       'multicast routers.')),
+
 ]
 
 
 def register_ovs_agent_opts(cfg=cfg.CONF):
     cfg.register_opts(OPTS, 'OVS')
+
+
+def get_igmp_snooping_enabled():
+    return str(cfg.CONF.OVS.igmp_snooping_enable).lower()
+
+
+def get_igmp_flood():
+    return str(cfg.CONF.OVS.igmp_flood).lower()
+
+
+def get_igmp_flood_reports():
+    return str(cfg.CONF.OVS.igmp_flood_reports).lower()
+
+
+def get_igmp_flood_unregistered():
+    return str(cfg.CONF.OVS.igmp_flood_unregistered).lower()

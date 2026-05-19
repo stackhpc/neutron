@@ -79,10 +79,10 @@ class TestBasicRouterOperations(BasicRouterTestCaseFramework):
 
         ri.external_gateway_removed(ex_gw_port, "qg-fake-name")
 
-        cidr_pri = '%s/%s' % (gw_ip_pri, v4_prefixlen)
-        cidr_sec = '%s/%s' % (gw_ip_sec, lib_constants.IPv4_BITS)
-        cidr_v6 = '%s/%s' % (gw_ip6_pri, v6_prefixlen)
-        cidr_v6_sec = '%s/%s' % (gw_ip6_sec, lib_constants.IPv6_BITS)
+        cidr_pri = f'{gw_ip_pri}/{v4_prefixlen}'
+        cidr_sec = f'{gw_ip_sec}/{lib_constants.IPv4_BITS}'
+        cidr_v6 = f'{gw_ip6_pri}/{v6_prefixlen}'
+        cidr_v6_sec = f'{gw_ip6_sec}/{lib_constants.IPv6_BITS}'
 
         device.delete_addr_and_conntrack_state.assert_has_calls(
             [mock.call(cidr_pri), mock.call(cidr_sec),

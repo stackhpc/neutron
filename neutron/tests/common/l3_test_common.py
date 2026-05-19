@@ -24,7 +24,7 @@ from neutron.common import ipv6_utils
 _uuid = uuidutils.generate_uuid
 
 
-class FakeDev(object):
+class FakeDev:
     def __init__(self, name):
         self.name = name
 
@@ -39,14 +39,14 @@ def get_ha_interface(ip='169.254.192.1', mac='12:34:56:78:2b:5d'):
                            'subnet_id': subnet_id}],
             'id': _uuid(),
             'mac_address': mac,
-            'name': u'L3 HA Admin port 0',
+            'name': 'L3 HA Admin port 0',
             'mtu': 1500,
             'network_id': _uuid(),
-            'status': u'ACTIVE',
+            'status': 'ACTIVE',
             'subnets': [{'cidr': '169.254.192.0/18',
                          'gateway_ip': '169.254.255.254',
                          'id': subnet_id}],
-            'tenant_id': '',
+            'project_id': '',
             'agent_id': _uuid(),
             'agent_host': 'aaa',
             'priority': 1}
@@ -182,9 +182,8 @@ def router_append_interface(router, count=1,
                             ra_mode=None, addr_mode=None, dual_stack=False,
                             same_port=False):
     interfaces = router[lib_constants.INTERFACE_KEY]
-    current = sum(
-        [netaddr.IPNetwork(subnet['cidr']).version == ip_version
-         for p in interfaces for subnet in p['subnets']])
+    current = sum(netaddr.IPNetwork(subnet['cidr']).version == ip_version
+                  for p in interfaces for subnet in p['subnets'])
 
     # If dual_stack=True, create IPv4 and IPv6 subnets on each port
     # If same_port=True, create ip_version number of subnets on a single port

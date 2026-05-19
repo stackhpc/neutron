@@ -206,6 +206,22 @@ class L3HATestCase(framework.L3AgentTestFramework):
                       (new_external_device_ip, external_device_name),
                       new_config)
 
+    def _is_conntrackd_running(self, router):
+        return router.conntrackd_manager.get_process().active
+
+    def test_conntrackd_running(self):
+        router_info = self.generate_router_info(enable_ha=True)
+        router = self.manage_router(self.agent, router_info)
+        self.assertTrue(self._is_conntrackd_running(router))
+
+    def test_conntrackd_not_enabled(self):
+        # Disable conntrackd support
+        self.agent.conf.set_override('ha_conntrackd_enabled', False)
+
+        router_info = self.generate_router_info(enable_ha=True)
+        router = self.manage_router(self.agent, router_info)
+        self.assertFalse(self._is_conntrackd_running(router))
+
     def test_ha_router_conf_on_restarted_agent(self):
         router_info = self.generate_router_info(enable_ha=True)
         router1 = self.manage_router(self.agent, router_info)
@@ -249,8 +265,8 @@ class L3HATestCase(framework.L3AgentTestFramework):
         _check_lla_status(router1, False)
 
     def test_ha_router_process_ipv6_subnets_to_existing_port(self):
-        router_info = self.generate_router_info(enable_ha=True,
-            ip_version=constants.IP_VERSION_6)
+        router_info = self.generate_router_info(
+            enable_ha=True, ip_version=constants.IP_VERSION_6)
         router = self.manage_router(self.agent, router_info)
 
         def verify_ip_in_keepalived_config(router, iface):
@@ -264,10 +280,9 @@ class L3HATestCase(framework.L3AgentTestFramework):
         slaac_mode = {'ra_mode': slaac, 'address_mode': slaac}
 
         # Add a second IPv6 subnet to the router internal interface.
-        self._add_internal_interface_by_subnet(router.router, count=1,
-                ip_version=constants.IP_VERSION_6,
-                ipv6_subnet_modes=[slaac_mode],
-                interface_id=interface_id)
+        self._add_internal_interface_by_subnet(
+            router.router, count=1, ip_version=constants.IP_VERSION_6,
+            ipv6_subnet_modes=[slaac_mode], interface_id=interface_id)
         router.process()
         self.wait_until_ha_router_has_state(router, 'primary')
 
@@ -337,7 +352,7 @@ class L3HATestCase(framework.L3AgentTestFramework):
         self.agent._process_updated_router(router1.router)
         self.wait_until_ha_router_has_state(router1, 'primary')
 
-    def test_ha_router_namespace_has_ip_nonlocal_bind_disabled(self):
+    def test_ha_router_namespace_has_ip_nonlocal_bind_enabled(self):
         router_info = self.generate_router_info(enable_ha=True)
         router = self.manage_router(self.agent, router_info)
         try:
@@ -350,7 +365,7 @@ class L3HATestCase(framework.L3AgentTestFramework):
                     "This kernel doesn't support %s in network namespaces." % (
                         ip_lib.IP_NONLOCAL_BIND))
             raise
-        self.assertEqual(0, ip_nonlocal_bind_value)
+        self.assertEqual(1, ip_nonlocal_bind_value)
 
     @testtools.skipUnless(netutils.is_ipv6_enabled(), "IPv6 is not enabled")
     def test_ha_router_addr_gen_mode(self):
@@ -487,7 +502,7 @@ class L3HATestCase(framework.L3AgentTestFramework):
 class L3HATestFailover(framework.L3AgentTestFramework):
 
     def setUp(self):
-        super(L3HATestFailover, self).setUp()
+        super().setUp()
         conf = self._configure_agent('agent2')
         self.failover_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             'agent2', conf)
@@ -598,7 +613,3 @@ class L3HATestFailover(framework.L3AgentTestFramework):
 
         self.assertEqual(primary_router, new_primary)
         self.assertEqual(backup_router, new_backup)
-
-
-class LinuxBridgeL3HATestCase(L3HATestCase):
-    INTERFACE_DRIVER = 'neutron.agent.linux.interface.BridgeInterfaceDriver'

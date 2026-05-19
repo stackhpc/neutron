@@ -13,8 +13,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
 import datetime
-import random
+import secrets
 import time
 
 from neutron_lib.callbacks import events
@@ -65,23 +66,22 @@ class AgentSchedulerDbMixin(agents_db.AgentDbMixin):
         if active is None:
             # filtering by activeness is disabled, all agents are eligible
             return True
-        else:
-            # note(rpodolyaka): original behaviour is saved here: if active
-            #                   filter is set, only agents which are 'up'
-            #                   (i.e. have a recent heartbeat timestamp)
-            #                   are eligible, even if active is False
-            if agent_utils.is_agent_down(agent['heartbeat_timestamp']):
-                LOG.warning('Agent %(agent)s is down. Type: %(type)s, host: '
-                            '%(host)s, heartbeat: %(heartbeat)s',
-                            {'agent': agent['id'], 'type': agent['agent_type'],
-                             'host': agent['host'],
-                             'heartbeat': agent['heartbeat_timestamp']})
-                return False
-            return True
+        # note(rpodolyaka): original behaviour is saved here: if active
+        #                   filter is set, only agents which are 'up'
+        #                   (i.e. have a recent heartbeat timestamp)
+        #                   are eligible, even if active is False
+        if agent_utils.is_agent_down(agent['heartbeat_timestamp']):
+            LOG.warning('Agent %(agent)s is down. Type: %(type)s, host: '
+                        '%(host)s, heartbeat: %(heartbeat)s',
+                        {'agent': agent['id'], 'type': agent['agent_type'],
+                         'host': agent['host'],
+                         'heartbeat': agent['heartbeat_timestamp']})
+            return False
+        return True
 
     def update_agent(self, context, id, agent):
         original_agent = self.get_agent(context, id)
-        result = super(AgentSchedulerDbMixin, self).update_agent(
+        result = super().update_agent(
             context, id, agent)
         agent_data = agent['agent']
         agent_notifier = self.agent_notifiers.get(original_agent['agent_type'])
@@ -99,10 +99,10 @@ class AgentSchedulerDbMixin(agents_db.AgentDbMixin):
         interval = max(cfg.CONF.agent_down_time // 2, 1)
         # add random initial delay to allow agents to check in after the
         # neutron server first starts. random to offset multiple servers
-        initial_delay = random.randint(interval, interval * 2)
-
+        initial_delay = secrets.SystemRandom().randint(interval, interval * 2)
+        desc = 'Periodic worker for "AgentSchedulerDbMixin"'
         check_worker = neutron_worker.PeriodicWorker(function, interval,
-                                                     initial_delay)
+                                                     initial_delay, desc=desc)
         self.add_worker(check_worker)
 
     def agent_dead_limit_seconds(self):
@@ -219,7 +219,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         agent_dead_limit = datetime.timedelta(
             seconds=self.agent_dead_limit_seconds())
         network_count = network.NetworkDhcpAgentBinding.count(
-                context, dhcp_agent_id=agent['id'])
+            context, dhcp_agent_id=agent['id'])
         # amount of networks assigned to agent affect amount of time we give
         # it so startup. Tests show that it's more or less sage to assume
         # that DHCP agent processes each network in less than 2 seconds.
@@ -367,7 +367,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         # get all the NDAB objects, which will also fetch (from DB)
         # the related dhcp_agent objects because of the synthetic field
         bindings = network.NetworkDhcpAgentBinding.get_objects(
-                       context, network_id=network_ids)
+            context, network_id=network_ids)
         # get the already fetched dhcp_agent objects
         agent_objs = [binding.db_obj.dhcp_agent for binding in bindings]
         # filter the dhcp_agent objects on admin_state_up
@@ -441,10 +441,9 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         if net_ids:
             return {'networks':
                     self.get_networks(context, filters={'id': net_ids})}
-        else:
-            # Exception will be thrown if the requested agent does not exist.
-            self._get_agent(context, id)
-            return {'networks': []}
+        # Exception will be thrown if the requested agent does not exist.
+        self._get_agent(context, id)
+        return {'networks': []}
 
     def list_active_networks_on_active_dhcp_agent(self, context, host):
         try:
@@ -464,8 +463,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         if net_ids:
             return network.Network.get_objects(context, id=net_ids,
                                                admin_state_up=[True])
-        else:
-            return []
+        return []
 
     def list_dhcp_agents_hosting_network(self, context, network_id):
         dhcp_agents = self.get_dhcp_agents_hosting_networks(
@@ -474,8 +472,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         if agent_ids:
             return {
                 'agents': self.get_agents(context, filters={'id': agent_ids})}
-        else:
-            return {'agents': []}
+        return {'agents': []}
 
     def schedule_network(self, context, created_network):
         if self.network_scheduler and cfg.CONF.network_auto_schedule:
@@ -492,6 +489,9 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         if not cfg.CONF.network_auto_schedule:
             return
         segment_plugin = directory.get_plugin('segments')
+        if not segment_plugin:
+            return
+
         dhcp_notifier = self.agent_notifiers.get(constants.AGENT_TYPE_DHCP)
         segment_ids = payload.metadata.get('current_segment_ids')
         segments = segment_plugin.get_segments(
@@ -501,9 +501,10 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         network_ids = {s.network_id for s in subnets}
 
         # pre-compute net-id per segments.
-        netsegs = {}
-        [netsegs.setdefault(s['network_id'], []).append(s)
-         for s in segments if 'network_id' in s]
+        netsegs = collections.defaultdict(list)
+        for s in segments:
+            if 'network_id' in s:
+                netsegs[s['network_id']].append(s)
         for network_id in network_ids:
             for segment in netsegs.get(network_id, []):
                 self._schedule_network(

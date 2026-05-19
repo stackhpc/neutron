@@ -47,8 +47,8 @@ def _change_since_result_filter_hook(query, filters):
     query = query.join(standard_attr.StandardAttribute,
                        target_model_class.standard_attr_id ==
                        standard_attr.StandardAttribute.id).filter(
-                       standard_attr.StandardAttribute.updated_at >=
-                       changed_since)
+                           standard_attr.StandardAttribute.updated_at >=
+                           changed_since)
     return query
 
 
@@ -78,7 +78,7 @@ def _add_timestamp(mapper, _conn, target):
 
 
 @resource_extend.has_resource_extenders
-class TimeStamp_db_mixin(object):
+class TimeStamp_db_mixin:
     """Mixin class to add Time Stamp methods."""
 
     def __new__(cls, *args, **kwargs):
@@ -90,7 +90,7 @@ class TimeStamp_db_mixin(object):
                 query_hook=None,
                 filter_hook=None,
                 result_filters=_change_since_result_filter_hook)
-        return super(TimeStamp_db_mixin, cls).__new__(cls, *args, **kwargs)
+        return super().__new__(cls, *args, **kwargs)
 
     def register_db_events(self):
         listen = db_api.sqla_listen

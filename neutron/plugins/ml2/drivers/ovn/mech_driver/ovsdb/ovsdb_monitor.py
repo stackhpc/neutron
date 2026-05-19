@@ -15,6 +15,7 @@
 import abc
 import datetime
 
+from neutron_lib import constants as n_const
 from neutron_lib import context as neutron_context
 from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
@@ -22,7 +23,6 @@ from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import timeutils
-from ovs.db import idl as ovs_idl_mod
 from ovs.stream import Stream
 from ovsdbapp.backend.ovs_idl import connection
 from ovsdbapp.backend.ovs_idl import event as row_event
@@ -34,20 +34,23 @@ from neutron.common.ovn import hash_ring_manager
 from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_hash_ring_db
+from neutron.objects import router as router_obj
 from neutron.plugins.ml2.drivers.ovn.agent import neutron_agent as n_agent
+from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions import \
+    placement
 
 
 CONF = cfg.CONF
 LOG = log.getLogger(__name__)
 
 
-class BaseEvent(row_event.RowEvent):
-    table = None
+class BaseEvent(row_event.RowEvent, metaclass=abc.ABCMeta):
+    table: str
     events = tuple()
 
     def __init__(self):
         self.event_name = self.__class__.__name__
-        super(BaseEvent, self).__init__(self.events, self.table, None)
+        super().__init__(self.events, self.table, None)
 
     @abc.abstractmethod
     def match_fn(self, event, row, old=None):
@@ -71,7 +74,7 @@ class ChassisEvent(row_event.RowEvent):
         self.l3_plugin = directory.get_plugin(constants.L3)
         table = 'Chassis'
         events = (self.ROW_CREATE, self.ROW_UPDATE, self.ROW_DELETE)
-        super(ChassisEvent, self).__init__(events, table, None)
+        super().__init__(events, table, None)
         self.event_name = 'ChassisEvent'
 
     def _get_ha_chassis_groups_within_azs(self, az_hints):
@@ -85,6 +88,15 @@ class ChassisEvent(row_event.RowEvent):
                 'HA_Chassis_Group').execute(check_error=True):
             if not hcg.name.startswith(ovn_const.OVN_NAME_PREFIX):
                 continue
+
+            net_id = hcg.external_ids.get(ovn_const.OVN_NETWORK_ID_EXT_ID_KEY)
+            router_id = hcg.external_ids.get(
+                ovn_const.OVN_ROUTER_ID_EXT_ID_KEY)
+            if net_id and router_id:
+                # This HA_Chassis_Group is linked to a router, it will be
+                # updated matching the router Gateway_Chassis registers.
+                continue
+
             # The filter() is to get rid of the empty string in
             # the list that is returned because of split()
             azs = {az for az in
@@ -103,7 +115,7 @@ class ChassisEvent(row_event.RowEvent):
     def _get_min_priority_in_hcg(self, ha_chassis_group):
         """Find the next lowest priority number within a HA Chassis Group."""
         min_priority = min(
-            [ch.priority for ch in ha_chassis_group.ha_chassis],
+            (ch.priority for ch in ha_chassis_group.ha_chassis),
             default=ovn_const.HA_CHASSIS_GROUP_HIGHEST_PRIORITY)
         return min_priority - 1
 
@@ -113,9 +125,6 @@ class ChassisEvent(row_event.RowEvent):
         This method handles the inclusion and removal of Chassis to/from
         the default HA Chassis Group.
         """
-        if not self.driver._ovn_client.is_external_ports_supported():
-            return
-
         is_gw_chassis = utils.is_gateway_chassis(row)
         # If the Chassis being created is not a gateway, ignore it
         if not is_gw_chassis and event == self.ROW_CREATE:
@@ -147,7 +156,7 @@ class ChassisEvent(row_event.RowEvent):
                             self.driver.nb_ovn.ha_chassis_group_del_chassis(
                                 hcg.name, row.name, if_exists=True))
                 return
-            elif not is_gw_chassis and is_old_gw:
+            if not is_gw_chassis and is_old_gw:
                 # Chassis is not a gateway anymore, treat it as deletion
                 event = self.ROW_DELETE
             elif is_gw_chassis and not is_old_gw:
@@ -173,19 +182,13 @@ class ChassisEvent(row_event.RowEvent):
         if event != self.ROW_UPDATE:
             return True
 
-        # NOTE(ralonsoh): LP#1990229 to be removed when min OVN version is
-        # 22.09
-        other_config = ('other_config' if hasattr(row, 'other_config') else
-                        'external_ids')
         # NOTE(lucasgomes): If the other_config/external_ids column wasn't
         # updated (meaning, Chassis "gateway" status didn't change) just
         # returns
-        if not hasattr(old, other_config) and event == self.ROW_UPDATE:
+        if not hasattr(old, 'other_config') and event == self.ROW_UPDATE:
             return False
-        old_br_mappings = utils.get_ovn_chassis_other_config(old).get(
-            'ovn-bridge-mappings')
-        new_br_mappings = utils.get_ovn_chassis_other_config(row).get(
-            'ovn-bridge-mappings')
+        old_br_mappings = old.other_config.get('ovn-bridge-mappings')
+        new_br_mappings = row.other_config.get('ovn-bridge-mappings')
         if old_br_mappings != new_br_mappings:
             return True
         # Check if either the Gateway status or Availability Zones has
@@ -201,7 +204,7 @@ class ChassisEvent(row_event.RowEvent):
     def run(self, event, row, old):
         host = row.hostname
         phy_nets = []
-        new_other_config = utils.get_ovn_chassis_other_config(row)
+        new_other_config = row.other_config
         if event != self.ROW_DELETE:
             bridge_mappings = new_other_config.get('ovn-bridge-mappings', '')
             mapping_dict = helpers.parse_mappings(bridge_mappings.split(','))
@@ -218,8 +221,7 @@ class ChassisEvent(row_event.RowEvent):
             if event == self.ROW_DELETE:
                 kwargs['event_from_chassis'] = row.name
             elif event == self.ROW_UPDATE:
-                old_other_config = utils.get_ovn_chassis_other_config(old)
-                old_mappings = old_other_config.get('ovn-bridge-mappings',
+                old_mappings = old.other_config.get('ovn-bridge-mappings',
                                                     set()) or set()
                 new_mappings = new_other_config.get('ovn-bridge-mappings',
                                                     set()) or set()
@@ -248,13 +250,18 @@ class PortBindingChassisUpdateEvent(row_event.RowEvent):
     column on the Port_Binding. The port never goes down, so we won't
     see update the driver with the LogicalSwitchPortUpdateUpEvent which
     only monitors for transitions from DOWN to UP.
+
+    Also we check here if additional_chassis is set, which means, we have a
+    LSP migration and the ovn-controller at destination has claimed the
+    port. In this case also we need to inform nova via network-vif-plugged
+    event, that migration can continue.
     """
 
     def __init__(self, driver):
         self.driver = driver
         table = 'Port_Binding'
         events = (self.ROW_UPDATE,)
-        super(PortBindingChassisUpdateEvent, self).__init__(
+        super().__init__(
             events, table, None)
         self.event_name = self.__class__.__name__
 
@@ -262,8 +269,30 @@ class PortBindingChassisUpdateEvent(row_event.RowEvent):
         # NOTE(twilson) ROW_UPDATE events always pass old, but chassis will
         # only be set if chassis has changed
         old_chassis = getattr(old, 'chassis', None)
-        if not (row.chassis and old_chassis) or row.chassis == old_chassis:
+        old_additional_chassis = getattr(old, 'additional_chassis', None)
+
+        # No chassis assigned or not chassis change.
+        no_chassis_change = (not (row.chassis and old_chassis) or
+                             row.chassis == old_chassis)
+
+        # This checks if the port is being live migrated. When a TAP device
+        # is created in the destination host (there is another copy still
+        # present in the source host), the destination host ovn-controller
+        # will populate the ``Port_Binding.additional_chassis``.
+        # Conditions:
+        # * There is no additional chassis configured
+        # * The older additional is not present (NOTE: when the
+        #   ``additional_chassis`` field is updated, the old one is []).
+        # * The register has not changed.
+        no_live_migration = (not row.additional_chassis or
+                             old_additional_chassis is None or
+                             row.additional_chassis == old_additional_chassis)
+
+        # When the chassis/additional_chassis not set or not changed,
+        # we send no event
+        if no_chassis_change and no_live_migration:
             return False
+
         if row.type == ovn_const.OVN_CHASSIS_REDIRECT:
             return False
         try:
@@ -275,7 +304,15 @@ class PortBindingChassisUpdateEvent(row_event.RowEvent):
                         {'port': row.logical_port, 'binding': row.uuid})
             return False
 
-        return bool(lsp.up)
+        if old_additional_chassis and row.additional_chassis == []:
+            # Now the Port_Binding is cleaned up, so additional_chassis is
+            # cleared -> we send no event.
+            # This event has been issued during a LSP migration when the
+            # port is claimed on the destination chassis and additional_chassis
+            # got set
+            return False
+
+        return utils.is_lsp_enabled(lsp) and utils.is_lsp_up(lsp)
 
     def run(self, event, row, old=None):
         self.driver.set_port_status_up(row.logical_port)
@@ -283,6 +320,7 @@ class PortBindingChassisUpdateEvent(row_event.RowEvent):
 
 class ChassisAgentEvent(BaseEvent):
     GLOBAL = True
+    table = 'Chassis_Private'
 
     # NOTE (twilson) Do not run new transactions out of a GLOBAL Event since
     # it will be running on every single process, and you almost certainly
@@ -290,16 +328,6 @@ class ChassisAgentEvent(BaseEvent):
     def __init__(self, driver):
         self.driver = driver
         super().__init__()
-
-    @property
-    def table(self):
-        # It probably doesn't matter, but since agent_chassis_table changes
-        # in post_fork_initialize(), resolve this at runtime
-        return self.driver.agent_chassis_table
-
-    @table.setter
-    def table(self, value):
-        pass
 
 
 class ChassisAgentDownEvent(ChassisAgentEvent):
@@ -325,7 +353,7 @@ class ChassisAgentDeleteEvent(ChassisAgentEvent):
             return False
 
     def run(self, event, row, old):
-        del n_agent.AgentCache()[row.external_ids['delete_agent']]
+        n_agent.AgentCache().delete(row.external_ids['delete_agent'])
 
 
 class ChassisAgentWriteEvent(ChassisAgentEvent):
@@ -335,9 +363,8 @@ class ChassisAgentWriteEvent(ChassisAgentEvent):
         # On updates to Chassis_Private because the Chassis has been deleted,
         # don't update the AgentCache. We use chassis_private.chassis to return
         # data about the agent.
-        return event == self.ROW_CREATE or (
-            getattr(old, 'nb_cfg', False) and not
-            (self.table == 'Chassis_Private' and not row.chassis))
+        return (event == self.ROW_CREATE or
+                (hasattr(old, 'nb_cfg') and row.chassis))
 
     def run(self, event, row, old):
         n_agent.AgentCache().update(ovn_const.OVN_CONTROLLER_AGENT, row,
@@ -350,35 +377,52 @@ class ChassisAgentTypeChangeEvent(ChassisEvent):
     events = (BaseEvent.ROW_UPDATE,)
 
     def match_fn(self, event, row, old=None):
-        # NOTE(ralonsoh): LP#1990229 to be removed when min OVN version is
-        # 22.09
-        other_config = ('other_config' if hasattr(row, 'other_config') else
-                        'external_ids')
-        if not getattr(old, other_config, False):
+        try:
+            return row.other_config.get('ovn-cms-options', []) != (
+                old.other_config.get('ovn-cms-options', []))
+        except AttributeError:
+            # No change to other_config
             return False
-        chassis = n_agent.NeutronAgent.chassis_from_private(row)
-        new_other_config = utils.get_ovn_chassis_other_config(chassis)
-        old_other_config = utils.get_ovn_chassis_other_config(old)
-        agent_type_change = new_other_config.get('ovn-cms-options', []) != (
-            old_other_config.get('ovn-cms-options', []))
-        return agent_type_change
 
     def run(self, event, row, old):
-        n_agent.AgentCache().update(ovn_const.OVN_CONTROLLER_AGENT, row,
-                                    clear_down=event == self.ROW_CREATE)
+        # the row is in the Chassis table but the agent cache uses
+        # Chassis_Private rows
+        try:
+            ch_private = self.driver.sb_ovn.db_find_rows(
+                'Chassis_Private', ('chassis', '=', row.uuid)).execute(
+                    check_error=True)[0]
+        except IndexError:
+            # The chassis private row was not found, this should never happen
+            LOG.error("The Chassis_Private row for Chassis %s was not found.",
+                      row.uuid)
+            return
+        # The passed agent type is significant to the method obtaining the
+        # agent chassis id. This method is the same for both Gateway and
+        # Controller agent types so the type below can be either.
+        n_agent.AgentCache().update(ovn_const.OVN_CONTROLLER_AGENT, ch_private)
 
 
-class ChassisMetadataAgentWriteEvent(ChassisAgentEvent):
+class ChassisOVNAgentWriteEvent(ChassisAgentEvent):
     events = (BaseEvent.ROW_CREATE, BaseEvent.ROW_UPDATE)
 
     @staticmethod
-    def _metadata_nb_cfg(row):
+    def _agent_sb_cfg(row):
+        external_ids = row.external_ids
+        # Try the OVN agent SB cfg first, then fallback to the OVN Metadata
+        # agent
+        ovn_sb_cfg = external_ids.get(ovn_const.OVN_AGENT_NEUTRON_SB_CFG_KEY)
+        if ovn_sb_cfg:
+            return int(ovn_sb_cfg)
+        # NOTE(ralonsoh): to remove when the OVN Metadata agent is removed.
         return int(
-            row.external_ids.get(ovn_const.OVN_AGENT_METADATA_SB_CFG_KEY, -1))
+            external_ids.get(ovn_const.OVN_AGENT_METADATA_SB_CFG_KEY, -1))
 
     @staticmethod
     def agent_id(row):
-        return row.external_ids.get(ovn_const.OVN_AGENT_METADATA_ID_KEY)
+        external_ids = row.external_ids
+        # NOTE(ralonsoh): to update when the OVN Metadata agent is removed.
+        return (external_ids.get(ovn_const.OVN_AGENT_NEUTRON_ID_KEY) or
+                external_ids.get(ovn_const.OVN_AGENT_METADATA_ID_KEY))
 
     def match_fn(self, event, row, old=None):
         if not self.agent_id(row):
@@ -386,19 +430,35 @@ class ChassisMetadataAgentWriteEvent(ChassisAgentEvent):
             return False
         if event == self.ROW_CREATE:
             return True
+
+        # On updates to Chassis_Private because the Chassis has been
+        # deleted, don't update the AgentCache. We use
+        # chassis_private.chassis to return data about the agent.
+        if not getattr(row, 'chassis', None):
+            return False
+
+        # Check if both rows have external_ids before comparing nb_cfg
+        if not (hasattr(old, 'external_ids') and row.external_ids):
+            return False
+
         try:
-            # On updates to Chassis_Private because the Chassis has been
-            # deleted, don't update the AgentCache. We use
-            # chassis_private.chassis to return data about the agent.
-            if self.table == 'Chassis_Private' and not row.chassis:
-                return False
-            return self._metadata_nb_cfg(row) != self._metadata_nb_cfg(old)
-        except (AttributeError, KeyError):
+            # Cache the nb_cfg values to avoid duplicate calculations
+            row_sb_cfg = self._agent_sb_cfg(row)
+            old_sb_cfg = self._agent_sb_cfg(old)
+            return row_sb_cfg != old_sb_cfg
+        except (AttributeError, KeyError, TypeError):
             return False
 
     def run(self, event, row, old):
-        n_agent.AgentCache().update(ovn_const.OVN_METADATA_AGENT, row,
-                                    clear_down=True)
+        external_ids = row.external_ids
+        if external_ids.get(ovn_const.OVN_AGENT_NEUTRON_ID_KEY):
+            n_agent.AgentCache().update(ovn_const.OVN_NEUTRON_AGENT, row,
+                                        clear_down=True)
+        else:
+            # NOTE(ralonsoh): to remove when the OVN Metadata agent is
+            # removed.
+            n_agent.AgentCache().update(ovn_const.OVN_METADATA_AGENT, row,
+                                        clear_down=True)
 
 
 class PortBindingChassisEvent(row_event.RowEvent):
@@ -415,11 +475,16 @@ class PortBindingChassisEvent(row_event.RowEvent):
         self.l3_plugin = directory.get_plugin(constants.L3)
         table = 'Port_Binding'
         events = (self.ROW_UPDATE,)
-        super(PortBindingChassisEvent, self).__init__(
-            events, table, (('type', '=', ovn_const.OVN_CHASSIS_REDIRECT),))
+        super().__init__(events, table, None)
         self.event_name = 'PortBindingChassisEvent'
 
     def match_fn(self, event, row, old):
+        if ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY not in row.external_ids:
+            return False
+
+        if row.type != ovn_const.OVN_CHASSIS_REDIRECT:
+            return False
+
         if len(old._data) == 1 and 'external_ids' in old._data:
             # NOTE: since [1], the NB logical_router_port.external_ids are
             # copied into the SB port_binding.external_ids. If only the
@@ -448,132 +513,227 @@ class PortBindingChassisEvent(row_event.RowEvent):
             router, host)
 
 
-class LogicalSwitchPortCreateUpEvent(row_event.RowEvent):
-    """Row create event - Logical_Switch_Port 'up' = True.
+class LogicalSwitchPortEvent(row_event.RowEvent):
+    def match_fn(self, event, row, old=None):
+        if not super().match_fn(event, row, old):
+            return False
+        return ovn_const.OVN_PORT_NAME_EXT_ID_KEY in row.external_ids
+
+
+class LogicalSwitchPortCreateEvent(LogicalSwitchPortEvent):
+    """Row create event - Checks Logical_Switch_Port is UP and enabled.
 
     On connection, we get a dump of all ports, so if there is a neutron
-    port that is down that has since been activated, we'll catch it here.
-    This event will not be generated for new ports getting created.
+    port that has been activated or deactivated, we'll catch it here.
     """
 
     def __init__(self, driver):
         self.driver = driver
         table = 'Logical_Switch_Port'
         events = (self.ROW_CREATE,)
-        super(LogicalSwitchPortCreateUpEvent, self).__init__(
-            events, table, (('up', '=', True),))
-        self.event_name = 'LogicalSwitchPortCreateUpEvent'
+        super().__init__(events, table, [])
+        self.event_name = 'LogicalSwitchPortCreateEvent'
 
     def run(self, event, row, old):
-        self.driver.set_port_status_up(row.name)
+        if utils.is_lsp_up(row) and utils.is_lsp_enabled(row):
+            self.driver.set_port_status_up(row.name)
+        else:
+            self.driver.set_port_status_down(row.name)
 
 
-class LogicalSwitchPortCreateDownEvent(row_event.RowEvent):
-    """Row create event - Logical_Switch_Port 'up' = False
-
-    On connection, we get a dump of all ports, so if there is a neutron
-    port that is up that has since been deactivated, we'll catch it here.
-    This event will not be generated for new ports getting created.
-    """
-    def __init__(self, driver):
-        self.driver = driver
-        table = 'Logical_Switch_Port'
-        events = (self.ROW_CREATE,)
-        super(LogicalSwitchPortCreateDownEvent, self).__init__(
-            events, table, (('up', '=', False),))
-        self.event_name = 'LogicalSwitchPortCreateDownEvent'
-
-    def run(self, event, row, old):
-        self.driver.set_port_status_down(row.name)
-
-
-class LogicalSwitchPortUpdateUpEvent(row_event.RowEvent):
-    """Row update event - Logical_Switch_Port 'up' going from False to True
+class LogicalSwitchPortUpdateUpEvent(LogicalSwitchPortEvent):
+    """Row update event - Logical_Switch_Port UP or enabled going True
 
     This happens when the VM goes up.
-    New value of Logical_Switch_Port 'up' will be True and the old value will
-    be False.
     """
+
     def __init__(self, driver):
         self.driver = driver
         table = 'Logical_Switch_Port'
         events = (self.ROW_UPDATE,)
-        super(LogicalSwitchPortUpdateUpEvent, self).__init__(
-            events, table, (('up', '=', True),),
-            old_conditions=(('up', '!=', True),))
+        super().__init__(
+            events, table, None)
         self.event_name = 'LogicalSwitchPortUpdateUpEvent'
+
+    def match_fn(self, event, row, old):
+        if not super().match_fn(event, row, old):
+            return False
+
+        if not (utils.is_lsp_up(row) and utils.is_lsp_enabled(row)):
+            return False
+
+        if hasattr(old, 'up') and not utils.is_lsp_up(old):
+            # The port has transitioned from DOWN to UP, and the admin state
+            # is UP (lsp.enabled=True)
+            return True
+        if hasattr(old, 'enabled') and not utils.is_lsp_enabled(old):
+            # The user has set the admin state to UP and the port is UP too.
+            return True
+        return False
 
     def run(self, event, row, old):
         self.driver.set_port_status_up(row.name)
 
 
-class LogicalSwitchPortUpdateDownEvent(row_event.RowEvent):
-    """Row update event - Logical_Switch_Port 'up' going from True to False
+class LogicalSwitchPortUpdateDownEvent(LogicalSwitchPortEvent):
+    """Row update event - Logical_Switch_Port UP or enabled going to False
 
-    This happens when the VM goes down.
-    New value of Logical_Switch_Port 'up' will be False and the old value will
-    be True.
+    This happens when the VM goes down or the port is disabled.
     """
+
     def __init__(self, driver):
         self.driver = driver
         table = 'Logical_Switch_Port'
         events = (self.ROW_UPDATE,)
-        super(LogicalSwitchPortUpdateDownEvent, self).__init__(
-            events, table, (('up', '=', False),),
-            old_conditions=(('up', '=', True),))
+        super().__init__(
+            events, table, None)
         self.event_name = 'LogicalSwitchPortUpdateDownEvent'
+
+    def match_fn(self, event, row, old):
+        if not super().match_fn(event, row, old):
+            return False
+
+        if (hasattr(old, 'up') and
+                utils.is_lsp_up(old) and
+                not utils.is_lsp_up(row)):
+            # If the port goes DOWN, update the port status to DOWN.
+            return True
+        if (hasattr(old, 'enabled') and
+                utils.is_lsp_enabled(old) and
+                not utils.is_lsp_enabled(row)):
+            # If the port is disabled by the user, update the port status to
+            # DOWN.
+            return True
+        return False
 
     def run(self, event, row, old):
         self.driver.set_port_status_down(row.name)
 
 
-class PortBindingUpdateVirtualPortsEvent(row_event.RowEvent):
+class LogicalSwitchPortUpdateLogicalRouterPortEvent(LogicalSwitchPortEvent):
+    """Row update event - Logical_Switch_Port, that updates the sibling LRP"""
+
+    def __init__(self, driver):
+        self.driver = driver
+        table = 'Logical_Switch_Port'
+        events = (self.ROW_UPDATE,)
+        super().__init__(events, table, None)
+        self.event_name = 'LogicalSwitchPortUpdateLogicalRouterPortEvent'
+        self.l3_plugin = directory.get_plugin(constants.L3)
+        self.admin_context = neutron_context.get_admin_context()
+
+    def match_fn(self, event, row, old):
+        if not super().match_fn(event, row, old):
+            return False
+
+        device_id = row.external_ids.get(ovn_const.OVN_DEVID_EXT_ID_KEY)
+        device_owner = row.external_ids.get(
+            ovn_const.OVN_DEVICE_OWNER_EXT_ID_KEY)
+        if (not device_id or
+                device_owner not in n_const.ROUTER_INTERFACE_OWNERS):
+            # This LSP does not belong to a router.
+            return False
+
+        lrp_name = utils.ovn_lrouter_port_name(row.name)
+        if not self.driver.nb_ovn.lookup('Logical_Router_Port', lrp_name,
+                                         default=None):
+            # The LRP has not been created yet.
+            return False
+
+        # TODO(ralonsoh): store the router "flavor_id" in the LSP.external_ids
+        # or the LRP.external_ids (better the second).
+        router = router_obj.Router.get_object(self.admin_context, id=device_id,
+                                              fields=('flavor_id', ))
+        if (utils.is_lsp_router_port(lsp=row) and
+                router and
+                utils.is_ovn_provider_router(router)):
+            return True
+        return False
+
+    def run(self, event, row, old):
+        # In some cases, it is possible for the logical switch port to be
+        # already removed from db by some other concurrent event when this
+        # method is called. Therefore, use get_ports to just query for this
+        # port instead of directly trying to get it from db causing not
+        # found exception.
+        ports = self.driver._plugin.get_ports(
+            self.admin_context,
+            filters={'id': [row.name]})
+        if ports:
+            self.l3_plugin._ovn_client.update_router_port(
+                self.admin_context,
+                ports[0])
+        else:
+            LOG.debug('Port %(port_id)s not found when '
+                      'run of %(event_name)s was called. '
+                      'Router port was not updated.',
+                      {'port_id': row.name,
+                       'event_name': self.event_name})
+
+
+class PortBindingUpdateVirtualPortsEvent(LogicalSwitchPortEvent):
     """Row update event - Port_Binding for virtual ports
 
     The goal of this event is to catch the events of the virtual ports and
     update the hostname in the related "portbinding" register.
     """
+
     def __init__(self, driver):
         self.driver = driver
         table = 'Port_Binding'
-        events = (self.ROW_UPDATE, )
+        events = (self.ROW_UPDATE, self.ROW_DELETE)
         super().__init__(events, table, None)
         self.event_name = 'PortBindingUpdateVirtualPortsEvent'
+        self.admin_context = neutron_context.get_admin_context()
 
     def match_fn(self, event, row, old):
-        # This event should catch only those events from ports that are
-        # "virtual" or have been "virtual". The second happens when all virtual
-        # parent are disassociated; in the same transaction the
-        # "virtual-parents" list is removed from "options" and the type is set
-        # to "".
-        if (row.type != ovn_const.PB_TYPE_VIRTUAL and
-                getattr(old, 'type', None) != ovn_const.PB_TYPE_VIRTUAL):
+        if not super().match_fn(event, row, old):
             return False
+
+        # This event should catch the events related to virtual parents (that
+        # are associated to virtual ports).
+        if event == self.ROW_DELETE:
+            # The port binding has been deleted, delete the host ID (if the
+            # port was not deleted before).
+            return row.type == ovn_const.LSP_TYPE_VIRTUAL
 
         virtual_parents = (row.options or {}).get(
             ovn_const.LSP_OPTIONS_VIRTUAL_PARENTS_KEY)
-        old_virtual_parents = getattr(old, 'options', {}).get(
-            ovn_const.LSP_OPTIONS_VIRTUAL_PARENTS_KEY)
-        chassis = row.chassis
-        old_chassis = getattr(old, 'chassis', [])
 
-        if virtual_parents and chassis != old_chassis:
-            # That happens when the chassis is assigned (VIP is first detected
-            # in a port) or changed (the VIP changes of assigned port and
-            # host).
+        if getattr(old, 'chassis', None) is not None and virtual_parents:
+            # The port moved from chassis due to VIP failover or migration,
+            # which means we need to update the host_id information
             return True
 
-        if not virtual_parents and old_virtual_parents:
+        if getattr(old, 'options', None) is None:
+            # The "old.options" dictionary is not being modified,
+            # thus the virtual parents didn't change.
+            return False
+
+        old_virtual_parents = getattr(old, 'options', {}).get(
+            ovn_const.LSP_OPTIONS_VIRTUAL_PARENTS_KEY)
+        if virtual_parents != old_virtual_parents:
+            # 1) if virtual_parents and not old_virtual_parents:
+            # The port has received a virtual parent and now is bound.
+            # 2) elif (virtual_parents and old_virtual_parents and
+            #          old_virtual_parents != virtual_parents):
+            # If the port virtual parents have changed (the VIP is bound
+            # to another host because it's owned by another port).
+            # 3) if not virtual_parents and old_virtual_parents:
             # All virtual parent ports are removed, the VIP is unbound.
             return True
         return False
 
     def run(self, event, row, old):
-        virtual_parents = (row.options or {}).get(
-            ovn_const.LSP_OPTIONS_VIRTUAL_PARENTS_KEY)
-        chassis_uuid = (row.chassis[0].uuid if
-                        row.chassis and virtual_parents else None)
-        self.driver.update_virtual_port_host(row.logical_port, chassis_uuid)
+        if event == self.ROW_DELETE:
+            chassis_uuid = None
+        else:
+            virtual_parents = (row.options or {}).get(
+                ovn_const.LSP_OPTIONS_VIRTUAL_PARENTS_KEY)
+            chassis_uuid = (row.chassis[0].uuid if
+                            row.chassis and virtual_parents else None)
+        self.driver._ovn_client.update_virtual_port_parent_host(
+            self.admin_context, row.logical_port, chassis_id=chassis_uuid)
 
 
 class FIPAddDeleteEvent(row_event.RowEvent):
@@ -581,13 +741,20 @@ class FIPAddDeleteEvent(row_event.RowEvent):
 
     This happens when a FIP is created or removed.
     """
+
     def __init__(self, driver):
         self.driver = driver
         table = 'NAT'
         events = (self.ROW_CREATE, self.ROW_DELETE)
-        super(FIPAddDeleteEvent, self).__init__(
+        super().__init__(
             events, table, (('type', '=', 'dnat_and_snat'),))
         self.event_name = 'FIPAddDeleteEvent'
+
+    def match_fn(self, event, row, old=None):
+        if not super().match_fn(event, row, old):
+            return False
+
+        return ovn_const.OVN_FIP_EXT_ID_KEY in row.external_ids
 
     def run(self, event, row, old):
         # When a FIP is added or deleted, we will delete all entries in the
@@ -597,10 +764,59 @@ class FIPAddDeleteEvent(row_event.RowEvent):
         self.driver.delete_mac_binding_entries(row.external_ip)
 
 
+class HAChassisGroupRouterEvent(row_event.RowEvent):
+    """Row update event - the HA_Chassis list changes in a router HCG
+
+    When the HA_Chassis list changes (a chassis has been added, deleted or
+    updated), those routers with a HA_Chassis_Group related should update the
+    "LR.options.chassis" value.
+    """
+
+    def __init__(self, driver):
+        self.driver = driver
+        table = 'HA_Chassis_Group'
+        events = (self.ROW_UPDATE,)
+        super().__init__(events, table, None)
+        self.event_name = 'HAChassisGroupRouterEvent'
+
+    def match_fn(self, event, row, old):
+        if ovn_const.OVN_ROUTER_ID_EXT_ID_KEY not in row.external_ids:
+            # This is not a router "HA_Chassis_Group".
+            return False
+        if hasattr(old, 'ha_chassis'):
+            # "HA_Chassis_Group" has been assigned to a router or there are
+            # changes in the "ha_chassis" list.
+            return True
+        return False
+
+    def run(self, event, row, old):
+        router_id = row.external_ids[ovn_const.OVN_ROUTER_ID_EXT_ID_KEY]
+        router_name = utils.ovn_name(router_id)
+        if not row.ha_chassis:
+            # No GW chassis are present in the environment.
+            self.driver.nb_ovn.db_remove(
+                'Logical_Router', router_name, 'options', 'chassis',
+                if_exists=True).execute(check_error=True)
+            LOG.info('Router %s is not pinned to any gateway chassis',
+                     router_id)
+            return
+
+        try:
+            highest_prio_hc = max(row.ha_chassis, key=lambda hc: hc.priority)
+        except ValueError:
+            highest_prio_hc = None
+
+        if highest_prio_hc:
+            options = {'chassis': highest_prio_hc.chassis_name}
+            self.driver.nb_ovn.db_set(
+                'Logical_Router', router_name, ('options', options)).execute(
+                check_error=True)
+
+
 class OvnDbNotifyHandler(row_event.RowEventHandler):
     def __init__(self, driver):
         self.driver = driver
-        super(OvnDbNotifyHandler, self).__init__()
+        super().__init__()
         try:
             self._lock = self._RowEventHandler__lock
             self._watched_events = self._RowEventHandler__watched_events
@@ -608,8 +824,9 @@ class OvnDbNotifyHandler(row_event.RowEventHandler):
             pass
 
     def notify(self, event, row, updates=None, global_=False):
-        row = idlutils.frozen_row(row)
         matching = self.matching_events(event, row, updates, global_)
+        if matching:
+            row = idlutils.frozen_row(row)
         for match in matching:
             self.notifications.put((match, event, row, updates))
 
@@ -624,23 +841,17 @@ class Ml2OvnIdlBase(connection.OvsdbIdl):
     def __init__(self, remote, schema, probe_interval=(), **kwargs):
         if probe_interval == ():  # None is a valid value to pass
             probe_interval = ovn_conf.get_ovn_ovsdb_probe_interval()
-        super(Ml2OvnIdlBase, self).__init__(
+        super().__init__(
             remote, schema, probe_interval=probe_interval, **kwargs)
 
     def set_table_condition(self, table_name, condition):
-        # Prior to ovs commit 46d44cf3be0, self.cond_change() doesn't work here
-        # but after that commit, setting table.condition doesn't work.
-        if hasattr(ovs_idl_mod, 'ConditionState'):
-            self.cond_change(table_name, condition)
-        else:
-            # Can be removed after the minimum ovs version >= 2.17.0
-            self.tables[table_name].condition = condition
+        self.cond_change(table_name, condition)
 
 
 class BaseOvnIdl(Ml2OvnIdlBase):
     def __init__(self, remote, schema, **kwargs):
         self.notify_handler = row_event.RowEventHandler()
-        super(BaseOvnIdl, self).__init__(remote, schema, **kwargs)
+        super().__init__(remote, schema, **kwargs)
 
     @classmethod
     def from_server(cls, connection_string, helper):
@@ -652,24 +863,27 @@ class BaseOvnIdl(Ml2OvnIdlBase):
 
 
 class BaseOvnSbIdl(Ml2OvnIdlBase):
+    def __init__(self, remote, schema, **kwargs):
+        self.notify_handler = row_event.RowEventHandler()
+        super().__init__(remote, schema, **kwargs)
+
     @classmethod
     def from_server(cls, connection_string, helper):
+        helper.register_table('Chassis_Private')
         helper.register_table('Chassis')
         helper.register_table('Encap')
         helper.register_table('Port_Binding')
         helper.register_table('Datapath_Binding')
-        # Used by MaintenanceWorker which can use ovsdb locking
-        try:
-            return cls(connection_string, helper, leader_only=True)
-        except TypeError:
-            # TODO(twilson) We can remove this when we require ovs>=2.12.0
-            return cls(connection_string, helper)
+        return cls(connection_string, helper, leader_only=False)
+
+    def notify(self, event, row, updates=None):
+        self.notify_handler.notify(event, row, updates)
 
 
 class OvnIdl(BaseOvnIdl):
 
     def __init__(self, driver, remote, schema, **kwargs):
-        super(OvnIdl, self).__init__(remote, schema, **kwargs)
+        super().__init__(remote, schema, **kwargs)
         self.driver = driver
         self.notify_handler = OvnDbNotifyHandler(driver)
 
@@ -688,69 +902,52 @@ class OvnIdl(BaseOvnIdl):
 class OvnIdlDistributedLock(BaseOvnIdl):
 
     def __init__(self, driver, remote, schema, **kwargs):
-        super(OvnIdlDistributedLock, self).__init__(remote, schema, **kwargs)
+        super().__init__(remote, schema, **kwargs)
         self.driver = driver
         self.notify_handler = OvnDbNotifyHandler(driver)
         self._node_uuid = self.driver.node_uuid
         self._hash_ring = hash_ring_manager.HashRingManager(
             self.driver.hash_ring_group)
-        self._last_touch = None
-        # This is a map of tables that may be new after OVN database is updated
-        self._tables_to_register = {
-            'OVN_Southbound': ['Chassis_Private'],
-        }
-
-    def handle_db_schema_changes(self, event, row):
-        if (event == row_event.RowEvent.ROW_CREATE and
-                row._table.name == 'Database'):
-            try:
-                tables = self._tables_to_register[row.name]
-            except KeyError:
-                return
-
-            self.update_tables(tables, row.schema[0])
-
-            if self.driver.agent_chassis_table == 'Chassis_Private':
-                if 'Chassis_Private' not in self.tables:
-                    self.driver.agent_chassis_table = 'Chassis'
-            else:
-                if 'Chassis_Private' in self.tables:
-                    self.driver.agent_chassis_table = 'Chassis_Private'
 
     def notify(self, event, row, updates=None):
-        self.handle_db_schema_changes(event, row)
-        self.notify_handler.notify(event, row, updates, global_=True)
         try:
-            target_node = self._hash_ring.get_node(str(row.uuid))
-        except exceptions.HashRingIsEmpty as e:
-            LOG.error('HashRing is empty, error: %s', e)
-            return
-        if target_node != self._node_uuid:
-            return
-
-        # If the worker hasn't been health checked by the maintenance
-        # thread (see bug #1834498), indicate that it's alive here
-        time_now = timeutils.utcnow()
-        touch_timeout = time_now - datetime.timedelta(
-            seconds=ovn_const.HASH_RING_TOUCH_INTERVAL)
-        if not self._last_touch or touch_timeout >= self._last_touch:
-            # NOTE(lucasagomes): Guard the db operation with an exception
-            # handler. If heartbeating fails for whatever reason, log
-            # the error and continue with processing the event
+            self.notify_handler.notify(event, row, updates, global_=True)
             try:
-                ctx = neutron_context.get_admin_context()
-                ovn_hash_ring_db.touch_node(ctx, self._node_uuid)
-                self._last_touch = time_now
-            except Exception:
-                LOG.exception('Hash Ring node %s failed to heartbeat',
-                              self._node_uuid)
+                target_node, node_last_touch = self._hash_ring.get_node(
+                    str(row.uuid))
+            except exceptions.HashRingIsEmpty as e:
+                LOG.error('HashRing is empty, error: %s', e)
+                return
+            if target_node != self._node_uuid:
+                return
 
-        LOG.debug('Hash Ring: Node %(node)s (host: %(hostname)s) '
-                  'handling event "%(event)s" for row %(row)s '
-                  '(table: %(table)s)',
-                  {'node': self._node_uuid, 'hostname': CONF.host,
-                   'event': event, 'row': row.uuid, 'table': row._table.name})
-        self.notify_handler.notify(event, row, updates)
+            # If the worker hasn't been health checked by the maintenance
+            # thread (see bug #1834498), indicate that it's alive here
+            touch_timeout = timeutils.utcnow() - datetime.timedelta(
+                seconds=ovn_const.HASH_RING_TOUCH_INTERVAL)
+            if not node_last_touch or touch_timeout >= node_last_touch:
+                # NOTE(lucasagomes): Guard the db operation with an exception
+                # handler. If heartbeating fails for whatever reason, log
+                # the error and continue with processing the event
+                try:
+                    ctx = neutron_context.get_admin_context()
+                    LOG.debug(
+                        'Touching Hash Ring node "%s" from IDL notify handler',
+                        self._node_uuid)
+                    ovn_hash_ring_db.touch_node(ctx, self._node_uuid)
+                except Exception:
+                    LOG.exception('Hash Ring node %s failed to heartbeat',
+                                  self._node_uuid)
+
+            LOG.debug('Hash Ring: Node %(node)s (host: %(hostname)s) '
+                      'handling event "%(event)s" for row %(row)s '
+                      '(table: %(table)s)',
+                      {'node': self._node_uuid, 'hostname': CONF.host,
+                       'event': event, 'row': row.uuid,
+                       'table': row._table.name})
+            self.notify_handler.notify(event, row, updates)
+        except Exception as e:
+            LOG.exception(e)
 
     @abc.abstractmethod
     def post_connect(self):
@@ -760,18 +957,22 @@ class OvnIdlDistributedLock(BaseOvnIdl):
 class OvnNbIdl(OvnIdlDistributedLock):
 
     def __init__(self, driver, remote, schema):
-        super(OvnNbIdl, self).__init__(driver, remote, schema)
+        super().__init__(driver, remote, schema)
         self._lsp_update_up_event = LogicalSwitchPortUpdateUpEvent(driver)
         self._lsp_update_down_event = LogicalSwitchPortUpdateDownEvent(driver)
-        self._lsp_create_up_event = LogicalSwitchPortCreateUpEvent(driver)
-        self._lsp_create_down_event = LogicalSwitchPortCreateDownEvent(driver)
+        self._lsp_create_event = LogicalSwitchPortCreateEvent(driver)
+        self._lsp_lrp_event = (
+            LogicalSwitchPortUpdateLogicalRouterPortEvent(driver))
         self._fip_create_delete_event = FIPAddDeleteEvent(driver)
+        self._ha_chassis_group_event = HAChassisGroupRouterEvent(driver)
 
-        self.notify_handler.watch_events([self._lsp_create_up_event,
-                                          self._lsp_create_down_event,
+        self.notify_handler.watch_events([self._lsp_create_event,
                                           self._lsp_update_up_event,
                                           self._lsp_update_down_event,
-                                          self._fip_create_delete_event])
+                                          self._fip_create_delete_event,
+                                          self._lsp_lrp_event,
+                                          self._ha_chassis_group_event,
+                                          ])
 
     @classmethod
     def from_server(cls, connection_string, helper, driver):
@@ -779,53 +980,30 @@ class OvnNbIdl(OvnIdlDistributedLock):
         helper.register_all()
         return cls(driver, connection_string, helper)
 
-    def unwatch_logical_switch_port_create_events(self):
-        """Unwatch the logical switch port create events.
-
-        When the ovs idl client connects to the ovsdb-server, it gets
-        a dump of all logical switch ports as events and we need to process
-        them at start up.
-        After the startup, there is no need to watch these events.
-        So unwatch these events.
-        """
-        self.notify_handler.unwatch_events([self._lsp_create_up_event,
-                                            self._lsp_create_down_event])
-        self._lsp_create_up_event = None
-        self._lsp_create_down_event = None
-
-    def post_connect(self):
-        self.unwatch_logical_switch_port_create_events()
-
 
 class OvnSbIdl(OvnIdlDistributedLock):
 
     def __init__(self, driver, remote, schema, **kwargs):
-        super(OvnSbIdl, self).__init__(driver, remote, schema, **kwargs)
+        super().__init__(driver, remote, schema, **kwargs)
         self.notify_handler.watch_events([
             ChassisAgentDeleteEvent(self.driver),
             ChassisAgentDownEvent(self.driver),
             ChassisAgentWriteEvent(self.driver),
             ChassisAgentTypeChangeEvent(self.driver),
-            ChassisMetadataAgentWriteEvent(self.driver),
+            ChassisOVNAgentWriteEvent(self.driver),
             PortBindingUpdateVirtualPortsEvent(driver),
+            placement.ChassisBandwidthConfigEvent(driver),
         ])
 
     @classmethod
     def from_server(cls, connection_string, helper, driver):
-        if 'Chassis_Private' in helper.schema_json['tables']:
-            helper.register_table('Chassis_Private')
-        if 'FDB' in helper.schema_json['tables']:
-            helper.register_table('FDB')
+        helper.register_table('Chassis_Private')
         helper.register_table('Chassis')
         helper.register_table('Encap')
         helper.register_table('Port_Binding')
         helper.register_table('Datapath_Binding')
         helper.register_columns('SB_Global', ['external_ids'])
-        try:
-            return cls(driver, connection_string, helper, leader_only=False)
-        except TypeError:
-            # TODO(twilson) We can remove this when we require ovs>=2.12.0
-            return cls(driver, connection_string, helper)
+        return cls(driver, connection_string, helper, leader_only=False)
 
     def post_connect(self):
         """Watch Chassis events.

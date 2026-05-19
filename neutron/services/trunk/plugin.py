@@ -21,7 +21,6 @@ from neutron_lib.api.definitions import trunk_details
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
-from neutron_lib import constants as const
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from neutron_lib.db import resource_extend
@@ -37,6 +36,8 @@ from neutron.objects import base as objects_base
 from neutron.objects import trunk as trunk_objects
 from neutron.services.trunk import drivers
 from neutron.services.trunk import exceptions as trunk_exc
+from neutron.services.trunk.rpc import backend
+from neutron.services.trunk.rpc import server
 from neutron.services.trunk import rules
 from neutron.services.trunk.seg_types import validators
 
@@ -52,10 +53,10 @@ class TrunkPlugin(service_base.ServicePluginBase):
 
     __native_pagination_support = True
     __native_sorting_support = True
-    __filter_validation_support = True
 
     def __init__(self):
-        self._rpc_backend = None
+        self._rpc_server = None
+        self._rpc_notifier = None
         self._drivers = []
         self._segmentation_types = {}
         self._interfaces = set()
@@ -64,6 +65,10 @@ class TrunkPlugin(service_base.ServicePluginBase):
         registry.subscribe(rules.enforce_port_deletion_rules,
                            resources.PORT, events.BEFORE_DELETE)
         registry.publish(resources.TRUNK_PLUGIN, events.AFTER_INIT, self)
+        if any(drv.rpc_required for drv in self._drivers):
+            # create notifier backend
+            self._rpc_notifier = backend.ServerSideRpcBackend()
+
         for driver in self._drivers:
             LOG.debug('Trunk plugin loaded with driver %s', driver.name)
         self.check_compatibility()
@@ -86,10 +91,17 @@ class TrunkPlugin(service_base.ServicePluginBase):
                 for port in ports:
                     subports[port['id']]['mac_address'] = port['mac_address']
             trunk_details = {'trunk_id': port_db.trunk_port.id,
-                             'sub_ports': list(subports.values())}
+                             trunk_apidef.SUB_PORTS: list(subports.values())}
             port_res['trunk_details'] = trunk_details
 
         return port_res
+
+    def start_rpc_listeners(self):
+        if not any(drv.rpc_required for drv in self._drivers):
+            return []
+
+        self._rpc_server = server.TrunkSkeleton()
+        return self._rpc_server.rpc_servers
 
     @staticmethod
     @resource_extend.extends([port_def.COLLECTION_NAME_BULK])
@@ -98,9 +110,10 @@ class TrunkPlugin(service_base.ServicePluginBase):
         subport_ids = []
         trunk_ports = []
         for p in ports_res:
-            if 'trunk_details' in p and 'subports' in p['trunk_details']:
+            if 'trunk_details' in p and \
+                    trunk_apidef.SUB_PORTS in p['trunk_details']:
                 trunk_ports.append(p)
-                for subp in p['trunk_details']['subports']:
+                for subp in p['trunk_details'][trunk_apidef.SUB_PORTS]:
                     subport_ids.append(subp['port_id'])
         if not subport_ids:
             return ports_res
@@ -111,7 +124,7 @@ class TrunkPlugin(service_base.ServicePluginBase):
         subport_macs = {p['id']: p['mac_address'] for p in subports}
 
         for tp in trunk_ports:
-            for subp in tp['trunk_details']['subports']:
+            for subp in tp['trunk_details'][trunk_apidef.SUB_PORTS]:
                 subp['mac_address'] = subport_macs[subp['port_id']]
 
         return ports_res
@@ -123,7 +136,7 @@ class TrunkPlugin(service_base.ServicePluginBase):
 
     def check_driver_compatibility(self):
         """Fail to load if no compatible driver is found."""
-        if not any([driver.is_loaded for driver in self._drivers]):
+        if not any(driver.is_loaded for driver in self._drivers):
             raise trunk_exc.IncompatibleTrunkPluginConfiguration()
 
     def check_segmentation_compatibility(self):
@@ -154,12 +167,6 @@ class TrunkPlugin(service_base.ServicePluginBase):
         except KeyError:
             raise trunk_exc.SegmentationTypeValidatorNotFound(
                 seg_type=seg_type)
-
-    def set_rpc_backend(self, backend):
-        self._rpc_backend = backend
-
-    def is_rpc_enabled(self):
-        return self._rpc_backend is not None
 
     def register_driver(self, driver):
         """Register driver with trunk plugin."""
@@ -195,8 +202,10 @@ class TrunkPlugin(service_base.ServicePluginBase):
         trunk_details['port_id'] = trunk_validator.validate(context)
 
         subports_validator = rules.SubPortsValidator(
-            self._segmentation_types, trunk['sub_ports'], trunk['port_id'])
-        trunk_details['sub_ports'] = subports_validator.validate(context)
+            self._segmentation_types, trunk[trunk_apidef.SUB_PORTS],
+            trunk['port_id'])
+        trunk_details[trunk_apidef.SUB_PORTS] = (
+            subports_validator.validate(context))
         return trunk_details
 
     def get_plugin_description(self):
@@ -228,11 +237,11 @@ class TrunkPlugin(service_base.ServicePluginBase):
         """Create a trunk."""
         trunk = self.validate(context, trunk['trunk'])
         sub_ports = [trunk_objects.SubPort(
-                         context=context,
-                         port_id=p['port_id'],
-                         segmentation_id=p['segmentation_id'],
-                         segmentation_type=p['segmentation_type'])
-                     for p in trunk['sub_ports']]
+            context=context,
+            port_id=p['port_id'],
+            segmentation_id=p['segmentation_id'],
+            segmentation_type=p['segmentation_type'])
+                     for p in trunk[trunk_apidef.SUB_PORTS]]
         admin_state_up = trunk.get('admin_state_up', True)
         # NOTE(status_police): a trunk is created in DOWN status. Depending
         # on the nature of the create request, a driver may set the status
@@ -294,26 +303,25 @@ class TrunkPlugin(service_base.ServicePluginBase):
             trunk = self._get_trunk(context, trunk_id)
             rules.trunk_can_be_managed(context, trunk)
             trunk_port_validator = rules.TrunkPortValidator(trunk.port_id)
-            if trunk_port_validator.can_be_trunked_or_untrunked(context):
-                # NOTE(status_police): when a trunk is deleted, the logical
-                # object disappears from the datastore, therefore there is no
-                # status transition involved. If PRECOMMIT failures occur,
-                # the trunk remains in the status where it was.
-                try:
-                    trunk.delete()
-                except Exception as e:
-                    with excutils.save_and_reraise_exception():
-                        LOG.warning('Trunk driver raised exception when '
-                                    'deleting trunk port %s: %s', trunk_id,
-                                    str(e))
-                payload = events.DBEventPayload(context, resource_id=trunk_id,
-                                                states=(trunk,))
-                registry.publish(resources.TRUNK, events.PRECOMMIT_DELETE,
-                                 self, payload=payload)
-            else:
+            if not trunk_port_validator.can_be_trunked_or_untrunked(context):
                 LOG.info('Trunk driver does not consider trunk %s '
                          'untrunkable', trunk_id)
                 raise trunk_exc.TrunkInUse(trunk_id=trunk_id)
+            # NOTE(status_police): when a trunk is deleted, the logical object
+            # disappears from the datastore, therefore there is no status
+            # transition involved. If PRECOMMIT failures occur, the trunk
+            # remains in the status where it was.
+            try:
+                trunk.delete()
+            except Exception as e:
+                with excutils.save_and_reraise_exception():
+                    LOG.warning('Trunk driver raised exception when '
+                                'deleting trunk port %s: %s', trunk_id,
+                                str(e))
+            payload = events.DBEventPayload(context, resource_id=trunk_id,
+                                            states=(trunk,))
+            registry.publish(resources.TRUNK, events.PRECOMMIT_DELETE,
+                             self, payload=payload)
         registry.publish(resources.TRUNK, events.AFTER_DELETE, self,
                          payload=events.DBEventPayload(
                              context, resource_id=trunk_id,
@@ -327,7 +335,7 @@ class TrunkPlugin(service_base.ServicePluginBase):
 
             # Check for basic validation since the request body here is not
             # automatically validated by the API layer.
-            subports = subports['sub_ports']
+            subports = subports[trunk_apidef.SUB_PORTS]
             subports_validator = rules.SubPortsValidator(
                 self._segmentation_types, subports, trunk['port_id'])
             subports = subports_validator.validate(
@@ -351,13 +359,13 @@ class TrunkPlugin(service_base.ServicePluginBase):
 
             for subport in subports:
                 obj = trunk_objects.SubPort(
-                               context=context,
-                               trunk_id=trunk_id,
-                               port_id=subport['port_id'],
-                               segmentation_type=subport['segmentation_type'],
-                               segmentation_id=subport['segmentation_id'])
+                    context=context,
+                    trunk_id=trunk_id,
+                    port_id=subport['port_id'],
+                    segmentation_type=subport['segmentation_type'],
+                    segmentation_id=subport['segmentation_id'])
                 obj.create()
-                trunk['sub_ports'].append(obj)
+                trunk[trunk_apidef.SUB_PORTS].append(obj)
                 added_subports.append(obj)
             payload = events.DBEventPayload(context, resource_id=trunk_id,
                                             states=(original_trunk, trunk,),
@@ -380,7 +388,7 @@ class TrunkPlugin(service_base.ServicePluginBase):
     @db_base_plugin_common.convert_result_to_dict
     def remove_subports(self, context, trunk_id, subports):
         """Remove one or more subports from trunk."""
-        subports = subports['sub_ports']
+        subports = subports[trunk_apidef.SUB_PORTS]
         with db_api.CONTEXT_WRITER.using(context):
             trunk = self._get_trunk(context, trunk_id)
             original_trunk = copy.deepcopy(trunk)
@@ -439,7 +447,7 @@ class TrunkPlugin(service_base.ServicePluginBase):
     def get_subports(self, context, trunk_id, fields=None):
         """Return subports for the specified trunk."""
         trunk = self.get_trunk(context, trunk_id)
-        return {'sub_ports': trunk['sub_ports']}
+        return {trunk_apidef.SUB_PORTS: trunk[trunk_apidef.SUB_PORTS]}
 
     def _get_trunk(self, context, trunk_id):
         """Return the trunk object or raise if not found."""
@@ -464,19 +472,12 @@ class TrunkPlugin(service_base.ServicePluginBase):
         original_port = payload.states[0]
         orig_vif_type = original_port.get(portbindings.VIF_TYPE)
         new_vif_type = updated_port.get(portbindings.VIF_TYPE)
-        orig_status = original_port.get('status')
-        new_status = updated_port.get('status')
         vif_type_changed = orig_vif_type != new_vif_type
-        trunk_id = trunk_details['trunk_id']
         if vif_type_changed and new_vif_type == portbindings.VIF_TYPE_UNBOUND:
+            trunk_id = trunk_details['trunk_id']
             # NOTE(status_police) Trunk status goes to DOWN when the parent
             # port is unbound. This means there are no more physical resources
             # associated with the logical resource.
             self.update_trunk(
                 context, trunk_id,
                 {'trunk': {'status': constants.TRUNK_DOWN_STATUS}})
-        elif new_status == const.PORT_STATUS_ACTIVE and \
-                new_status != orig_status:
-            self.update_trunk(
-                context, trunk_id,
-                {'trunk': {'status': constants.TRUNK_ACTIVE_STATUS}})

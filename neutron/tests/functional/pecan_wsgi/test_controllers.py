@@ -10,6 +10,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import unittest
 from unittest import mock
 
 from neutron_lib import constants as n_const
@@ -58,7 +59,7 @@ class TestRootController(test_functional.PecanFunctionalTest):
     base_url = '/'
 
     def setUp(self):
-        super(TestRootController, self).setUp()
+        super().setUp()
         self.setup_service_plugin()
         self.plugin = directory.get_plugin()
         self.ctx = context.get_admin_context()
@@ -154,7 +155,7 @@ class TestExtensionsController(TestRootController):
     def test_get(self):
         # Fetch any extension supported by plugins
         test_alias = self._get_supported_extensions().pop()
-        response = self.app.get('%s/%s' % (self.base_url, test_alias))
+        response = self.app.get(f'{self.base_url}/{test_alias}')
         self.assertEqual(response.status_int, 200)
         json_body = jsonutils.loads(response.body)
         self.assertEqual(test_alias, json_body['extension']['alias'])
@@ -296,7 +297,7 @@ class TestQuotasController(test_functional.PecanFunctionalTest):
 
     def test_get_project_info(self):
         for key in ('project', 'tenant'):
-            response = self.app.get('%s/%s.json' % (self.base_url, key),
+            response = self.app.get(f'{self.base_url}/{key}.json',
                                     headers={'X-Project-Id': 'admin',
                                              'X-Roles': 'admin'})
             self.assertEqual(200, response.status_int)
@@ -311,7 +312,7 @@ class TestResourceController(TestRootController):
     base_url = '/v2.0'
 
     def setUp(self):
-        super(TestResourceController, self).setUp()
+        super().setUp()
         policy.init()
         self.addCleanup(policy.reset)
         self._gen_port()
@@ -319,11 +320,11 @@ class TestResourceController(TestRootController):
     def _gen_port(self):
         network_id = self.plugin.create_network(context.get_admin_context(), {
             'network':
-            {'name': 'pecannet', 'project_id': 'tenid', 'shared': False,
+            {'name': 'pecannet', 'project_id': 'projid', 'shared': False,
              'admin_state_up': True, 'status': 'ACTIVE'}})['id']
         self.port = self.plugin.create_port(context.get_admin_context(), {
             'port':
-            {'project_id': 'tenid', 'network_id': network_id,
+            {'project_id': 'projid', 'network_id': network_id,
              'fixed_ips': n_const.ATTR_NOT_SPECIFIED,
              'mac_address': '00:11:22:33:44:55',
              'admin_state_up': True, 'device_id': 'FF',
@@ -343,8 +344,8 @@ class TestResourceController(TestRootController):
         query_params = ['fields=%s' % field for field in fields]
         url = '/v2.0/ports.json'
         if query_params:
-            url = '%s?%s' % (url, '&'.join(query_params))
-        list_resp = self.app.get(url, headers={'X-Project-Id': 'tenid'})
+            url = '{}?{}'.format(url, '&'.join(query_params))
+        list_resp = self.app.get(url, headers={'X-Project-Id': 'projid'})
         self.assertEqual(200, list_resp.status_int)
         for item in jsonutils.loads(list_resp.body).get('ports', []):
             for field in fields:
@@ -371,14 +372,14 @@ class TestResourceController(TestRootController):
                                      return_value=[]).start()
         self.app.get(
             '/v2.0/ports.json?fields=id',
-            headers={'X-Project-Id': 'tenid'}
+            headers={'X-Project-Id': 'projid'}
         )
         self.assertIn('project_id', mock_get.mock_calls[-1][2]['fields'])
 
     def test_get_item_with_fields_selector(self):
         item_resp = self.app.get(
             '/v2.0/ports/%s.json?fields=id&fields=name' % self.port['id'],
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(200, item_resp.status_int)
         self._check_item(['id', 'name'],
                          jsonutils.loads(item_resp.body)['port'])
@@ -386,7 +387,7 @@ class TestResourceController(TestRootController):
         # The attribute should not be stripped while generating the response
         item_resp = self.app.get(
             '/v2.0/ports/%s.json?fields=id&fields=project_id' %
-            self.port['id'], headers={'X-Project-Id': 'tenid'})
+            self.port['id'], headers={'X-Project-Id': 'projid'})
         self.assertEqual(200, item_resp.status_int)
         self._check_item(['id', 'project_id'],
                          jsonutils.loads(item_resp.body)['port'])
@@ -396,7 +397,7 @@ class TestResourceController(TestRootController):
                                      return_value=[]).start()
         self.app.get(
             '/v2.0/ports.json?fields=id&fields=name&fields=&fields=name',
-            headers={'X-Project-Id': 'tenid'}
+            headers={'X-Project-Id': 'projid'}
         )
         received = mock_get.mock_calls[-1][2]['fields']
         self.assertNotIn('', received)
@@ -407,8 +408,8 @@ class TestResourceController(TestRootController):
             '/v2.0/ports.json',
             params={'port': {'network_id': self.port['network_id'],
                              'admin_state_up': True,
-                             'project_id': 'tenid'}},
-            headers={'X-Project-Id': 'tenid'})
+                             'project_id': 'projid'}},
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(response.status_int, 201)
 
     def test_post_with_retry(self):
@@ -427,24 +428,24 @@ class TestResourceController(TestRootController):
                 '/v2.0/ports.json',
                 params={'port': {'network_id': self.port['network_id'],
                                  'admin_state_up': True,
-                                 'project_id': 'tenid'}},
-                headers={'X-Project-Id': 'tenid'})
+                                 'project_id': 'projid'}},
+                headers={'X-Project-Id': 'projid'})
             self.assertEqual(201, response.status_int)
 
     def test_put(self):
         response = self.app.put_json('/v2.0/ports/%s.json' % self.port['id'],
                                      params={'port': {'name': 'test'}},
-                                     headers={'X-Project-Id': 'tenid'})
+                                     headers={'X-Project-Id': 'projid'})
         self.assertEqual(response.status_int, 200)
         json_body = jsonutils.loads(response.body)
         self.assertEqual(1, len(json_body))
         self.assertIn('port', json_body)
         self.assertEqual('test', json_body['port']['name'])
-        self.assertEqual('tenid', json_body['port']['project_id'])
+        self.assertEqual('projid', json_body['port']['project_id'])
 
     def test_delete(self):
         response = self.app.delete('/v2.0/ports/%s.json' % self.port['id'],
-                                   headers={'X-Project-Id': 'tenid'})
+                                   headers={'X-Project-Id': 'projid'})
         self.assertEqual(response.status_int, 204)
         self.assertFalse(response.body)
 
@@ -452,7 +453,7 @@ class TestResourceController(TestRootController):
         response = self.app.delete_json(
             '/v2.0/ports/%s.json' % self.port['id'],
             params={'port': {'name': 'test'}},
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(response.status_int, 400)
 
@@ -470,7 +471,7 @@ class TestResourceController(TestRootController):
     def test_post_with_empty_body(self):
         response = self.app.post_json(
             '/v2.0/ports.json',
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             params={},
             expect_errors=True)
         self.assertEqual(response.status_int, 400)
@@ -478,7 +479,7 @@ class TestResourceController(TestRootController):
     def test_post_with_unsupported_json_type(self):
         response = self.app.post_json(
             '/v2.0/ports.json',
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             params=[1, 2, 3],
             expect_errors=True)
         self.assertEqual(response.status_int, 400)
@@ -487,13 +488,13 @@ class TestResourceController(TestRootController):
         response = self.app.post_json(
             '/v2.0/ports.json',
             params={'ports': [{'network_id': self.port['network_id'],
-                             'admin_state_up': True,
-                             'project_id': 'tenid'},
-                             {'network_id': self.port['network_id'],
+                               'admin_state_up': True,
+                               'project_id': 'projid'},
+                              {'network_id': self.port['network_id'],
                               'admin_state_up': True,
-                              'project_id': 'tenid'}]
+                               'project_id': 'projid'}]
                     },
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(201, response.status_int)
         json_body = jsonutils.loads(response.body)
         self.assertIn('ports', json_body)
@@ -508,7 +509,7 @@ class TestResourceController(TestRootController):
                 params={'security_group': {
                     "name": "functest",
                     "description": "Functional test"}},
-                headers={'X-Project-Id': 'tenid'})
+                headers={'X-Project-Id': 'projid'})
         self.assertEqual(201, sg_response.status_int)
         sg_json_body = jsonutils.loads(sg_response.body)
         self.assertIn('security_group', sg_json_body)
@@ -517,15 +518,15 @@ class TestResourceController(TestRootController):
         port_response = self.app.post_json(
                 '/v2.0/ports.json',
                 params={'ports': [{'network_id': self.port['network_id'],
-                                 'admin_state_up': True,
-                                 'security_groups': [sg_id],
-                                 'project_id': 'tenid'},
-                                 {'network_id': self.port['network_id'],
+                                   'admin_state_up': True,
+                                   'security_groups': [sg_id],
+                                   'project_id': 'projid'},
+                                  {'network_id': self.port['network_id'],
                                   'admin_state_up': True,
-                                 'security_groups': [sg_id],
-                                  'project_id': 'tenid'}]
+                                   'security_groups': [sg_id],
+                                   'project_id': 'projid'}]
                         },
-                headers={'X-Project-Id': 'tenid'})
+                headers={'X-Project-Id': 'projid'})
         self.assertEqual(201, port_response.status_int)
         json_body = jsonutils.loads(port_response.body)
         self.assertIn('ports', json_body)
@@ -539,13 +540,13 @@ class TestResourceController(TestRootController):
         response = self.app.post_json(
             '/v2.0/ports.json',
             params={'ports': [{'network_id': self.port['network_id'],
-                             'admin_state_up': True,
-                             'project_id': 'tenid'},
-                             {'network_id': self.port['network_id'],
+                               'admin_state_up': True,
+                               'project_id': 'projid'},
+                              {'network_id': self.port['network_id'],
                               'admin_state_up': True,
-                              'project_id': 'tenid'}]
+                               'project_id': 'projid'}]
                     },
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(response.status_int, 201)
         json_body = jsonutils.loads(response.body)
         self.assertIn('ports', json_body)
@@ -556,21 +557,21 @@ class TestResourceController(TestRootController):
         response = self.app.post_json(
             '/v2.0/ports.json',
             params={'ports': [{'network_id': self.port['network_id'],
-                             'admin_state_up': True,
-                             'project_id': 'tenid'},
-                             {'network_id': self.port['network_id'],
+                               'admin_state_up': True,
+                               'project_id': 'projid'},
+                              {'network_id': self.port['network_id'],
                               'admin_state_up': True,
-                              'project_id': 'tenid'},
-                             {'network_id': 'bad_net_id',
+                               'project_id': 'projid'},
+                              {'network_id': 'bad_net_id',
                               'admin_state_up': True,
-                              'project_id': 'tenid'}]
+                               'project_id': 'projid'}]
                     },
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(response.status_int, 400)
         response = self.app.get(
             '/v2.0/ports.json',
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         # all ports should be rolled back from above so we are just left
         # with the one created in setup
         self.assertEqual(1, len(jsonutils.loads(response.body)['ports']))
@@ -580,9 +581,9 @@ class TestResourceController(TestRootController):
             '/v2.0/ports.json',
             params={'ports': [{'network_id': self.port['network_id'],
                                'admin_state_up': True,
-                               'project_id': 'tenid'}]
+                               'project_id': 'projid'}]
                     },
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(response.status_int, 201)
         json_body = jsonutils.loads(response.body)
         self.assertIn('ports', json_body)
@@ -594,7 +595,7 @@ class TestPaginationAndSorting(test_functional.PecanFunctionalTest):
     RESOURCE_COUNT = 6
 
     def setUp(self):
-        super(TestPaginationAndSorting, self).setUp()
+        super().setUp()
         policy.init()
         self.addCleanup(policy.reset)
         self.plugin = directory.get_plugin()
@@ -631,10 +632,11 @@ class TestPaginationAndSorting(test_functional.PecanFunctionalTest):
             query_params.append('sort_key=%s' % sort_key)
         if sort_dir:
             query_params.append('sort_dir=%s' % sort_dir)
-        query_params.extend(['%s%s' % ('fields=', field) for field in fields])
+        query_params.extend(['{}{}'.format('fields=', field)
+                            for field in fields])
         url = '/v2.0/%s.json' % collection
         if query_params:
-            url = '%s?%s' % (url, '&'.join(query_params))
+            url = '{}?{}'.format(url, '&'.join(query_params))
         list_resp = self.app.get(url,
                                  headers={'X-Project-Id': self._project_id})
         self.assertEqual(200, list_resp.status_int)
@@ -716,7 +718,7 @@ class TestPaginationAndSorting(test_functional.PecanFunctionalTest):
 class TestRequestProcessing(TestRootController):
 
     def setUp(self):
-        super(TestRequestProcessing, self).setUp()
+        super().setUp()
         mock.patch('neutron.pecan_wsgi.hooks.notifier.registry').start()
         # request.context is thread-local storage so it has to be accessed by
         # the controller. We can capture it into a list here to assert on after
@@ -761,7 +763,7 @@ class TestRequestProcessing(TestRootController):
             '/v2.0/networks.json',
             params={'network': {'name': 'the_net',
                                 'admin_state_up': True}},
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual('network', self.captured_context['resource'])
         self.assertEqual('networks', self.captured_context['collection'])
         resources = self.captured_context['resources']
@@ -778,7 +780,7 @@ class TestRequestProcessing(TestRootController):
                                   'admin_state_up': True},
                                  {'name': 'the_net_2',
                                   'admin_state_up': False}]},
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         resources = self.captured_context['resources']
         is_bulk = self.captured_context['is_bulk']
         self.assertEqual(2, len(resources))
@@ -793,7 +795,7 @@ class TestRequestProcessing(TestRootController):
             '/v2.0/networks.json',
             params={'networks': [{'name': 'the_net_1',
                                   'admin_state_up': True}]},
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         resources = self.captured_context['resources']
         is_bulk = self.captured_context['is_bulk']
         self.assertEqual(1, len(resources))
@@ -805,7 +807,7 @@ class TestRequestProcessing(TestRootController):
             params={'network': {'name': 'the_net',
                                 'alien': 'E.T.',
                                 'admin_state_up': True}},
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(400, response.status_int)
 
@@ -814,13 +816,13 @@ class TestRequestProcessing(TestRootController):
             '/v2.0/networks.json',
             params={'network': {'name': 'the_net',
                                 'admin_state_up': 'invalid_value'}},
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(400, response.status_int)
 
+    # TODO(kevinbenton): fix the unit test setup to include an l3 plugin
+    @unittest.skip("A dummy l3 plugin needs to be setup")
     def test_service_plugin_identified(self):
-        # TODO(kevinbenton): fix the unit test setup to include an l3 plugin
-        self.skipTest("A dummy l3 plugin needs to be setup")
         self.app.get('/v2.0/routers.json')
         self.assertEqual('router', self.req_stash['resource_type'])
         # make sure the core plugin was identified as the handler for ports
@@ -850,7 +852,7 @@ class TestRouterController(TestResourceController):
             'service_plugins',
             ['neutron.services.l3_router.l3_router_plugin.L3RouterPlugin',
              'neutron.services.flavors.flavors_plugin.FlavorsPlugin'])
-        super(TestRouterController, self).setUp()
+        super().setUp()
         policy.init()
         self.addCleanup(policy.reset)
         plugin = directory.get_plugin()
@@ -864,14 +866,14 @@ class TestRouterController(TestResourceController):
         response = self.app.put_json(
             '/v2.0/routers/%s/add_router_interface.json' % self.router['id'],
             params={'subnet_id': self.subnet['id']},
-            headers={'X-Project-Id': 'tenid'})
+            headers={'X-Project-Id': 'projid'})
         self.assertEqual(200, response.status_int)
 
     def test_non_existing_member_action_returns_404(self):
         response = self.app.put_json(
             '/v2.0/routers/%s/do_meh.json' % self.router['id'],
             params={'subnet_id': 'doesitevenmatter'},
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(404, response.status_int)
 
@@ -879,13 +881,13 @@ class TestRouterController(TestResourceController):
         response = self.app.post_json(
             '/v2.0/routers/%s/add_router_interface.json' % self.router['id'],
             params={'subnet_id': self.subnet['id']},
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(405, response.status_int)
 
         response = self.app.get(
             '/v2.0/routers/%s/add_router_interface.json' % self.router['id'],
-            headers={'X-Project-Id': 'tenid'},
+            headers={'X-Project-Id': 'projid'},
             expect_errors=True)
         self.assertEqual(405, response.status_int)
 
@@ -893,7 +895,7 @@ class TestRouterController(TestResourceController):
 class TestDHCPAgentShimControllers(test_functional.PecanFunctionalTest):
 
     def setUp(self):
-        super(TestDHCPAgentShimControllers, self).setUp()
+        super().setUp()
         policy.init()
         policy._ENFORCER.set_rules(
             oslo_policy.Rules.from_dict(
@@ -919,11 +921,11 @@ class TestDHCPAgentShimControllers(test_functional.PecanFunctionalTest):
     def test_list_networks_on_dhcp_agent(self):
         response = self.app.get(
             '/v2.0/agents/%s/dhcp-networks.json' % self.agent.id,
-            headers={'X-Project-Id': 'tenid', 'X-Roles': 'admin'})
+            headers={'X-Project-Id': 'projid', 'X-Roles': 'admin'})
         self.assertEqual(200, response.status_int)
 
     def test_add_remove_dhcp_agent(self):
-        headers = {'X-Project-Id': 'tenid', 'X-Roles': 'admin'}
+        headers = {'X-Project-Id': 'projid', 'X-Roles': 'admin'}
         self.app.post_json(
             '/v2.0/agents/%s/dhcp-networks.json' % self.agent.id,
             headers=headers, params={'network_id': self.network['id']})
@@ -932,8 +934,8 @@ class TestDHCPAgentShimControllers(test_functional.PecanFunctionalTest):
             headers=headers)
         self.assertIn(self.agent.id,
                       [a['id'] for a in response.json['agents']])
-        self.app.delete('/v2.0/agents/%(a)s/dhcp-networks/%(n)s.json' % {
-            'a': self.agent.id, 'n': self.network['id']}, headers=headers)
+        self.app.delete('/v2.0/agents/{a}/dhcp-networks/{n}.json'.format(
+            a=self.agent.id, n=self.network['id']), headers=headers)
         response = self.app.get(
             '/v2.0/networks/%s/dhcp-agents.json' % self.network['id'],
             headers=headers)
@@ -948,7 +950,7 @@ class TestL3AgentShimControllers(test_functional.PecanFunctionalTest):
             'service_plugins',
             ['neutron.services.l3_router.l3_router_plugin.L3RouterPlugin',
              'neutron.services.flavors.flavors_plugin.FlavorsPlugin'])
-        super(TestL3AgentShimControllers, self).setUp()
+        super().setUp()
         policy.init()
         policy._ENFORCER.set_rules(
             oslo_policy.Rules.from_dict(
@@ -976,7 +978,7 @@ class TestL3AgentShimControllers(test_functional.PecanFunctionalTest):
         self.assertEqual(200, response.status_int)
 
     def test_add_remove_l3_agent(self):
-        headers = {'X-Project-Id': 'tenid', 'X-Roles': 'admin'}
+        headers = {'X-Project-Id': 'projid', 'X-Roles': 'admin'}
         response = self.app.post_json(
             '/v2.0/agents/%s/l3-routers.json' % self.agent.id,
             headers=headers, params={'router_id': self.router['id']})
@@ -987,8 +989,8 @@ class TestL3AgentShimControllers(test_functional.PecanFunctionalTest):
         self.assertIn(self.agent.id,
                       [a['id'] for a in response.json['agents']])
         response = self.app.delete(
-            '/v2.0/agents/%(a)s/l3-routers/%(n)s.json' % {
-                'a': self.agent.id, 'n': self.router['id']}, headers=headers)
+            '/v2.0/agents/{a}/l3-routers/{n}.json'.format(
+                a=self.agent.id, n=self.router['id']), headers=headers)
         self.assertEqual(204, response.status_int)
         self.assertFalse(response.body)
         response = self.app.get(
@@ -1005,7 +1007,7 @@ class TestShimControllers(test_functional.PecanFunctionalTest):
         fake_plugin = pecan_utils.FakePlugin()
         plugins = {pecan_utils.FakePlugin.PLUGIN_TYPE: fake_plugin}
         new_extensions = {fake_ext.get_alias(): fake_ext}
-        super(TestShimControllers, self).setUp(
+        super().setUp(
             service_plugins=plugins, extensions=new_extensions)
         policy.init()
         policy._ENFORCER.set_rules(
@@ -1020,7 +1022,7 @@ class TestShimControllers(test_functional.PecanFunctionalTest):
         collection = pecan_utils.FakeExtension.HYPHENATED_COLLECTION.replace(
             '_', '-')
         resource = pecan_utils.FakeExtension.HYPHENATED_RESOURCE
-        url = '/v2.0/{}/something.json'.format(collection)
+        url = f'/v2.0/{collection}/something.json'
         resp = self.app.get(url)
         self.assertEqual(200, resp.status_int)
         self.assertEqual({resource: {'fake': 'something'}}, resp.json)
@@ -1028,7 +1030,7 @@ class TestShimControllers(test_functional.PecanFunctionalTest):
     def test_hyphenated_collection_controller_not_shimmed(self):
         body_collection = pecan_utils.FakeExtension.HYPHENATED_COLLECTION
         uri_collection = body_collection.replace('_', '-')
-        url = '/v2.0/{}.json'.format(uri_collection)
+        url = f'/v2.0/{uri_collection}.json'
         resp = self.app.get(url)
         self.assertEqual(200, resp.status_int)
         self.assertEqual({body_collection: [{'fake': 'fake'}]}, resp.json)
@@ -1040,7 +1042,7 @@ class TestShimControllers(test_functional.PecanFunctionalTest):
         sub_resource_collection = (
             pecan_utils.FakeExtension.FAKE_SUB_RESOURCE_COLLECTION)
         temp_id = uuidutils.generate_uuid()
-        url = '/v2.0/{0}/{1}/{2}'.format(
+        url = '/v2.0/{}/{}/{}'.format(
             uri_collection,
             temp_id,
             sub_resource_collection.replace('_', '-'))
@@ -1056,19 +1058,19 @@ class TestMemberActionController(test_functional.PecanFunctionalTest):
         fake_plugin = pecan_utils.FakePlugin()
         plugins = {pecan_utils.FakePlugin.PLUGIN_TYPE: fake_plugin}
         new_extensions = {fake_ext.get_alias(): fake_ext}
-        super(TestMemberActionController, self).setUp(
+        super().setUp(
             service_plugins=plugins, extensions=new_extensions)
         hyphen_collection = pecan_utils.FakeExtension.HYPHENATED_COLLECTION
         self.collection = hyphen_collection.replace('_', '-')
 
     def test_get_member_action_controller(self):
-        url = '/v2.0/{}/something/boo_meh.json'.format(self.collection)
+        url = f'/v2.0/{self.collection}/something/boo_meh.json'
         resp = self.app.get(url)
         self.assertEqual(200, resp.status_int)
         self.assertEqual({'boo_yah': 'something'}, resp.json)
 
     def test_put_member_action_controller(self):
-        url = '/v2.0/{}/something/put_meh.json'.format(self.collection)
+        url = f'/v2.0/{self.collection}/something/put_meh.json'
         resp = self.app.put_json(url, params={'it_matters_not': 'ok'})
         self.assertEqual(200, resp.status_int)
         self.assertEqual({'poo_yah': 'something'}, resp.json)
@@ -1087,13 +1089,13 @@ class TestMemberActionController(test_functional.PecanFunctionalTest):
         self.assertEqual(404, resp.status_int)
 
     def test_put_on_get_member_action(self):
-        url = '/v2.0/{}/something/boo_meh.json'.format(self.collection)
+        url = f'/v2.0/{self.collection}/something/boo_meh.json'
         resp = self.app.put_json(url, params={'it_matters_not': 'ok'},
                                  expect_errors=True)
         self.assertEqual(405, resp.status_int)
 
     def test_get_on_put_member_action(self):
-        url = '/v2.0/{}/something/put_meh.json'.format(self.collection)
+        url = f'/v2.0/{self.collection}/something/put_meh.json'
         resp = self.app.get(url, expect_errors=True)
         self.assertEqual(405, resp.status_int)
 
@@ -1104,7 +1106,7 @@ class TestParentSubresourceController(test_functional.PecanFunctionalTest):
         fake_plugin = pecan_utils.FakePlugin()
         plugins = {pecan_utils.FakePlugin.PLUGIN_TYPE: fake_plugin}
         new_extensions = {fake_ext.get_alias(): fake_ext}
-        super(TestParentSubresourceController, self).setUp(
+        super().setUp(
             service_plugins=plugins, extensions=new_extensions)
         policy.init()
         policy._ENFORCER.set_rules(
@@ -1119,21 +1121,21 @@ class TestParentSubresourceController(test_functional.PecanFunctionalTest):
                                 FAKE_PARENT_SUBRESOURCE_COLLECTION)
 
     def test_get_duplicate_parent_resource(self):
-        url = '/v2.0/{}'.format(self.fake_collection)
+        url = f'/v2.0/{self.fake_collection}'
         resp = self.app.get(url)
         self.assertEqual(200, resp.status_int)
         self.assertEqual({'fake_duplicates': [{'fake': 'fakeduplicates'}]},
                          resp.json)
 
     def test_get_duplicate_parent_resource_item(self):
-        url = '/v2.0/{}/something'.format(self.fake_collection)
+        url = f'/v2.0/{self.fake_collection}/something'
         resp = self.app.get(url)
         self.assertEqual(200, resp.status_int)
         self.assertEqual({'fake_duplicate': {'fake': 'something'}}, resp.json)
 
     def test_get_parent_resource_and_duplicate_subresources(self):
-        url = '/v2.0/{0}/something/{1}'.format(self.collection,
-                                               self.fake_collection)
+        url = '/v2.0/{}/something/{}'.format(self.collection,
+                                             self.fake_collection)
         resp = self.app.get(url)
         self.assertEqual(200, resp.status_int)
         self.assertEqual({'fake_duplicates': [{'fake': 'something'}]},
@@ -1147,8 +1149,8 @@ class TestParentSubresourceController(test_functional.PecanFunctionalTest):
                 {'get_meh_meh_fake_duplicate': ''}
             )
         )
-        url = '/v2.0/{0}/something/{1}'.format(self.collection,
-                                               self.fake_collection)
+        url = '/v2.0/{}/something/{}'.format(self.collection,
+                                             self.fake_collection)
         resp = self.app.get(url)
         self.assertEqual(200, resp.status_int)
         self.assertEqual({'fake_duplicates': [{'fake': 'something'}]},
@@ -1158,7 +1160,7 @@ class TestParentSubresourceController(test_functional.PecanFunctionalTest):
 class TestExcludeAttributePolicy(test_functional.PecanFunctionalTest):
 
     def setUp(self):
-        super(TestExcludeAttributePolicy, self).setUp()
+        super().setUp()
         policy.init()
         self.addCleanup(policy.reset)
         plugin = directory.get_plugin()
@@ -1169,7 +1171,7 @@ class TestExcludeAttributePolicy(test_functional.PecanFunctionalTest):
 
     def test_get_networks(self):
         response = self.app.get('/v2.0/networks/%s.json' % self.network_id,
-                headers={'X-Project-Id': 'tenid'})
+                                headers={'X-Project-Id': 'projid'})
         json_body = jsonutils.loads(response.body)
         self.assertEqual(response.status_int, 200)
-        self.assertEqual('tenid', json_body['network']['project_id'])
+        self.assertEqual('projid', json_body['network']['project_id'])

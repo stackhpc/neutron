@@ -27,30 +27,9 @@ class AddressGroupDbObjectTestCase(
 
     _test_class = address_group.AddressGroup
 
-    def setUp(self):
-        super(AddressGroupDbObjectTestCase, self).setUp()
-
     def _create_test_address_group(self):
         self.objs[0].create()
         return self.objs[0]
-
-    def test_object_version_degradation_1_1_to_1_0_no_standard_attrs(self):
-        ag_obj = self._create_test_address_group()
-        ag_obj_1_0 = ag_obj.obj_to_primitive('1.0')
-        self.assertNotIn('revision_number',
-                         ag_obj_1_0['versioned_object.data'])
-        self.assertNotIn('created_at',
-                         ag_obj_1_0['versioned_object.data'])
-        self.assertNotIn('updated_at',
-                         ag_obj_1_0['versioned_object.data'])
-        # description filed was added to initial version separately
-        self.assertIn('description',
-                      ag_obj_1_0['versioned_object.data'])
-
-    def test_object_version_degradation_1_2_to_1_1_no_shared(self):
-        ag_obj = self._create_test_address_group()
-        ag_obj_1_1 = ag_obj.obj_to_primitive('1.1')
-        self.assertNotIn('shared', ag_obj_1_1['versioned_object.data'])
 
 
 class AddressGroupRBACDbObjectTestCase(test_rbac.TestRBACObjectMixin,
@@ -58,9 +37,10 @@ class AddressGroupRBACDbObjectTestCase(test_rbac.TestRBACObjectMixin,
                                        testlib_api.SqlTestCase):
 
     _test_class = address_group.AddressGroupRBAC
+    _parent_class = address_group.AddressGroup
 
     def setUp(self):
-        super(AddressGroupRBACDbObjectTestCase, self).setUp()
+        super().setUp()
         for obj in self.db_objs:
             ag_obj = address_group.AddressGroup(self.context,
                                                 id=obj['object_id'],
@@ -90,7 +70,7 @@ class AddressAssociationObjectTestCase(
     _test_class = address_group.AddressAssociation
 
     def setUp(self):
-        super(AddressAssociationObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {
                 'address_group_id':

@@ -11,13 +11,14 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import copy
 
 from neutron.objects.qos import binding as qos_binding
 from neutron.objects.qos import policy as qos_policy
 from neutron.objects.qos import rule as qos_rule
 from neutron_lib.api.definitions import l3 as l3_api
+from neutron_lib.api.definitions import provider_net as pnet_api
 from neutron_lib import constants
-from neutron_lib import context as n_context
 from neutron_lib.plugins import constants as plugins_const
 from neutron_lib.plugins import directory
 from neutron_lib.services.qos import constants as qos_consts
@@ -31,15 +32,16 @@ from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 
 LOG = logging.getLogger(__name__)
 OVN_QOS_DEFAULT_RULE_PRIORITY = 2002
+OVN_QOS_FIP_RULE_PRIORITY = 2003
 _MIN_RATE = ovn_const.LSP_OPTIONS_QOS_MIN_RATE
 
 
-class OVNClientQosExtension(object):
+class OVNClientQosExtension:
     """OVN client QoS extension"""
 
     def __init__(self, driver=None, nb_idl=None):
         LOG.info('Starting OVNClientQosExtension')
-        super(OVNClientQosExtension, self).__init__()
+        super().__init__()
         self._driver = driver
         self._nb_idl = nb_idl
         self._plugin_property = None
@@ -72,7 +74,8 @@ class OVNClientQosExtension(object):
         :return: (dict) nested dictionary of QoS rules, classified per
                  direction and rule type
                  {egress: {bw_limit: {max_kbps, max_burst_kbps},
-                           dscp: {dscp_mark}
+                           dscp: {dscp_mark},
+                           min_kbps: {min_kbps},
                   ingress: {...} }
         """
         qos_rules = {constants.EGRESS_DIRECTION: {},
@@ -116,7 +119,7 @@ class OVNClientQosExtension(object):
             in_or_out = 'outport'
             src_or_dst = 'dst'
 
-        match = '%s == "%s"' % (in_or_out, port_id)
+        match = f'{in_or_out} == "{port_id}"'
         if ip_address and resident_port:
             match += (' && ip4.%s == %s && is_chassis_resident("%s")' %
                       (src_or_dst, ip_address, resident_port))
@@ -125,7 +128,7 @@ class OVNClientQosExtension(object):
 
     def _ovn_qos_rule(self, rules_direction, rules, port_id, network_id,
                       fip_id=None, ip_address=None, resident_port=None,
-                      router_id=None, delete=False):
+                      router_id=None):
         """Generate an OVN QoS register based on several Neutron QoS rules
 
         A OVN QoS register can contain "bandwidth" and "action" parameters.
@@ -152,15 +155,9 @@ class OVNClientQosExtension(object):
                               where the floating IP traffic is NATed.
         :param router_id: (string) router ID, for L3 router gateway port
                           bandwidth limit.
-        :param delete: (bool) defines if this rule if going to be a partial
-                       one (without any bandwidth or DSCP information) to be
-                       used only as deletion rule.
         :return: (dict) OVN QoS rule register to be used with QoSAddCommand
                  and QoSDelCommand.
         """
-        if not delete and not rules:
-            return
-
         lswitch_name = utils.ovn_name(network_id)
         direction = (
             'from-lport' if rules_direction == constants.EGRESS_DIRECTION else
@@ -168,12 +165,30 @@ class OVNClientQosExtension(object):
         match = self._ovn_qos_rule_match(rules_direction, port_id, ip_address,
                                          resident_port)
 
-        ovn_qos_rule = {'switch': lswitch_name, 'direction': direction,
-                        'priority': OVN_QOS_DEFAULT_RULE_PRIORITY,
+        priority = (OVN_QOS_FIP_RULE_PRIORITY if fip_id else
+                    OVN_QOS_DEFAULT_RULE_PRIORITY)
+        ovn_qos_rule = {'switch': lswitch_name,
+                        'direction': direction,
+                        'priority': priority,
                         'match': match}
 
-        if delete:
+        if not rules:
             # Any specific rule parameter is left undefined.
+            return ovn_qos_rule
+
+        for rule_type, rule in rules.items():
+            if rule_type == qos_consts.RULE_TYPE_BANDWIDTH_LIMIT:
+                ovn_qos_rule['rate'] = rule['max_kbps']
+                if rule.get('max_burst_kbps'):
+                    ovn_qos_rule['burst'] = rule['max_burst_kbps']
+            elif rule_type == qos_consts.RULE_TYPE_DSCP_MARKING:
+                ovn_qos_rule['dscp'] = rule['dscp_mark']
+            # NOTE(ralonsoh): OVN QoS registers don't have minimum rate rules.
+
+        if (ovn_qos_rule.get('rate') is None and
+                ovn_qos_rule.get('dscp') is None):
+            # Any specific rule parameter is left undefined, no OVN QoS rules
+            # defined.
             return ovn_qos_rule
 
         # All OVN QoS rules have an external ID reference to the port or the
@@ -189,24 +204,88 @@ class OVNClientQosExtension(object):
             key, value = ovn_const.OVN_PORT_EXT_ID_KEY, port_id
         ovn_qos_rule['external_ids'] = {key: value}
 
-        for rule_type, rule in rules.items():
-            if rule_type == qos_consts.RULE_TYPE_BANDWIDTH_LIMIT:
-                ovn_qos_rule['rate'] = rule['max_kbps']
-                if rule.get('max_burst_kbps'):
-                    ovn_qos_rule['burst'] = rule['max_burst_kbps']
-            elif rule_type == qos_consts.RULE_TYPE_DSCP_MARKING:
-                ovn_qos_rule.update({'dscp': rule['dscp_mark']})
-            elif rule_type == qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH:
-                # NOTE(ralonsoh): minimum bandwidth rules are only supported
-                # for fixed IP ports (although this check is redundant, that
-                # ensures only fixed IP ports have this rule type in the
-                # returned dictionary).
-                if key == ovn_const.OVN_PORT_EXT_ID_KEY:
-                    ovn_qos_rule[_MIN_RATE] = str(rule['min_kbps'])
-
         return ovn_qos_rule
 
-    def _update_lsp_qos_options(self, txn, lsp, port_id, min_qos_value):
+    def get_lsp_options_qos(self, port_id):
+        """Return the current LSP.options QoS fields, passing the port ID"""
+        qos_options = {}
+        lsp = self.nb_idl.lookup('Logical_Switch_Port', port_id, default=None)
+        if not lsp:
+            return {}
+
+        for qos_key in (ovn_const.LSP_OPTIONS_QOS_MAX_RATE,
+                        ovn_const.LSP_OPTIONS_QOS_BURST,
+                        ovn_const.LSP_OPTIONS_QOS_MIN_RATE):
+            qos_value = lsp.options.get(qos_key)
+            if qos_value is not None:
+                qos_options[qos_key] = qos_value
+        return qos_options
+
+    @staticmethod
+    def _ovn_lsp_rule(rules):
+        """Generate the OVN LSP.options for physical network ports (egress)
+
+        The Logical_Switch_Port options field is a dictionary that can contain
+        the following options:
+        * qos_min_rate: (str) indicates the minimum guaranteed rate available
+          for data sent from this interface, in bit/s.
+        * qos_max_rate: (str) indicates the maximum rate for data sent from
+          this interface, in bit/s.
+        * qos_burst: (str) indicates the maximum burst size for data sent from
+          this interface, in bits.
+        (from https://www.ovn.org/support/dist-docs/ovn-nb.5.html)
+
+        :param rules: (dict) {bw_limit: {max_kbps, max_burst_kbps},
+                              dscp: {dscp_mark},
+                              minimum_bandwidth: {min_kbps}}
+                             An empty dictionary will create a deletion rule.
+        :param port_id: (string) port ID; for L3 floating IP bandwidth
+                        limit this is the router gateway port ID.
+        :return: (dict) a dictionary with the QoS rules to be updated with the
+                 LSP.options field. By default, the values of the QoS
+                 parameters are None. In that case, the keys are removed from
+                 the LSP.options dictionary (check
+                 ``UpdateLSwitchPortQosOptionsCommand``).
+        """
+        ovn_lsp_rule = {ovn_const.LSP_OPTIONS_QOS_MAX_RATE: None,
+                        ovn_const.LSP_OPTIONS_QOS_BURST: None,
+                        ovn_const.LSP_OPTIONS_QOS_MIN_RATE: None}
+        # NOTE(ralonsoh): the rate values must be defined in bits/s and bits.
+        # It is used the SI_BASE=1000 constant to convert from kbits/s and
+        # kbits.
+        for rule_type, rule in rules.items():
+            if rule_type == qos_consts.RULE_TYPE_BANDWIDTH_LIMIT:
+                qos_max_rate = str(rule['max_kbps'] * constants.SI_BASE)
+                ovn_lsp_rule[ovn_const.LSP_OPTIONS_QOS_MAX_RATE] = qos_max_rate
+                if rule.get('max_burst_kbps'):
+                    qos_burst = str(rule['max_burst_kbps'] * constants.SI_BASE)
+                    ovn_lsp_rule[ovn_const.LSP_OPTIONS_QOS_BURST] = qos_burst
+            elif rule_type == qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH:
+                qos_min_rate = str(rule['min_kbps'] * constants.SI_BASE)
+                ovn_lsp_rule[ovn_const.LSP_OPTIONS_QOS_MIN_RATE] = qos_min_rate
+        return ovn_lsp_rule
+
+    def _apply_ovn_rule_qos(self, txn, rules, ovn_rule_qos):
+        """Add or remove the OVN QoS rules (for max-bw and DSCP rules only).
+
+        :param txn: the ovsdbapp transaction object.
+        :param rules: Neutron QoS rules (per direction).
+        :param ovn_rule_qos: dictionary with the Neutron QoS rules with the
+                             parameters needed to call ``qos_add`` or
+                             ``qos_del`` commands.
+        """
+        if rules and not (ovn_rule_qos.get('rate') is None and
+                          ovn_rule_qos.get('dscp') is None):
+            # NOTE(ralonsoh): with "may_exist=True", the "qos_add" will
+            # create the QoS OVN rule or update the existing one.
+            # NOTE(ralonsoh): if the Neutron QoS rules don't have at least
+            # a max-bw rule or a DSCP rule, skip this command.
+            txn.add(self.nb_idl.qos_add(**ovn_rule_qos, may_exist=True))
+        else:
+            # Delete, if exists, the QoS rule in this direction.
+            txn.add(self.nb_idl.qos_del(**ovn_rule_qos, if_exists=True))
+
+    def _update_lsp_qos_options(self, txn, lsp, port_id, ovn_rule_lsp):
         """Update the LSP QoS options
 
         :param txn: the ovsdbapp transaction object.
@@ -218,15 +297,14 @@ class OVNClientQosExtension(object):
                         If the port ID is None, the OVN QoS rule does not
                         apply to a LSP but to a router gateway port or a
                         floating IP.
-        :param min_qos_value: (str) minimum bandwidth rule value in kbps; it is
-                              a string because LSP.options is a {str:str} dict.
+        :param ovn_rule_lsp: (dict) dictionary with the QoS values to be set in
+                             the LSP.options. If the values are None, the keys
+                             are removed.
         """
-        lsp = lsp or self.nb_idl.lsp_get(port_id).execute()
-        if not lsp:
-            return
-
-        options = {_MIN_RATE: min_qos_value}
-        txn.add(self.nb_idl.update_lswitch_qos_options(lsp, **options))
+        lsp = lsp or port_id
+        if lsp:
+            txn.add(self.nb_idl.update_lswitch_qos_options(lsp,
+                                                           **ovn_rule_lsp))
 
     @staticmethod
     def port_effective_qos_policy_id(port):
@@ -241,63 +319,75 @@ class OVNClientQosExtension(object):
 
         if port.get('qos_policy_id'):
             return port['qos_policy_id'], 'port'
-        else:
-            return port['qos_network_policy_id'], 'network'
+        return port['qos_network_policy_id'], 'network'
 
-    def _delete_port_qos_rules(self, txn, port_id, network_id, lsp=None,
-                               port_deleted=False):
+    def _delete_port_qos_rules(self, txn, port_id, network_id, network_type,
+                               lsp=None):
         # Generate generic deletion rules for both directions. In case of
         # creating deletion rules, the rule content is irrelevant.
-        for ovn_rule in [self._ovn_qos_rule(direction, {}, port_id,
-                                            network_id, delete=True)
-                         for direction in constants.VALID_DIRECTIONS]:
-            min_qos_value = ovn_rule.pop(_MIN_RATE, None)
-            txn.add(self.nb_idl.qos_del(**ovn_rule))
-            if not port_deleted:
-                self._update_lsp_qos_options(txn, lsp, port_id,
-                                             min_qos_value)
+        for ovn_rule_qos in (self._ovn_qos_rule(direction, {}, port_id,
+                                                network_id)
+                             for direction in constants.VALID_DIRECTIONS):
+            txn.add(self.nb_idl.qos_del(**ovn_rule_qos))
 
-    def _add_port_qos_rules(self, txn, port_id, network_id, qos_policy_id,
-                            qos_rules, lsp=None):
-        # NOTE(ralonsoh): we don't use the transaction context because the
-        # QoS policy could belong to another user (network QoS policy).
-        admin_context = n_context.get_admin_context()
+        if network_type in constants.TYPE_PHYSICAL:
+            self._update_lsp_qos_options(txn, lsp, port_id,
+                                         self._ovn_lsp_rule({}))
+
+    def _add_port_qos_rules(self, context, txn, port_id, network_id,
+                            network_type, qos_policy_id, qos_rules, lsp=None):
+        # NOTE(ralonsoh): the QoS policy could belong to another user (network
+        # QoS policy), admin permissions are needed.
+        admin_context = context.elevated()
 
         # TODO(ralonsoh): for update_network and update_policy operations,
         # the QoS rules can be retrieved only once.
-        qos_rules = qos_rules or self._qos_rules(admin_context, qos_policy_id)
-        for direction, rules in qos_rules.items():
-            # "delete=not rule": that means, when we don't have rules, we
-            # generate a "ovn_rule" to be used as input in a "qos_del" method.
-            ovn_rule = self._ovn_qos_rule(direction, rules, port_id,
-                                          network_id, delete=not rules)
-            min_qos_value = ovn_rule.pop(_MIN_RATE, None)
-            if rules:
-                # NOTE(ralonsoh): with "may_exist=True", the "qos_add" will
-                # create the QoS OVN rule or update the existing one.
-                txn.add(self.nb_idl.qos_add(**ovn_rule, may_exist=True))
-            else:
-                # Delete, if exists, the QoS rule in this direction.
-                txn.add(self.nb_idl.qos_del(**ovn_rule, if_exists=True))
-            self._update_lsp_qos_options(txn, lsp, port_id, min_qos_value)
+        _qos_rules = (copy.deepcopy(qos_rules) if qos_rules else
+                      self._qos_rules(admin_context, qos_policy_id))
+        for direction, rules in _qos_rules.items():
+            min_bw = rules.get(qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH)
+            # NOTE(ralonsoh): the QoS rules are defined in the LSP.options
+            # dictionary if (1) direction=egress, (2) the network is physical
+            # and (3) there are min-bw rules. Otherwise, the OVN QoS registers
+            # are used (OVN BW policer).
+            if (network_type in constants.TYPE_PHYSICAL and
+                    direction == constants.EGRESS_DIRECTION):
+                if min_bw:
+                    ovn_rule_lsp = self._ovn_lsp_rule(rules)
+                    self._update_lsp_qos_options(txn, lsp, port_id,
+                                                 ovn_rule_lsp)
+                    # In this particular case, the QoS rules should be defined
+                    # in LSP.options. Only DSCP rule will create a QoS entry.
+                    rules.pop(qos_consts.RULE_TYPE_BANDWIDTH_LIMIT, None)
+                    rules.pop(qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH, None)
+                else:
+                    # Clear the LSP.options QoS rules.
+                    self._update_lsp_qos_options(txn, lsp, port_id,
+                                                 self._ovn_lsp_rule({}))
 
-    def _update_port_qos_rules(self, txn, port_id, network_id, qos_policy_id,
-                               qos_rules, lsp=None, port_deleted=False):
+            ovn_rule_qos = self._ovn_qos_rule(direction, rules, port_id,
+                                              network_id)
+            self._apply_ovn_rule_qos(txn, rules, ovn_rule_qos)
+
+    def _update_port_qos_rules(self, context, txn, port_id, network_id,
+                               network_type, qos_policy_id, qos_rules,
+                               lsp=None):
         if not qos_policy_id:
-            self._delete_port_qos_rules(txn, port_id, network_id, lsp=lsp,
-                                        port_deleted=port_deleted)
+            self._delete_port_qos_rules(txn, port_id, network_id, network_type,
+                                        lsp=lsp)
         else:
-            self._add_port_qos_rules(txn, port_id, network_id, qos_policy_id,
-                                     qos_rules, lsp=lsp)
+            self._add_port_qos_rules(context, txn, port_id, network_id,
+                                     network_type, qos_policy_id, qos_rules,
+                                     lsp=lsp)
 
-    def create_port(self, txn, port, lsp):
-        self.update_port(txn, port, None, reset=True, lsp=lsp)
+    def create_port(self, context, txn, port, lsp):
+        self.update_port(context, txn, port, None, reset=True, lsp=lsp)
 
-    def delete_port(self, txn, port):
-        self.update_port(txn, port, None, delete=True)
+    def delete_port(self, context, txn, port):
+        self.update_port(context, txn, port, None, delete=True)
 
-    def update_port(self, txn, port, original_port, reset=False, delete=False,
-                    qos_rules=None, lsp=None):
+    def update_port(self, context, txn, port, original_port, reset=False,
+                    delete=False, qos_rules=None, lsp=None):
         if utils.is_port_external(port):
             # External ports (SR-IOV) QoS is handled by the SR-IOV agent QoS
             # extension.
@@ -318,15 +408,18 @@ class OVNClientQosExtension(object):
             if qos_policy_id == original_qos_policy_id:
                 return  # No QoS policy change
 
-        self._update_port_qos_rules(txn, port['id'], port['network_id'],
-                                    qos_policy_id, qos_rules, lsp=lsp,
-                                    port_deleted=delete)
+        net_name = utils.ovn_name(port['network_id'])
+        ls = self.nb_idl.ls_get(net_name).execute(check_error=True)
+        network_type = ls.external_ids[ovn_const.OVN_NETTYPE_EXT_ID_KEY]
+        self._update_port_qos_rules(
+            context, txn, port['id'], port['network_id'], network_type,
+            qos_policy_id, qos_rules, lsp=lsp)
 
-    def update_network(self, txn, network, original_network, reset=False,
-                       qos_rules=None):
-        updated_port_ids = set([])
-        updated_fip_ids = set([])
-        updated_router_ids = set([])
+    def update_network(self, context, txn, network, original_network,
+                       reset=False, qos_rules=None):
+        updated_port_ids = set()
+        updated_fip_ids = set()
+        updated_router_ids = set()
         if not reset and not original_network:
             # If there is no information about the previous QoS policy, do not
             # make any change.
@@ -339,17 +432,18 @@ class OVNClientQosExtension(object):
                 # No QoS policy change
                 return updated_port_ids, updated_fip_ids, updated_router_ids
 
-        # NOTE(ralonsoh): we don't use the transaction context because some
-        # ports can belong to other projects.
-        admin_context = n_context.get_admin_context()
+        # NOTE(ralonsoh): some ports can belong to other projects,
+        # admin permissions are needed.
+        admin_context = context.elevated()
         for port in qos_binding.QosPolicyPortBinding.get_ports_by_network_id(
                 admin_context, network['id']):
             if (utils.is_network_device_port(port) or
                     utils.is_port_external(port)):
                 continue
-
-            self._update_port_qos_rules(txn, port['id'], network['id'],
-                                        qos_policy_id, qos_rules)
+            network_type = network[pnet_api.NETWORK_TYPE]
+            self._update_port_qos_rules(
+                context, txn, port['id'], network['id'], network_type,
+                qos_policy_id, qos_rules)
             updated_port_ids.add(port['id'])
 
         fips = qos_binding.QosPolicyFloatingIPBinding.get_fips_by_network_id(
@@ -357,13 +451,14 @@ class OVNClientQosExtension(object):
         fip_ids = [fip.id for fip in fips]
         for floatingip in self._plugin_l3.get_floatingips(
                 admin_context, filters={'id': fip_ids}):
-            self.update_floatingip(txn, floatingip)
+            self.update_floatingip(admin_context, txn, floatingip)
             updated_fip_ids.add(floatingip['id'])
 
         for router in (qos_binding.QosPolicyRouterGatewayIPBinding.
-                get_routers_by_network_id(admin_context, network['id'])):
+                       get_routers_by_network_id(admin_context,
+                                                 network['id'])):
             router_dict = self._plugin_l3._make_router_dict(router)
-            self.update_router(txn, router_dict)
+            self.update_router(admin_context, txn, router_dict)
             updated_router_ids.add(router.id)
 
         return updated_port_ids, updated_fip_ids, updated_router_ids
@@ -375,10 +470,10 @@ class OVNClientQosExtension(object):
                 lswitch_name,
                 {ovn_const.OVN_FIP_EXT_ID_KEY: fip_id}))
 
-    def create_floatingip(self, txn, floatingip):
-        self.update_floatingip(txn, floatingip)
+    def create_floatingip(self, context, txn, floatingip):
+        self.update_floatingip(context, txn, floatingip)
 
-    def update_floatingip(self, txn, floatingip):
+    def update_floatingip(self, context, txn, floatingip):
         router_id = floatingip.get('router_id')
         qos_policy_id = (floatingip.get('qos_policy_id') or
                          floatingip.get('qos_network_policy_id'))
@@ -387,7 +482,7 @@ class OVNClientQosExtension(object):
             return self._delete_fip_qos_rules(
                 txn, floatingip['id'], floatingip['floating_network_id'])
 
-        admin_context = n_context.get_admin_context()
+        admin_context = context.elevated()
         router_db = self._plugin_l3._get_router(admin_context, router_id)
         gw_port_id = router_db.get('gw_port_id')
         if not gw_port_id:
@@ -403,38 +498,23 @@ class OVNClientQosExtension(object):
 
         qos_rules = self._qos_rules(admin_context, qos_policy_id)
         for direction, rules in qos_rules.items():
-            # "delete=not rule": that means, when we don't have rules, we
-            # generate a "ovn_rule" to be used as input in a "qos_del" method.
-            ovn_rule = self._ovn_qos_rule(
+            ovn_rule_qos = self._ovn_qos_rule(
                 direction, rules, gw_port_id,
                 floatingip['floating_network_id'], fip_id=floatingip['id'],
                 ip_address=floatingip['floating_ip_address'],
-                resident_port=resident_port, delete=not rules)
-            if rules:
-                # NOTE(ralonsoh): with "may_exist=True", the "qos_add" will
-                # create the QoS OVN rule or update the existing one.
-                txn.add(self.nb_idl.qos_add(**ovn_rule, may_exist=True))
-            else:
-                # Delete, if exists, the QoS rule in this direction.
-                txn.add(self.nb_idl.qos_del(**ovn_rule, if_exists=True))
+                resident_port=resident_port)
+            self._apply_ovn_rule_qos(txn, rules, ovn_rule_qos)
 
-    def delete_floatingip(self, txn, floatingip):
-        self.update_floatingip(txn, floatingip)
+    def delete_floatingip(self, context, txn, floatingip):
+        self.update_floatingip(context, txn, floatingip)
 
-    def disassociate_floatingip(self, txn, floatingip):
-        self.delete_floatingip(txn, floatingip)
+    def disassociate_floatingip(self, context, txn, floatingip):
+        self.delete_floatingip(context, txn, floatingip)
 
-    def _delete_gateway_ip_qos_rules(self, txn, router_id, network_id):
-        if network_id:
-            lswitch_name = utils.ovn_name(network_id)
-            txn.add(self.nb_idl.qos_del_ext_ids(
-                lswitch_name,
-                {ovn_const.OVN_ROUTER_ID_EXT_ID_KEY: router_id}))
+    def create_router(self, context, txn, router):
+        self.update_router(context, txn, router)
 
-    def create_router(self, txn, router):
-        self.update_router(txn, router)
-
-    def update_router(self, txn, router):
+    def update_router(self, context, txn, router):
         gw_info = router.get(l3_api.EXTERNAL_GW_INFO) or {}
         qos_policy_id = n_utils.effective_qos_policy_id(router)
         router_id = router.get('id')
@@ -448,30 +528,18 @@ class OVNClientQosExtension(object):
                       router_id)
             return
 
-        admin_context = n_context.get_admin_context()
+        admin_context = context.elevated()
         qos_rules = self._qos_rules(admin_context, qos_policy_id)
         for direction, rules in qos_rules.items():
-            # "delete=not rule": that means, when we don't have rules, we
-            # generate a "ovn_rule" to be used as input in a "qos_del" method.
-            ovn_rule = self._ovn_qos_rule(
+            ovn_rule_qos = self._ovn_qos_rule(
                 direction, rules, gw_port_id, gw_network_id,
-                router_id=router_id, delete=not rules)
-            if rules:
-                # NOTE(ralonsoh): with "may_exist=True", the "qos_add" will
-                # create the QoS OVN rule or update the existing one.
-                txn.add(self.nb_idl.qos_add(**ovn_rule, may_exist=True))
-            else:
-                # Delete, if exists, the QoS rule in this direction.
-                txn.add(self.nb_idl.qos_del(**ovn_rule, if_exists=True))
-
-    def delete_router(self, txn, router):
-        self._delete_gateway_ip_qos_rules(txn, router['id'],
-                                          router['gw_network_id'])
+                router_id=router_id)
+            self._apply_ovn_rule_qos(txn, rules, ovn_rule_qos)
 
     def update_policy(self, context, policy):
-        updated_port_ids = set([])
-        updated_fip_ids = set([])
-        updated_router_ids = set([])
+        updated_port_ids = set()
+        updated_fip_ids = set()
+        updated_router_ids = set()
         bound_networks = policy.get_bound_networks()
         bound_ports = policy.get_bound_ports()
         bound_fips = policy.get_bound_floatingips()
@@ -482,9 +550,15 @@ class OVNClientQosExtension(object):
         # operations.
         with self.nb_idl.transaction(check_error=True) as txn:
             for network_id in bound_networks:
-                network = {'qos_policy_id': policy.id, 'id': network_id}
+                ls = self._nb_idl.ls_get(utils.ovn_name(network_id)).execute(
+                    check_error=True)
+                net_type = ls.external_ids[ovn_const.OVN_NETTYPE_EXT_ID_KEY]
+                network = {'qos_policy_id': policy.id,
+                           'id': network_id,
+                           pnet_api.NETWORK_TYPE: net_type,
+                           }
                 port_ids, fip_ids, router_ids = self.update_network(
-                    txn, network, {}, reset=True, qos_rules=qos_rules)
+                    context, txn, network, {}, reset=True, qos_rules=qos_rules)
                 updated_port_ids.update(port_ids)
                 updated_fip_ids.update(fip_ids)
                 updated_router_ids.update(router_ids)
@@ -495,7 +569,7 @@ class OVNClientQosExtension(object):
             if port_ids:
                 for port in self._plugin.get_ports(context,
                                                    filters={'id': port_ids}):
-                    self.update_port(txn, port, {}, reset=True,
+                    self.update_port(context, txn, port, {}, reset=True,
                                      qos_rules=qos_rules)
 
             # Update each FIP bound to this policy, not handled previously in
@@ -504,11 +578,11 @@ class OVNClientQosExtension(object):
             if fip_ids:
                 for fip in self._plugin_l3.get_floatingips(
                         context, filters={'id': fip_ids}):
-                    self.update_floatingip(txn, fip)
+                    self.update_floatingip(context, txn, fip)
 
             router_ids = [r for r in bound_routers if
                           r not in updated_router_ids]
             if router_ids:
                 for router in self._plugin_l3.get_routers(
                         context, filters={'id': router_ids}):
-                    self.update_router(txn, router)
+                    self.update_router(context, txn, router)

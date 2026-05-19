@@ -33,7 +33,7 @@ LOG = logging.getLogger(__name__)
 
 
 @registry.has_registry_receivers
-class DriverController(object):
+class DriverController:
     """Driver controller for the L3 service plugin.
 
     This component is responsible for dispatching router requests to L3
@@ -48,7 +48,7 @@ class DriverController(object):
         self.l3_plugin = l3_plugin
         self._stm = st_db.ServiceTypeManager.get_instance()
         self._stm.add_provider_configuration(
-                plugin_constants.L3, _LegacyPlusProviderConfiguration())
+            plugin_constants.L3, _LegacyPlusProviderConfiguration())
         self._load_drivers()
 
     def _load_drivers(self):
@@ -87,7 +87,7 @@ class DriverController(object):
         router = payload.latest_state
         router_db = payload.metadata['router_db']
         router_id = payload.resource_id
-        if _flavor_specified(router):
+        if flavor_specified(router):
             router_db.flavor_id = router['flavor_id']
         drv = self._get_provider_for_create(context, router)
         self._stm.add_resource_association(context, plugin_constants.L3,
@@ -127,7 +127,7 @@ class DriverController(object):
         drv = self.get_provider_for_router(payload.context,
                                            payload.resource_id)
         new_drv = None
-        if _flavor_specified(payload.request_body):
+        if flavor_specified(payload.request_body):
             if (payload.request_body['flavor_id'] !=
                     payload.states[0]['flavor_id']):
                 # TODO(kevinbenton): this is currently disallowed by the API
@@ -139,7 +139,7 @@ class DriverController(object):
         # attributes via the API.
         try:
             _ensure_driver_supports_request(drv, payload.request_body)
-        except lib_exc.InvalidInput:
+        except lib_exc.InvalidInput as exc:
             # the current driver does not support this request, we need to
             # migrate to a new provider. populate the distributed and ha
             # flags from the previous state if not in the update so we can
@@ -162,7 +162,7 @@ class DriverController(object):
                       {'ha_flag': payload.request_body['ha'],
                        'distributed_flag':
                        payload.request_body['distributed']})
-            new_drv = self._attrs_to_driver(payload.request_body)
+            new_drv = self._attrs_to_driver(payload.request_body, exc=exc)
         if new_drv:
             LOG.debug("Router %(id)s migrating from %(old)s provider to "
                       "%(new)s provider.", {'id': payload.resource_id,
@@ -210,7 +210,7 @@ class DriverController(object):
 
     def _get_provider_for_create(self, context, router):
         """Get provider based on flavor or ha/distributed flags."""
-        if not _flavor_specified(router):
+        if not flavor_specified(router):
             return self._attrs_to_driver(router)
         return self._get_l3_driver_by_flavor(context, router['flavor_id'])
 
@@ -224,7 +224,7 @@ class DriverController(object):
         driver = self.drivers[provider['provider']]
         return driver
 
-    def _attrs_to_driver(self, router):
+    def _attrs_to_driver(self, router, exc=None):
         """Get a provider driver handle based on the ha/distributed flags."""
         distributed = _is_distributed(
             router.get('distributed', lib_const.ATTR_NOT_SPECIFIED))
@@ -236,6 +236,9 @@ class DriverController(object):
         for driver in drivers:
             if _is_driver_compatible(distributed, ha, driver):
                 return driver
+
+        if exc:
+            raise exc
         raise NotImplementedError(
             _("Could not find a service provider that supports "
               "distributed=%(d)s and ha=%(h)s") % {'d': distributed, 'h': ha}
@@ -254,8 +257,8 @@ class _LegacyPlusProviderConfiguration(
         # loads up ha, dvr, and single_node service providers automatically.
         # If an operator has setup explicit values that conflict with these,
         # the operator defined values will take priority.
-        super(_LegacyPlusProviderConfiguration, self).__init__(
-              svc_type=plugin_constants.L3)
+        super().__init__(
+            svc_type=plugin_constants.L3)
         for name, driver in (('dvrha', 'dvrha.DvrHaDriver'),
                              ('dvr', 'dvr.DvrDriver'), ('ha', 'ha.HaDriver'),
                              ('single_node', 'single_node.SingleNodeDriver')):
@@ -293,7 +296,7 @@ def _is_ha(ha_attr):
     return True
 
 
-def _flavor_specified(router):
+def flavor_specified(router):
     return ('flavor_id' in router and
             router['flavor_id'] != lib_const.ATTR_NOT_SPECIFIED)
 

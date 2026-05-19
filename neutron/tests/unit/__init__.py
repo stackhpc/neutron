@@ -13,7 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from neutron.common import eventlet_utils
-
-
-eventlet_utils.monkey_patch()
+# NOTE(ralonsoh): remove once the default backend is ``BackendType.THREADING``
+from oslo_service import backend as oslo_service_backend
+oslo_service_backend.init_backend(oslo_service_backend.BackendType.THREADING)

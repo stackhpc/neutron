@@ -28,6 +28,7 @@ from neutron.tests.common import net_helpers
 from neutron.tests.fullstack import base as fullstack_base
 
 PHYSICAL_NETWORK_NAME = "physnet1"
+PHYSICAL_NETWORK_SEGMENTS_NAME = "physnet2"
 MINIMUM_BANDWIDTH_INGRESS_KBPS = 1000
 MINIMUM_BANDWIDTH_EGRESS_KBPS = 1000
 
@@ -49,8 +50,9 @@ class ConfigFixture(config_fixtures.ConfigFileFixture):
     then the dynamic configuration values won't change. The correct usage
     is initializing a new instance of the class.
     """
+
     def __init__(self, env_desc, host_desc, temp_dir, base_filename):
-        super(ConfigFixture, self).__init__(
+        super().__init__(
             base_filename, config_fixtures.ConfigDict(), temp_dir)
         self.env_desc = env_desc
         self.host_desc = host_desc
@@ -63,13 +65,18 @@ class NeutronConfigFixture(ConfigFixture):
 
     def __init__(self, env_desc, host_desc, temp_dir,
                  connection, rabbitmq_environment, use_local_apipaste=True):
-        super(NeutronConfigFixture, self).__init__(
+        super().__init__(
             env_desc, host_desc, temp_dir, base_filename='neutron.conf')
 
         self.config.update({
             'DEFAULT': {
                 'host': self._generate_host(),
-                'state_path': self._generate_state_path(self.temp_dir),
+                # Enable conntrackd for tests to get full test coverage
+                'ha_conntrackd_enabled': 'True',
+                # Conntrackd only supports 107 characters for its control
+                # socket path. Thus the "state_path" should not be nested in
+                # a temporary directory to avoid the final path being too long.
+                'state_path': self.temp_dir,
                 'core_plugin': 'ml2',
                 'service_plugins': env_desc.service_plugins,
                 'auth_strategy': 'noauth',
@@ -97,9 +104,6 @@ class NeutronConfigFixture(ConfigFixture):
             'quotas': {
                 'quota_driver': env_desc.quota_driver
             },
-            'experimental': {
-                'linuxbridge': str(env_desc.allow_experimental_linuxbridge)
-            },
         })
 
         if use_local_apipaste:
@@ -123,7 +127,7 @@ class NeutronConfigFixture(ConfigFixture):
         if env_desc.has_placement:
             service_plugins = self.config['DEFAULT']['service_plugins']
             self.config['DEFAULT']['service_plugins'] = (
-                '%s,%s' % (service_plugins, 'placement')
+                '{},{}'.format(service_plugins, 'placement')
             )
             self.config.update({
                 'placement': {
@@ -150,21 +154,17 @@ class NeutronConfigFixture(ConfigFixture):
                                    start=NEUTRON_SERVER_PORT_START,
                                    end=NEUTRON_SERVER_PORT_END)).port
         })
-        super(NeutronConfigFixture, self)._setUp()
+        super()._setUp()
 
     def _generate_host(self):
         return utils.get_rand_name(prefix='host-')
 
-    def _generate_state_path(self, temp_dir):
-        # Assume that temp_dir will be removed by the caller
-        self.state_path = tempfile.mkdtemp(prefix='state_path', dir=temp_dir)
-        return self.state_path
-
     def _generate_api_paste(self):
-        return c_helpers.find_sample_file('api-paste.ini')
+        return c_helpers.find_sample_file(
+            os.path.join('neutron', 'api-paste.ini'))
 
     def _generate_policy_yaml(self):
-        return c_helpers.find_sample_file('policy.yaml')
+        return c_helpers.find_sample_file('fullstack_tests_policy.yaml')
 
     def get_host(self):
         return self.config['DEFAULT']['host']
@@ -173,7 +173,7 @@ class NeutronConfigFixture(ConfigFixture):
 class ML2ConfigFixture(ConfigFixture):
 
     def __init__(self, env_desc, host_desc, temp_dir, tenant_network_types):
-        super(ML2ConfigFixture, self).__init__(
+        super().__init__(
             env_desc, host_desc, temp_dir, base_filename='ml2_conf.ini')
 
         mechanism_drivers = self.env_desc.mech_drivers
@@ -182,8 +182,8 @@ class ML2ConfigFixture(ConfigFixture):
 
         net_vlan_ranges_extra = ''
         if 'segments' in env_desc.service_plugins:
-            net_vlan_ranges_extra = (',' + PHYSICAL_NETWORK_NAME +
-                                     '_lb:1050:1059')
+            net_vlan_ranges_extra = (',' + PHYSICAL_NETWORK_SEGMENTS_NAME +
+                                     ':1050:1059')
 
         self.config.update({
             'ml2': {
@@ -213,19 +213,30 @@ class ML2ConfigFixture(ConfigFixture):
 class OVSConfigFixture(ConfigFixture):
 
     def __init__(self, env_desc, host_desc, temp_dir, local_ip, **kwargs):
-        super(OVSConfigFixture, self).__init__(
+        super().__init__(
             env_desc, host_desc, temp_dir,
             base_filename='openvswitch_agent.ini')
 
         self.tunneling_enabled = self.env_desc.tunneling_enabled
-        ext_dev = utils.get_rand_device_name(prefix='br-eth')
+        if host_desc.segmented_physnet:
+            physnet = PHYSICAL_NETWORK_SEGMENTS_NAME
+        else:
+            physnet = PHYSICAL_NETWORK_NAME
+
+        self.phy_br_name = utils.get_rand_device_name(prefix='br-eth')
+        self.meta_br_name = self._generate_meta_bridge()
+        bridge_mappings = f'{physnet}:{self.phy_br_name}'
+        if env_desc.has_metadata:
+            bridge_mappings += ',{}:{}'.format('meta', self.meta_br_name)
         self.config.update({
             'ovs': {
                 'local_ip': local_ip,
                 'integration_bridge': self._generate_integration_bridge(),
-                'bridge_mappings': '%s:%s' % (PHYSICAL_NETWORK_NAME, ext_dev),
+                'bridge_mappings': bridge_mappings,
                 'of_inactivity_probe': '0',
                 'ovsdb_debug': 'True',
+                'qos_meter_bandwidth': str(
+                    self.env_desc.use_meter_bandwidth_limit),
             },
             'securitygroup': {
                 'firewall_driver': host_desc.firewall_driver,
@@ -248,8 +259,9 @@ class OVSConfigFixture(ConfigFixture):
         else:
             if env_desc.report_bandwidths:
                 self.config['ovs'][constants.RP_BANDWIDTHS] = \
-                    '%s:%s:%s' % (ext_dev, MINIMUM_BANDWIDTH_EGRESS_KBPS,
-                                  MINIMUM_BANDWIDTH_INGRESS_KBPS)
+                    '{}:{}:{}'.format(self.phy_br_name,
+                                      MINIMUM_BANDWIDTH_EGRESS_KBPS,
+                                      MINIMUM_BANDWIDTH_INGRESS_KBPS)
 
         if env_desc.qos:
             self.config['agent']['extensions'] = 'qos'
@@ -275,6 +287,17 @@ class OVSConfigFixture(ConfigFixture):
             if host_desc.firewall_driver == 'openvswitch':
                 self.config['local_ip'] = {'static_nat': 'True'}
 
+        if env_desc.has_metadata:
+            self.config['agent']['extensions'] = 'metadata_path'
+            self.config.update({
+                'METADATA': {
+                    'metadata_proxy_shared_secret': 'secret',
+                    'nova_metadata_host': env_desc.metadata_host,
+                    'nova_metadata_port': str(env_desc.metadata_port),
+                    'host_proxy_listen_port': str(env_desc.hp_listen_port),
+                }
+            })
+
     def _setUp(self):
         self.config['ovs'].update({
             'of_listen_port': self.useFixture(
@@ -282,13 +305,16 @@ class OVSConfigFixture(ConfigFixture):
                                    start=OVS_OF_PORT_LISTEN_START,
                                    end=OVS_OF_PORT_LISTEN_END)).port
         })
-        super(OVSConfigFixture, self)._setUp()
+        super()._setUp()
 
     def _generate_integration_bridge(self):
         return utils.get_rand_device_name(prefix='br-int')
 
     def _generate_tunnel_bridge(self):
         return utils.get_rand_device_name(prefix='br-tun')
+
+    def _generate_meta_bridge(self):
+        return utils.get_rand_device_name(prefix='br-meta')
 
     def _generate_int_peer(self):
         return utils.get_rand_device_name(prefix='patch-tun')
@@ -300,14 +326,17 @@ class OVSConfigFixture(ConfigFixture):
         log_dir_path = os.path.join(fullstack_base.DEFAULT_LOG_DIR, test_name)
         if not os.path.exists(log_dir_path):
             os.mkdir(log_dir_path, 0o755)
-        return '%s/%s.log' % (log_dir_path,
-                              utils.get_rand_name(prefix="test-sg-"))
+        return '{}/{}.log'.format(log_dir_path,
+                                  utils.get_rand_name(prefix="test-sg-"))
 
     def get_br_int_name(self):
         return self.config.ovs.integration_bridge
 
     def get_br_phys_name(self):
-        return self.config.ovs.bridge_mappings.split(':')[1]
+        return self.phy_br_name
+
+    def get_br_meta_name(self):
+        return self.meta_br_name
 
     def get_br_tun_name(self):
         return self.config.ovs.tunnel_bridge
@@ -315,20 +344,19 @@ class OVSConfigFixture(ConfigFixture):
 
 class SRIOVConfigFixture(ConfigFixture):
     def __init__(self, env_desc, host_desc, temp_dir, local_ip):
-        super(SRIOVConfigFixture, self).__init__(
+        super().__init__(
             env_desc, host_desc, temp_dir,
             base_filename='sriov_agent.ini')
 
         device1 = utils.get_rand_device_name(prefix='ens5')
         device2 = utils.get_rand_device_name(prefix='ens6')
-        phys_dev_mapping = '%s:%s,%s:%s' % (PHYSICAL_NETWORK_NAME, device1,
-                                            PHYSICAL_NETWORK_NAME, device2)
-        rp_bandwidths = '%s:%s:%s,%s:%s:%s' % (device1,
-                                               MINIMUM_BANDWIDTH_EGRESS_KBPS,
-                                               MINIMUM_BANDWIDTH_INGRESS_KBPS,
-                                               device2,
-                                               MINIMUM_BANDWIDTH_EGRESS_KBPS,
-                                               MINIMUM_BANDWIDTH_INGRESS_KBPS)
+        phys_dev_mapping = '{pnn}:{d1},{pnn}:{d2}'.format(
+            pnn=PHYSICAL_NETWORK_NAME, d1=device1, d2=device2)
+        rp_bandwidths = '{d1}:{mbek}:{mbik},{d2}:{mbek}:{mbik}'.format(
+            d1=device1,
+            d2=device2,
+            mbek=MINIMUM_BANDWIDTH_EGRESS_KBPS,
+            mbik=MINIMUM_BANDWIDTH_INGRESS_KBPS)
         self.config.update({
             'sriov_nic': {
                 'physical_device_mappings': phys_dev_mapping,
@@ -336,14 +364,11 @@ class SRIOVConfigFixture(ConfigFixture):
             }
         })
 
-    def _setUp(self):
-        super(SRIOVConfigFixture, self)._setUp()
-
 
 class PlacementConfigFixture(ConfigFixture):
 
     def __init__(self, env_desc, host_desc, temp_dir):
-        super(PlacementConfigFixture, self).__init__(
+        super().__init__(
             env_desc, host_desc, temp_dir, base_filename='placement.ini')
         self.config.update({
             'DEFAULT': {
@@ -352,80 +377,35 @@ class PlacementConfigFixture(ConfigFixture):
             }
         })
 
-    def _setUp(self):
-        super(PlacementConfigFixture, self)._setUp()
 
+class MetadataConfigFixture(ConfigFixture):
 
-class LinuxBridgeConfigFixture(ConfigFixture):
-
-    def __init__(self, env_desc, host_desc, temp_dir, local_ip,
-                 physical_device_name):
-        super(LinuxBridgeConfigFixture, self).__init__(
-            env_desc, host_desc, temp_dir,
-            base_filename="linuxbridge_agent.ini"
-        )
-        self.service_plugins = env_desc.service_plugins
-
+    def __init__(self, env_desc, host_desc, temp_dir):
+        super().__init__(
+            env_desc, host_desc, temp_dir, base_filename='metadata.ini')
         self.config.update({
-            'VXLAN': {
-                'enable_vxlan': str(self.env_desc.tunneling_enabled),
-                'local_ip': local_ip,
-                'l2_population': str(self.env_desc.l2_pop),
-            },
-            'securitygroup': {
-                'firewall_driver': host_desc.firewall_driver,
-            },
-            'AGENT': {
-                'debug_iptables_rules': str(env_desc.debug_iptables),
-                'use_helper_for_ns_read': 'False',
+            'DEFAULT': {
+                'debug': 'True',
+                'metadata_host': self.env_desc.metadata_host,
+                'metadata_port': str(self.env_desc.metadata_port)
             }
         })
-        if env_desc.qos:
-            self.config.update({
-                'AGENT': {
-                    'extensions': 'qos'
-                }
-            })
-        if self.env_desc.tunneling_enabled:
-            self.config.update({
-                'LINUX_BRIDGE': {
-                    'bridge_mappings': self._generate_bridge_mappings(
-                        physical_device_name
-                    )
-                }
-            })
-        else:
-            self.config.update({
-                'LINUX_BRIDGE': {
-                    'physical_interface_mappings':
-                        self._generate_bridge_mappings(
-                            physical_device_name
-                        )
-                }
-            })
-
-    def _generate_bridge_mappings(self, device_name):
-        bridge_mappings_extra = ('_lb' if 'segments' in self.service_plugins
-                                 else '')
-        return '%s%s:%s' % (PHYSICAL_NETWORK_NAME, bridge_mappings_extra,
-                            device_name)
 
 
 class L3ConfigFixture(ConfigFixture):
 
     def __init__(self, env_desc, host_desc, temp_dir, integration_bridge=None):
-        super(L3ConfigFixture, self).__init__(
+        super().__init__(
             env_desc, host_desc, temp_dir, base_filename='l3_agent.ini')
         if host_desc.l2_agent_type == constants.AGENT_TYPE_OVS:
             self._prepare_config_with_ovs_agent(integration_bridge)
-        elif host_desc.l2_agent_type == constants.AGENT_TYPE_LINUXBRIDGE:
-            self._prepare_config_with_linuxbridge_agent()
         if host_desc.l3_agent_mode:
             self.config['DEFAULT'].update({
                 'agent_mode': host_desc.l3_agent_mode})
         self.config['DEFAULT'].update({
             'debug': 'True',
             'test_namespace_suffix': self._generate_namespace_suffix(),
+            'ha_keepalived_state_change_server_threads': '1',
         })
         self.config.update({
             'agent': {'use_helper_for_ns_read': 'False'}
@@ -442,19 +422,9 @@ class L3ConfigFixture(ConfigFixture):
     def _prepare_config_with_ovs_agent(self, integration_bridge):
         self.config.update({
             'DEFAULT': {
-                'interface_driver': ('neutron.agent.linux.interface.'
-                                     'OVSInterfaceDriver'),
             },
             'OVS': {
                 'integration_bridge': integration_bridge,
-            }
-        })
-
-    def _prepare_config_with_linuxbridge_agent(self):
-        self.config.update({
-            'DEFAULT': {
-                'interface_driver': ('neutron.agent.linux.interface.'
-                                     'BridgeInterfaceDriver'),
             }
         })
 
@@ -462,13 +432,11 @@ class L3ConfigFixture(ConfigFixture):
 class DhcpConfigFixture(ConfigFixture):
 
     def __init__(self, env_desc, host_desc, temp_dir, integration_bridge=None):
-        super(DhcpConfigFixture, self).__init__(
+        super().__init__(
             env_desc, host_desc, temp_dir, base_filename='dhcp_agent.ini')
 
         if host_desc.l2_agent_type == constants.AGENT_TYPE_OVS:
             self._prepare_config_with_ovs_agent(integration_bridge)
-        elif host_desc.l2_agent_type == constants.AGENT_TYPE_LINUXBRIDGE:
-            self._prepare_config_with_linuxbridge_agent()
         self.config['DEFAULT'].update({
             'debug': 'True',
             'dhcp_confs': self._generate_dhcp_path(),
@@ -483,23 +451,15 @@ class DhcpConfigFixture(ConfigFixture):
             })
 
     def _setUp(self):
-        super(DhcpConfigFixture, self)._setUp()
+        super()._setUp()
         self.addCleanup(self._clean_dhcp_path)
 
     def _prepare_config_with_ovs_agent(self, integration_bridge):
         self.config.update({
             'DEFAULT': {
-                'interface_driver': 'openvswitch',
             },
             'OVS': {
                 'integration_bridge': integration_bridge,
-            }
-        })
-
-    def _prepare_config_with_linuxbridge_agent(self):
-        self.config.update({
-            'DEFAULT': {
-                'interface_driver': 'linuxbridge',
             }
         })
 

@@ -19,3 +19,6 @@ OVN Driver Administration Guide
    smartnic_dpu
    baremetal
    external_ports
+   rpc
+   l3_scheduler
+   maintenance_worker

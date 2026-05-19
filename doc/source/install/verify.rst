@@ -52,7 +52,7 @@ Verify operation
       |                           |                           | subnet.                    |
       | Quota management support  | quotas                    | Expose functions for       |
       |                           |                           | quotas management per      |
-      |                           |                           | tenant                     |
+      |                           |                           | project                    |
       | Provider Network          | provider                  | Expose mapping of virtual  |
       |                           |                           | networks to physical       |
       |                           |                           | networks                   |
@@ -93,7 +93,7 @@ Verify operation
       |                           |                           | extension.                 |
       | RBAC Policies             | rbac-policies             | Allows creation and        |
       |                           |                           | modification of policies   |
-      |                           |                           | that control tenant access |
+      |                           |                           | that control project access|
       |                           |                           | to resources.              |
       | standard-attr-description | standard-attr-description | Extension to add           |
       |                           |                           | descriptions to standard   |

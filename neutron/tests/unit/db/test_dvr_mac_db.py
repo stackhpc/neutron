@@ -42,7 +42,7 @@ class DVRDbMixinImpl(dvr_mac_db.DVRDbMixin):
 class DvrDbMixinTestCase(test_plugin.Ml2PluginV2TestCase):
 
     def setUp(self):
-        super(DvrDbMixinTestCase, self).setUp()
+        super().setUp()
         self.ctx = context.get_admin_context()
         self.mixin = DVRDbMixinImpl(mock.Mock())
 
@@ -188,25 +188,27 @@ class DvrDbMixinTestCase(test_plugin.Ml2PluginV2TestCase):
         arg_list = (portbindings.HOST_ID,)
         with self.subnet() as subnet,\
                 self.port(subnet=subnet,
+                          is_admin=True,
                           device_owner=constants.DEVICE_OWNER_COMPUTE_PREFIX,
                           arg_list=arg_list, **host_arg) as compute_port,\
                 self.port(subnet=subnet,
                           device_owner=constants.DEVICE_OWNER_DHCP,
+                          is_admin=True,
                           arg_list=arg_list, **host_arg) as dhcp_port,\
-                self.port(subnet=subnet,
-                          device_owner=constants.DEVICE_OWNER_LOADBALANCER,
-                          arg_list=arg_list, **host_arg) as lb_port,\
                 self.port(device_owner=constants.DEVICE_OWNER_COMPUTE_PREFIX,
+                          is_admin=True,
                           arg_list=arg_list, **host_arg),\
                 self.port(subnet=subnet,
                           device_owner=constants.DEVICE_OWNER_COMPUTE_PREFIX,
+                          is_admin=True,
                           arg_list=arg_list,
                           **{portbindings.HOST_ID: 'other'}),\
                 self.port(subnet=subnet,
                           device_owner=constants.DEVICE_OWNER_NETWORK_PREFIX,
+                          is_admin=True,
                           arg_list=arg_list, **host_arg):
             expected_ids = [port['port']['id'] for port in
-                            [compute_port, dhcp_port, lb_port]]
+                            [compute_port, dhcp_port]]
             dvr_ports = self.mixin.get_ports_on_host_by_subnet(
                 self.ctx, HOST, subnet['subnet']['id'])
             self.assertEqual(len(expected_ids), len(dvr_ports))

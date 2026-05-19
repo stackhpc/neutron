@@ -17,6 +17,7 @@ from unittest import mock
 
 import netaddr
 from neutron_lib import constants
+from oslo_config import cfg
 from oslo_utils import uuidutils
 
 from neutron.agent.l3 import agent as neutron_l3_agent
@@ -37,10 +38,14 @@ HOSTNAME = 'agent1'
 class L3AgentNDPProxyTestFramework(framework.L3AgentTestFramework):
 
     def setUp(self):
-        super(L3AgentNDPProxyTestFramework, self).setUp()
+        super().setUp()
+        # TODO(slaweq): Investigate why those tests are failing with enabled
+        # debug_iptables_rules config option, but for now lets just disable it
+        cfg.CONF.set_override('debug_iptables_rules', False, group='AGENT')
         self.conf.set_override('extensions', ['ndp_proxy'], 'agent')
         self.agent = neutron_l3_agent.L3NATAgentWithStateReport(HOSTNAME,
                                                                 self.conf)
+        self.agent.init_host()
         self.np_ext = np.NDPProxyAgentExtension()
 
         port_id1 = uuidutils.generate_uuid()
@@ -172,8 +177,8 @@ class L3AgentNDPProxyTestFramework(framework.L3AgentTestFramework):
         expected_iptable_rules = []
         expected_proxy_address = []
         for ndp_proxy in self.ndp_proxies:
-            rule = '-i %s --destination %s -j ACCEPT' % (interface_name,
-                                                         ndp_proxy.ip_address)
+            rule = '-i {} --destination {} -j ACCEPT'.format(
+                interface_name, ndp_proxy.ip_address)
             rule_obj = iptable_mng.IptablesRule('NDP', rule, True, True,
                                                 iptables_manager.wrap_name)
             expected_iptable_rules.append(rule_obj)
@@ -266,9 +271,7 @@ class TestL3AgentNDPProxyExtensionDVR(test_dvr_router.TestDvrRouter,
         self.agent._process_updated_router(ri.router)
         self._assert_ndp_proxy_state_iptable_rules_is_set(
             ri, iptables_manager, interface_name)
-        super(
-            TestL3AgentNDPProxyExtensionDVR,
-            self)._assect_ndp_proxy_rules_is_set(
+        super()._assect_ndp_proxy_rules_is_set(
                 ip_wrapper, iptables_manager,
                 interface_name, namespace)
         ri.router['enable_ndp_proxy'] = False

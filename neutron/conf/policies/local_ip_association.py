@@ -11,6 +11,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -26,9 +27,7 @@ DEPRECATION_REASON = (
 rules = [
     policy.DocumentedRuleDefault(
         name='create_local_ip_port_association',
-        check_str=base.policy_or(
-            base.PROJECT_MEMBER,
-            base.RULE_PARENT_OWNER),
+        check_str=base.ADMIN_OR_PARENT_OWNER_MEMBER,
         scope_types=['project'],
         description='Create a Local IP port association',
         operations=[
@@ -39,15 +38,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='create_local_ip_port_association',
-            check_str=base.RULE_ADMIN_OR_PARENT_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_PARENT_OWNER,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='get_local_ip_port_association',
-        check_str=base.policy_or(
-            base.PROJECT_READER,
-            base.RULE_PARENT_OWNER),
+        check_str=base.ADMIN_OR_PARENT_OWNER_READER,
         scope_types=['project'],
         description='Get a Local IP port association',
         operations=[
@@ -62,15 +59,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='get_local_ip_port_association',
-            check_str=base.RULE_ADMIN_OR_PARENT_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_PARENT_OWNER,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='delete_local_ip_port_association',
-        check_str=base.policy_or(
-            base.PROJECT_MEMBER,
-            base.RULE_PARENT_OWNER),
+        check_str=base.ADMIN_OR_PARENT_OWNER_MEMBER,
         scope_types=['project'],
         description='Delete a Local IP port association',
         operations=[
@@ -81,7 +76,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='delete_local_ip_port_association',
-            check_str=base.RULE_ADMIN_OR_PARENT_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_PARENT_OWNER,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),

@@ -7,7 +7,8 @@ Routing
 North/South
 -----------
 
-The different configurations are detailed in the :doc:`/admin/ovn/refarch/refarch`
+The different configurations are detailed in the
+:doc:`/admin/ovn/refarch/refarch`
 
 Non distributed FIP
 ~~~~~~~~~~~~~~~~~~~
@@ -18,6 +19,21 @@ traffic, and also for FIPs.
 .. image:: figures/ovn-north-south.png
    :alt: L3 North South non-distributed FIP
    :align: center
+
+When an external network connected to the router is represented by FLAT or
+VLAN network type, active chassis is identified by the external Logical Router
+Port. In practice this means, that LRP will have ``hosting-chassis`` property
+set in a ``status`` row for the external LRP. You can also check Chassis
+priorities for the LRP with ``lrp-get-gateway-chassis`` command. Changing the
+priority will result in traffic failover to another Chassis.
+
+In case of connecting another Geneve network to the router as external network
+(by creating ``access_as_external`` RBAC rule for such network), router itself
+will be pinned to Chassis rather than it's LRP. In this scenario Logical Router
+does have ``chassis`` property defined inside the ``options`` row.
+With that ``GATEWAY_PORT`` will not be defined for dnat_and_snat rules which
+are created for FIPs as this will make traffic to pass through the LRP that
+is not bound to any Chassis.
 
 
 Distributed Floating IP
@@ -42,8 +58,9 @@ Ovn driver implements L3 high availability in a transparent way. You
 don't need to enable any config flags. As soon as you have more than
 one chassis capable of acting as an l3 gateway to the specific external
 network attached to the router it will schedule the router gateway port
-to multiple chassis, making use of the ``gateway_chassis`` column on OVN's
-``Logical_Router_Port`` table.
+to multiple chassis, making use of the ``HA_Chassis_Group`` table in OVN's
+Northbound database to associate multiple ``HA_Chassis`` with a
+``Logical_Router_Port``.
 
 In order to have external connectivity, either:
 
@@ -88,6 +105,30 @@ for a given router.
 
 The gateway nodes monitor each other in star topology. Compute nodes don't
 monitor each other because that's not necessary.
+
+Neutron exposes, via configuration file, a set of options to configure the OVS
+BFD options. That allows the administrator to configure the HA failover timeout
+that is defined as:
+
+.. math::
+
+   \text{detection time} = max(\text{bfd-min-rx}, \text{bfd-min-tx}) * \text{bfd-mult}
+
+The Neutron configuration provide a list of three preset values and an extra
+manual one, where the specific parameters can be defined:
+
+* ``[ovn]ha_failover_strategy``: this option has 4 possible values:
+
+  - "normal": the default OVN NB_Global options for ``bfd-min-rx``,
+    ``bfd-min-tx`` and ``bfd-mult`` are set [1]_ [2]_ [3]_.
+  - "aggressive": the ``bfd-min-rx`` is halved by 2.
+  - "conservative": the ``bfd-mult`` is multiplied by 2.
+  - "manual": the administrator can manually define the following values.
+
+* ``[ovn]bfd_min_rx``: BFD minimum RX interval in milliseconds, default 1000
+  ms.
+* ``[ovn]bfd_min_tx``: BFD minimum TX interval in milliseconds, default 100 ms.
+* ``[ovn]bfd_mult``: BFD detection multiplier, default 3.
 
 
 Failover (detected by BFD)
@@ -180,3 +221,29 @@ encapsulation) it's been included for completeness.
 Traffic goes directly from instance to instance through br-int in the case
 of both instances living in the same host (VM1 and VM2), or via
 encapsulation when living on different hosts (VM3 and VM4).
+
+
+Packet fragmentation
+~~~~~~~~~~~~~~~~~~~~
+
+The Neutron configuration variable ``[ovn]ovn_emit_need_to_frag`` configures
+OVN to emit the "need to frag" packets in case of MTU mismatches. This
+configuration option allows Neutron to set, in the router gateway
+``Logical_Router_Port``, the option "gateway_mtu". If a packet from any
+network reaches the gateway ``Logical_Router_Port``, OVN will send the "need
+for frag" message.
+
+In order to allow any E/W or N/S traffic to cross the router, the value of
+"gateway_mtu" will have the lowest MTU value off all networks connected to the
+router. This could impact the performance of the traffic using the networks
+connected to the router if the MTU defined is low. But the user can unset the
+Neutron configuration flag in order to avoid the fragmentation, at the cost
+of limiting the communication between networks with different MTUs.
+
+
+References
+~~~~~~~~~~
+
+.. [1] https://github.com/openvswitch/ovs/blob/b43ed9036e6fb38fe09ff4746b603edaef5319da/vswitchd/vswitch.xml#L4147
+.. [2] https://github.com/openvswitch/ovs/blob/b43ed9036e6fb38fe09ff4746b603edaef5319da/vswitchd/vswitch.xml#L4155
+.. [3] https://github.com/openvswitch/ovs/blob/b43ed9036e6fb38fe09ff4746b603edaef5319da/vswitchd/vswitch.xml#L4236

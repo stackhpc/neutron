@@ -12,15 +12,28 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import abc
+import copy
+import uuid
+
 from oslo_utils import timeutils
+from ovs.db import idl as ovs_idl
 from ovsdbapp.backend.ovs_idl import command
 from ovsdbapp.backend.ovs_idl import idlutils
+from ovsdbapp.backend.ovs_idl import rowview
+from ovsdbapp.schema.ovn_northbound import commands as ovn_nb_commands
+from ovsdbapp import utils as ovsdbapp_utils
 
 from neutron._i18n import _
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import exceptions as ovn_exc
 from neutron.common.ovn import utils
 from neutron.services.portforwarding.constants import PORT_FORWARDING_PREFIX
+
+from oslo_log import log
+
+
+LOG = log.getLogger(__name__)
 
 RESOURCE_TYPE_MAP = {
     ovn_const.TYPE_NETWORKS: 'Logical_Switch',
@@ -29,7 +42,13 @@ RESOURCE_TYPE_MAP = {
     ovn_const.TYPE_ROUTER_PORTS: 'Logical_Router_Port',
     ovn_const.TYPE_FLOATINGIPS: 'NAT',
     ovn_const.TYPE_SUBNETS: 'DHCP_Options',
+    ovn_const.TYPE_ADDRESS_GROUPS: 'Address_Set',
 }
+
+OVN_QOS_KEYS = (ovn_const.LSP_OPTIONS_QOS_MAX_RATE,
+                ovn_const.LSP_OPTIONS_QOS_BURST,
+                ovn_const.LSP_OPTIONS_QOS_MIN_RATE,
+                )
 
 
 def _addvalue_to_list(row, column, new_value):
@@ -65,34 +84,50 @@ def get_lsp_dhcp_options_uuids(lsp, lsp_name):
     return uuids
 
 
-def _add_gateway_chassis(api, txn, lrp_name, val):
-    gateway_chassis = api._tables.get('Gateway_Chassis')
-    if gateway_chassis:
-        prio = len(val)
-        uuid_list = []
-        for chassis in val:
-            gwc_name = '%s_%s' % (lrp_name, chassis)
-            try:
-                gwc = idlutils.row_by_value(api.idl,
-                                            'Gateway_Chassis',
-                                            'name', gwc_name)
-            except idlutils.RowNotFound:
-                gwc = txn.insert(gateway_chassis)
-                gwc.name = gwc_name
-            gwc.chassis_name = chassis
-            gwc.priority = prio
-            prio = prio - 1
-            uuid_list.append(gwc.uuid)
-        return 'gateway_chassis', uuid_list
+def _sync_ha_chassis_group(txn, nb_api, name, chassis_priority,
+                           may_exist=False, table_name='HA_Chassis_Group',
+                           **columns):
+    result = None
+    hcg = nb_api.lookup(table_name, name, default=None)
+    if hcg:
+        if not may_exist:
+            raise RuntimeError(_('HA_Chassis_Group %s exists') % name)
     else:
-        chassis = {ovn_const.OVN_GATEWAY_CHASSIS_KEY: val[0]}
-        return 'options', chassis
+        hcg = txn.insert(nb_api._tables[table_name])
+        hcg.name = name
+        command.BaseCommand.set_columns(hcg, **columns)
+        result = hcg.uuid
+
+    # HA_Chassis registers handling.
+    # Remove the non-existing chassis in ``self.chassis_priority``
+    hc_to_remove = []
+    for hc in getattr(hcg, 'ha_chassis', []):
+        if hc.chassis_name not in chassis_priority:
+            hc_to_remove.append(hc)
+
+    for hc in hc_to_remove:
+        hcg.delvalue('ha_chassis', hc)
+        hc.delete()
+
+    # Update the priority of the existing chassis.
+    for hc in getattr(hcg, 'ha_chassis', []):
+        hc_priority = chassis_priority.pop(hc.chassis_name)
+        hc.priority = hc_priority
+
+    # Add the non-existing HA_Chassis registers.
+    for hc_name, priority in chassis_priority.items():
+        hc = txn.insert(nb_api._tables['HA_Chassis'])
+        hc.chassis_name = hc_name
+        hc.priority = priority
+        hcg.addvalue('ha_chassis', hc)
+
+    if not result:
+        result = rowview.RowView(hcg)
+
+    return result
 
 
 class CheckLivenessCommand(command.BaseCommand):
-    def __init__(self, api):
-        super(CheckLivenessCommand, self).__init__(api)
-
     def run_idl(self, txn):
         # txn.pre_commit responsible for updating nb_global.nb_cfg, but
         # python-ovs will not update nb_cfg if no other changes are made
@@ -102,26 +137,100 @@ class CheckLivenessCommand(command.BaseCommand):
         self.result = self.api.nb_global.nb_cfg
 
 
-class AddLSwitchPortCommand(command.BaseCommand):
-    def __init__(self, api, lport, lswitch, may_exist, **columns):
-        super(AddLSwitchPortCommand, self).__init__(api)
-        self.lport = lport
-        self.lswitch = lswitch
+class AddNetworkCommand(command.AddCommand):
+    table_name = 'Logical_Switch'
+
+    def __init__(self, api, network_id, may_exist=False, **columns):
+        super().__init__(api)
+        self.network_uuid = uuid.UUID(str(network_id))
         self.may_exist = may_exist
         self.columns = columns
 
     def run_idl(self, txn):
+        table = self.api.tables[self.table_name]
         try:
+            ls = table.rows[self.network_uuid]
+            if self.may_exist:
+                self.result = rowview.RowView(ls)
+                return
+            msg = _("Switch %s already exists") % self.network_uuid
+            raise RuntimeError(msg)
+        except KeyError:
+            # Adding a new LS
+            if utils.ovs_persist_uuid_supported(txn.idl):
+                ls = txn.insert(table, new_uuid=self.network_uuid,
+                                persist_uuid=True)
+            else:
+                ls = txn.insert(table)
+        self.set_columns(ls, **self.columns)
+        ls.name = utils.ovn_name(self.network_uuid)
+        self.result = ls.uuid
+
+
+class DelLogicalSwitchCommand(command.BaseCommand):
+    def __init__(self, api, ls_name, if_exists):
+        super().__init__(api)
+        self.ls_name = ls_name
+        self.if_exists = if_exists
+
+    def run_idl(self, txn):
+        try:
+            ls = self.api.lookup('Logical_Switch', self.ls_name)
+        except idlutils.RowNotFound as e:
+            if self.if_exists:
+                return
+            msg = "Logical Switch %s does not exist" % self.ls_name
+            raise RuntimeError(msg) from e
+
+        # Delete the DNS record associated to this Neutron network.
+        for dns_row in ls.dns_records:
+            if dns_row.external_ids.get('ls_name') == self.ls_name:
+                dns_row.delete()
+                break
+
+        # Delete the Logical_Switch register.
+        ls.delete()
+
+        # Delete the HA_Chassis_Group register associated, if exists.
+        hcg = self.api.lookup('HA_Chassis_Group', self.ls_name, default=None)
+        if hcg:
+            hcg.delete()
+
+
+class AddLSwitchPortCommand(command.BaseCommand):
+    def __init__(self, api, lport, lswitch, may_exist, network_id=None,
+                 **columns):
+        super().__init__(api)
+        self.lport = lport
+        self.lswitch = lswitch
+        self.may_exist = may_exist
+        self.network_uuid = uuid.UUID(str(network_id)) if network_id else None
+        self.columns = columns
+
+    def run_idl(self, txn):
+        try:
+            # We must look in the local cache first, because the LS may have
+            # been created as part of the current transaction. or in the case
+            # of adding an LSP to a LS that was created before persist_uuid
             lswitch = idlutils.row_by_value(self.api.idl, 'Logical_Switch',
                                             'name', self.lswitch)
         except idlutils.RowNotFound:
-            msg = _("Logical Switch %s does not exist") % self.lswitch
-            raise RuntimeError(msg)
+            if self.network_uuid and utils.ovs_persist_uuid_supported(txn.idl):
+                # Create a "fake" row with the right UUID so python-ovs creates
+                # a transaction referencing the Row, even though we might not
+                # have received the update for the row ourselves.
+                lswitch = ovs_idl.Row(self.api.idl,
+                                      self.api.tables['Logical_Switch'],
+                                      uuid=self.network_uuid, data={})
+            else:
+                msg = _("Logical Switch %s does not exist") % self.lswitch
+                raise RuntimeError(msg)
         if self.may_exist:
             port = idlutils.row_by_value(self.api.idl,
                                          'Logical_Switch_Port', 'name',
                                          self.lport, None)
             if port:
+                self.result = port.uuid
                 return
 
         port = txn.insert(self.api._tables['Logical_Switch_Port'])
@@ -137,6 +246,14 @@ class AddLSwitchPortCommand(command.BaseCommand):
             port.dhcpv6_options = dhcpv6_options
         else:
             port.dhcpv6_options = [dhcpv6_options.result]
+
+        # NOTE(ralonsoh): HA chassis group is created by Neutron, there is no
+        # need to create it in this command.
+        ha_chassis_group = self.columns.pop('ha_chassis_group', None)
+        if ha_chassis_group:
+            hcg_uuid = ovsdbapp_utils.get_uuid(ha_chassis_group)
+            port.ha_chassis_group = hcg_uuid
+
         for col, val in self.columns.items():
             setattr(port, col, val)
         # add the newly created port to existing lswitch
@@ -148,9 +265,10 @@ class AddLSwitchPortCommand(command.BaseCommand):
 
 
 class SetLSwitchPortCommand(command.BaseCommand):
-    def __init__(self, api, lport, if_exists, **columns):
-        super(SetLSwitchPortCommand, self).__init__(api)
+    def __init__(self, api, lport, external_ids_update, if_exists, **columns):
+        super().__init__(api)
         self.lport = lport
+        self.external_ids_update = external_ids_update
         self.columns = columns
         self.if_exists = if_exists
 
@@ -192,8 +310,29 @@ class SetLSwitchPortCommand(command.BaseCommand):
         else:
             new_port_dhcp_opts.add(dhcpv6_options.result)
             port.dhcpv6_options = [dhcpv6_options.result]
-        for uuid in cur_port_dhcp_opts - new_port_dhcp_opts:
-            self.api._tables['DHCP_Options'].rows[uuid].delete()
+        for uuid_ in cur_port_dhcp_opts - new_port_dhcp_opts:
+            self.api._tables['DHCP_Options'].rows[uuid_].delete()
+
+        external_ids_update = self.external_ids_update or {}
+        external_ids = getattr(port, 'external_ids', {})
+        for k, v in external_ids_update.items():
+            external_ids[k] = v
+        port.external_ids = external_ids
+
+        # NOTE(ralonsoh): HA chassis group is created by Neutron, there is no
+        # need to create it in this command. The register is also deleted when
+        # the network to which the HA chassis group is associated is deleted.
+        ha_chassis_group = self.columns.pop('ha_chassis_group', None)
+        if ha_chassis_group:
+            hcg_uuid = ovsdbapp_utils.get_uuid(ha_chassis_group)
+            try:
+                port_hcg_uuid = port.ha_chassis_group[0].uuid
+            except IndexError:
+                port_hcg_uuid = None
+            if port_hcg_uuid != hcg_uuid:
+                port.ha_chassis_group = hcg_uuid
+        elif ha_chassis_group == []:
+            port.ha_chassis_group = []
 
         for col, val in self.columns.items():
             setattr(port, col, val)
@@ -207,10 +346,13 @@ class UpdateLSwitchPortQosOptionsCommand(command.BaseCommand):
         self.qos = qos
 
     def run_idl(self, txn):
+        # NOTE(ralonsoh): this command can be called from inside a transaction
+        # where the LSP is being created. If this is not the case, the value
+        # provided in the Neutron port ID (== LSP.name).
         if isinstance(self.lport, command.BaseCommand):
             port_id = self.lport.result
         else:
-            port_id = self.lport.uuid
+            port_id = self.lport
 
         try:
             port = self.api.lookup('Logical_Switch_Port', port_id)
@@ -221,7 +363,9 @@ class UpdateLSwitchPortQosOptionsCommand(command.BaseCommand):
                                port_id)
 
         for key, value in self.qos.items():
-            if value is None:
+            if key not in OVN_QOS_KEYS:
+                LOG.warning('Ignoring unsupported OVN QoS key %s', key)
+            elif value is None:
                 port.delkey('options', key)
             else:
                 port.setkey('options', key, value)
@@ -229,7 +373,7 @@ class UpdateLSwitchPortQosOptionsCommand(command.BaseCommand):
 
 class DelLSwitchPortCommand(command.BaseCommand):
     def __init__(self, api, lport, lswitch, if_exists):
-        super(DelLSwitchPortCommand, self).__init__(api)
+        super().__init__(api)
         self.lport = lport
         self.lswitch = lswitch
         self.if_exists = if_exists
@@ -249,36 +393,24 @@ class DelLSwitchPortCommand(command.BaseCommand):
         # Delete DHCP_Options records no longer referred by this port.
         cur_port_dhcp_opts = get_lsp_dhcp_options_uuids(
             lport, self.lport)
-        for uuid in cur_port_dhcp_opts:
-            self.api._tables['DHCP_Options'].rows[uuid].delete()
+        for uuid_ in cur_port_dhcp_opts:
+            self.api._tables['DHCP_Options'].rows[uuid_].delete()
+
+        # Delete the HA_Chassis_Group associated to an external port.
+        if (lport.type == ovn_const.LSP_TYPE_EXTERNAL and
+                lport.ha_chassis_group):
+            hcg = lport.ha_chassis_group[0]
+            lport.delvalue('ha_chassis_group', hcg)
+            if hcg.name == utils.ovn_extport_chassis_group_name(lport.name):
+                hcg.delete()
 
         _delvalue_from_list(lswitch, 'ports', lport)
         self.api._tables['Logical_Switch_Port'].rows[lport.uuid].delete()
 
 
-class AddLRouterCommand(command.BaseCommand):
-    def __init__(self, api, name, may_exist, **columns):
-        super(AddLRouterCommand, self).__init__(api)
-        self.name = name
-        self.columns = columns
-        self.may_exist = may_exist
-
-    def run_idl(self, txn):
-        if self.may_exist:
-            lrouter = idlutils.row_by_value(self.api.idl, 'Logical_Router',
-                                            'name', self.name, None)
-            if lrouter:
-                return
-
-        row = txn.insert(self.api._tables['Logical_Router'])
-        row.name = self.name
-        for col, val in self.columns.items():
-            setattr(row, col, val)
-
-
 class UpdateLRouterCommand(command.BaseCommand):
     def __init__(self, api, name, if_exists, **columns):
-        super(UpdateLRouterCommand, self).__init__(api)
+        super().__init__(api)
         self.name = name
         self.columns = columns
         self.if_exists = if_exists
@@ -299,28 +431,139 @@ class UpdateLRouterCommand(command.BaseCommand):
             return
 
 
-class DelLRouterCommand(command.BaseCommand):
-    def __init__(self, api, name, if_exists):
-        super(DelLRouterCommand, self).__init__(api)
-        self.name = name
-        self.if_exists = if_exists
+class ScheduleUnhostedGatewaysCommand(command.BaseCommand):
+    def __init__(self, nb_api, g_name, sb_api, plugin, port_physnets,
+                 all_gw_chassis, chassis_with_physnets, chassis_with_azs):
+        super().__init__(api=nb_api)
+        self.g_name = g_name
+        self.sb_api = sb_api
+        self.scheduler = plugin.scheduler
+        self.ovn_client = plugin._ovn_client
+        self.port_physnets = port_physnets
+        self.all_gw_chassis = all_gw_chassis
+        self.chassis_with_physnets = chassis_with_physnets
+        self.chassis_with_azs = chassis_with_azs
 
     def run_idl(self, txn):
-        try:
-            lrouter = idlutils.row_by_value(self.api.idl, 'Logical_Router',
-                                            'name', self.name)
-        except idlutils.RowNotFound:
-            if self.if_exists:
-                return
-            msg = _("Logical Router %s does not exist") % self.name
-            raise RuntimeError(msg)
+        lrouter_port = self.api.lookup("Logical_Router_Port", self.g_name)
+        physnet = self.port_physnets.get(
+            self.g_name[len(ovn_const.LRP_PREFIX):])
+        # Remove any invalid gateway chassis from the list, otherwise
+        # we can have a situation where all existing_chassis are invalid
+        existing_chassis = self.api.get_gateway_chassis_binding(self.g_name)
+        primary = existing_chassis[0] if existing_chassis else None
+        az_hints = self.api.get_gateway_chassis_az_hints(self.g_name)
+        filtered_existing_chassis = (
+            self.scheduler.filter_existing_chassis(
+                gw_chassis=self.all_gw_chassis, physnet=physnet,
+                chassis_physnets=self.chassis_with_physnets,
+                existing_chassis=existing_chassis, az_hints=az_hints,
+                chassis_with_azs=self.chassis_with_azs))
+        if existing_chassis != filtered_existing_chassis:
+            first_diff = None
+            for i in range(len(filtered_existing_chassis)):
+                if existing_chassis[i] != filtered_existing_chassis[i]:
+                    first_diff = i
+                    break
+            if first_diff is not None:
+                LOG.debug(
+                    "A chassis for this gateway has been filtered. "
+                    "Rebalancing priorities %s and lower", first_diff)
+                filtered_existing_chassis = filtered_existing_chassis[
+                    :max(first_diff, 1)]
 
-        self.api._tables['Logical_Router'].rows[lrouter.uuid].delete()
+        candidates = self.ovn_client.get_candidates_for_scheduling(
+            physnet, cms=self.all_gw_chassis,
+            chassis_physnets=self.chassis_with_physnets,
+            availability_zone_hints=az_hints)
+        chassis = self.scheduler.select(
+            self.api, self.sb_api, self.g_name, candidates=candidates,
+            existing_chassis=filtered_existing_chassis)
+        if primary and primary != chassis[0]:
+            if primary not in chassis:
+                LOG.debug("Primary gateway chassis %(old)s "
+                          "has been removed from the system. Moving "
+                          "gateway %(gw)s to other chassis %(new)s.",
+                          {'gw': self.g_name,
+                           'old': primary,
+                           'new': chassis[0]})
+            else:
+                LOG.debug("Gateway %s is hosted at %s.", self.g_name, primary)
+                # NOTE(mjozefcz): It means scheduler moved primary chassis
+                # to other gw based on scheduling method. But we don't
+                # want network flap - so moving actual primary to be on
+                # the top.
+                index = chassis.index(primary)
+                chassis[0], chassis[index] = chassis[index], chassis[0]
+        chassis_priority = utils.get_chassis_priority(chassis)
+        lrouter_name = lrouter_port.external_ids[
+            ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY]
+        router_id = utils.get_neutron_name(lrouter_name)
+        external_ids = {
+            ovn_const.OVN_AZ_HINTS_EXT_ID_KEY: ','.join(az_hints),
+            ovn_const.OVN_ROUTER_ID_EXT_ID_KEY: router_id,
+        }
+        hcg = _sync_ha_chassis_group(txn, self.api, lrouter_name,
+                                     chassis_priority, may_exist=True,
+                                     external_ids=external_ids)
+        setattr(lrouter_port, 'ha_chassis_group', ovsdbapp_utils.get_uuid(hcg))
+
+
+class ScheduleNewGatewayCommand(command.BaseCommand):
+    def __init__(self, nb_api, g_name, sb_api, lrouter_name, plugin, physnet,
+                 az_hints):
+        super().__init__(nb_api)
+        self.g_name = g_name
+        self.sb_api = sb_api
+        self.lrouter_name = lrouter_name
+        self.ovn_client = plugin._ovn_client
+        self.scheduler = plugin.scheduler
+        self.physnet = physnet
+        self.az_hints = az_hints
+
+    def run_idl(self, txn):
+        lrouter = self.api.lookup("Logical_Router", self.lrouter_name)
+        lrouter_port = self.api.lookup("Logical_Router_Port", self.g_name)
+
+        candidates = self.ovn_client.get_candidates_for_scheduling(
+            self.physnet, availability_zone_hints=self.az_hints)
+        chassis = self.scheduler.select(
+            self.api, self.sb_api, self.g_name, candidates=candidates,
+            target_lrouter=lrouter)
+        if chassis:
+            chassis_priority = utils.get_chassis_priority(chassis)
+            router_id = utils.get_neutron_name(self.lrouter_name)
+            external_ids = {
+                ovn_const.OVN_AZ_HINTS_EXT_ID_KEY: ','.join(self.az_hints),
+                ovn_const.OVN_ROUTER_ID_EXT_ID_KEY: router_id,
+            }
+            hcg = _sync_ha_chassis_group(txn, self.api, self.lrouter_name,
+                                         chassis_priority, may_exist=True,
+                                         external_ids=external_ids)
+            setattr(lrouter_port, 'ha_chassis_group',
+                    ovsdbapp_utils.get_uuid(hcg))
+
+
+class LrDelCommand(ovn_nb_commands.LrDelCommand):
+
+    def run_idl(self, txn):
+        # Unset the ``HA_Chassis_Group`` from all the gateway
+        # ``Logical_Router_Port`` before deleting it.
+        hcg = self.api.lookup('HA_Chassis_Group', self.router, default=None)
+        if hcg:
+            lr = self.api.lookup('Logical_Router', self.router, default=None)
+            if lr:
+                for lrp in lr.ports:
+                    lrp.delvalue('ha_chassis_group', hcg)
+            # Now the ``HA_Chassis_Group`` can be deleted.
+            hcg.delete()
+
+        super().run_idl(txn)
 
 
 class AddLRouterPortCommand(command.BaseCommand):
     def __init__(self, api, name, lrouter, may_exist, **columns):
-        super(AddLRouterPortCommand, self).__init__(api)
+        super().__init__(api)
         self.name = name
         self.lrouter = lrouter
         self.may_exist = may_exist
@@ -350,16 +593,14 @@ class AddLRouterPortCommand(command.BaseCommand):
             lrouter_port = txn.insert(self.api._tables['Logical_Router_Port'])
             lrouter_port.name = self.name
             for col, val in self.columns.items():
-                if col == 'gateway_chassis':
-                    col, val = _add_gateway_chassis(self.api, txn, self.name,
-                                                    val)
-                setattr(lrouter_port, col, val)
+                self.set_column(lrouter_port, col, val)
             _addvalue_to_list(lrouter, 'ports', lrouter_port)
+            self.result = lrouter_port.uuid
 
 
 class UpdateLRouterPortCommand(command.BaseCommand):
     def __init__(self, api, name, if_exists, **columns):
-        super(UpdateLRouterPortCommand, self).__init__(api)
+        super().__init__(api)
         self.name = name
         self.columns = columns
         self.if_exists = if_exists
@@ -376,15 +617,12 @@ class UpdateLRouterPortCommand(command.BaseCommand):
             raise RuntimeError(msg)
 
         for col, val in self.columns.items():
-            if col == 'gateway_chassis':
-                col, val = _add_gateway_chassis(self.api, txn, self.name,
-                                                val)
-            setattr(lrouter_port, col, val)
+            self.set_column(lrouter_port, col, val)
 
 
 class DelLRouterPortCommand(command.BaseCommand):
     def __init__(self, api, name, lrouter, if_exists):
-        super(DelLRouterPortCommand, self).__init__(api)
+        super().__init__(api)
         self.name = name
         self.lrouter = lrouter
         self.if_exists = if_exists
@@ -413,7 +651,7 @@ class DelLRouterPortCommand(command.BaseCommand):
 class SetLRouterPortInLSwitchPortCommand(command.BaseCommand):
     def __init__(self, api, lswitch_port, lrouter_port, is_gw_port,
                  if_exists, lsp_address):
-        super(SetLRouterPortInLSwitchPortCommand, self).__init__(api)
+        super().__init__(api)
         self.lswitch_port = lswitch_port
         self.lrouter_port = lrouter_port
         self.is_gw_port = is_gw_port
@@ -440,9 +678,43 @@ class SetLRouterPortInLSwitchPortCommand(command.BaseCommand):
         setattr(port, 'addresses', self.lsp_address)
 
 
+class SetLRouterMacAgeLimitCommand(command.BaseCommand):
+    def __init__(self, api, router, threshold):
+        super().__init__(api)
+        self.router = router
+        self.threshold = str(threshold)  # Just in case an integer sneaks in
+
+    def run_idl(self, txn):
+        # Creating a Command object that iterates over the list of Routers
+        # from inside a transaction avoids the issue of doing two
+        # transactions: one for list_rows() and the other for setting the
+        # values on routers, which would allow routers to be added and removed
+        # between the two transactions.
+        if self.router is None:
+            routers = self.api.tables["Logical_Router"].rows.values()
+        else:
+            routers = [self.api.lookup("Logical_Router", self.router)]
+
+        for router in routers:
+            # It's not technically necessary to check the value before setting
+            # it as python-ovs is smart enough to avoid sending operations to
+            # the server that would result in no change. The overhead of
+            # setkey() though is > than the overhead of checking the value here
+            try:
+                if (router.options.get(ovn_const.LR_OPTIONS_MAC_AGE_LIMIT) ==
+                        self.threshold):
+                    continue
+            except AttributeError:
+                # The Logical_Router is newly created in this txn and has no
+                # "options" set yet, which the following setkey will rectify
+                pass
+            router.setkey("options", ovn_const.LR_OPTIONS_MAC_AGE_LIMIT,
+                          self.threshold)
+
+
 class AddACLCommand(command.BaseCommand):
     def __init__(self, api, lswitch, lport, **columns):
-        super(AddACLCommand, self).__init__(api)
+        super().__init__(api)
         self.lswitch = lswitch
         self.lport = lport
         self.columns = columns
@@ -463,7 +735,7 @@ class AddACLCommand(command.BaseCommand):
 
 class DelACLCommand(command.BaseCommand):
     def __init__(self, api, lswitch, lport, if_exists):
-        super(DelACLCommand, self).__init__(api)
+        super().__init__(api)
         self.lswitch = lswitch
         self.lport = lport
         self.if_exists = if_exists
@@ -489,10 +761,45 @@ class DelACLCommand(command.BaseCommand):
         _updatevalues_in_list(lswitch, 'acls', old_values=acls_to_del)
 
 
+class DelACLBySGruleIDCommand(command.BaseCommand):
+    lookup_table = 'Port_Group'
+
+    def __init__(self, api, sg_id, sg_rule_id, if_exists):
+        super().__init__(api)
+        self.sg_id = sg_id
+        self.sg_rule_id = sg_rule_id
+        self.if_exists = if_exists
+
+    def run_idl(self, txn):
+        pg_name = utils.ovn_port_group_name(self.sg_id)
+        try:
+            port_group = idlutils.row_by_value(
+                self.api.idl, self.lookup_table, 'name', pg_name)
+        except idlutils.RowNotFound:
+            if self.if_exists:
+                return
+            msg = _('%(table)s %(name)s does not exist') % {
+                'table': self.lookup_table, 'name': pg_name}
+            raise RuntimeError(msg)
+
+        acls_to_del = None
+        acls = getattr(port_group, 'acls', [])
+        for acl in acls:
+            ext_ids = getattr(acl, 'external_ids', {})
+            if (ext_ids.get(ovn_const.OVN_SG_RULE_EXT_ID_KEY) ==
+                    self.sg_rule_id):
+                acls_to_del = acl
+                break
+        if acls_to_del:
+            acls_to_del.delete()
+            _updatevalues_in_list(port_group, 'acls', old_values=[acls_to_del])
+
+
 class AddStaticRouteCommand(command.BaseCommand):
-    def __init__(self, api, lrouter, **columns):
-        super(AddStaticRouteCommand, self).__init__(api)
+    def __init__(self, api, lrouter, maintain_bfd=False, **columns):
+        super().__init__(api)
         self.lrouter = lrouter
+        self.maintain_bfd = maintain_bfd
         self.columns = columns
 
     def run_idl(self, txn):
@@ -503,18 +810,37 @@ class AddStaticRouteCommand(command.BaseCommand):
             msg = _("Logical Router %s does not exist") % self.lrouter
             raise RuntimeError(msg)
 
+        bfd_uuid = None
+        if (self.maintain_bfd and
+                'nexthop' in self.columns and
+                'output_port' in self.columns):
+            cmd = ovn_nb_commands.BFDAddCommand(self.api,
+                                                self.columns['output_port'],
+                                                self.columns['nexthop'],
+                                                may_exist=True)
+            cmd.run_idl(txn)
+            try:
+                bfd_uuid = cmd.result.uuid
+            except AttributeError:
+                # When the BFD record is created in the same transaction the
+                # post commit code that would resolve the real UUID and look up
+                # the bfd record has not run yet, and consequently the object
+                # returned by BFDAddCommand() is an UUID object.
+                bfd_uuid = cmd.result
+
         row = txn.insert(self.api._tables['Logical_Router_Static_Route'])
         for col, val in self.columns.items():
             setattr(row, col, val)
+        if bfd_uuid:
+            setattr(row, 'bfd', bfd_uuid)
         _addvalue_to_list(lrouter, 'static_routes', row.uuid)
 
 
-class DelStaticRouteCommand(command.BaseCommand):
-    def __init__(self, api, lrouter, ip_prefix, nexthop, if_exists):
-        super(DelStaticRouteCommand, self).__init__(api)
+class DelStaticRoutesCommand(command.BaseCommand):
+    def __init__(self, api, lrouter, routes, if_exists):
+        super().__init__(api)
         self.lrouter = lrouter
-        self.ip_prefix = ip_prefix
-        self.nexthop = nexthop
+        self.routes = routes
         self.if_exists = if_exists
 
     def run_idl(self, txn):
@@ -527,42 +853,41 @@ class DelStaticRouteCommand(command.BaseCommand):
             msg = _("Logical Router %s does not exist") % self.lrouter
             raise RuntimeError(msg)
 
-        static_routes = getattr(lrouter, 'static_routes', [])
-        for route in static_routes:
-            ip_prefix = getattr(route, 'ip_prefix', '')
-            nexthop = getattr(route, 'nexthop', '')
-            if self.ip_prefix == ip_prefix and self.nexthop == nexthop:
-                _delvalue_from_list(lrouter, 'static_routes', route)
-                route.delete()
-                break
+        routes_to_be_deleted = []
+        for route in getattr(lrouter, 'static_routes', []):
+            route_tuple = (getattr(route, 'ip_prefix', ''),
+                           getattr(route, 'nexthop', ''))
+            if route_tuple in self.routes:
+                routes_to_be_deleted.append(route)
+
+        for route in routes_to_be_deleted:
+            _delvalue_from_list(lrouter, 'static_routes', route)
+            route.delete()
 
 
-class DelAddrSetCommand(command.BaseCommand):
-    def __init__(self, api, name, if_exists):
-        super(DelAddrSetCommand, self).__init__(api)
-        self.name = name
-        self.if_exists = if_exists
+class SetStaticRouteCommand(command.BaseCommand):
+    def __init__(self, api, sroute, **columns):
+        super().__init__(api)
+        self.sroute = sroute
+        self.columns = columns
 
     def run_idl(self, txn):
         try:
-            addrset = idlutils.row_by_value(self.api.idl, 'Address_Set',
-                                            'name', self.name)
+            for col, val in self.columns.items():
+                setattr(self.sroute, col, val)
+
         except idlutils.RowNotFound:
-            if self.if_exists:
-                return
-            msg = _("Address set %s does not exist. "
-                    "Can't delete.") % self.name
+            msg = (_('Logical Router Static Route %s does not exist')
+                   % self.sroute)
             raise RuntimeError(msg)
 
-        self.api._tables['Address_Set'].rows[addrset.uuid].delete()
 
-
-class UpdateObjectExtIdsCommand(command.BaseCommand):
-    table = None
+class UpdateObjectExtIdsCommand(command.BaseCommand, metaclass=abc.ABCMeta):
+    table: str
     field = 'name'
 
     def __init__(self, api, record, external_ids, if_exists):
-        super(UpdateObjectExtIdsCommand, self).__init__(api)
+        super().__init__(api)
         self.record = record
         self.external_ids = external_ids
         self.if_exists = if_exists
@@ -575,9 +900,10 @@ class UpdateObjectExtIdsCommand(command.BaseCommand):
         except idlutils.RowNotFound:
             if self.if_exists:
                 return
-            msg = _("%s %s does not exist. "
-                    "Can't update external IDs") % (self.table, self.record)
-            raise RuntimeError(msg)
+            raise RuntimeError(
+                _("%(table)s %(record)s does not exist. "
+                  "Cannot update external IDs") %
+                {'table': self.table, 'record': self.record})
 
         for ext_id_key, ext_id_value in self.external_ids.items():
             obj.setkey('external_ids', ext_id_key, ext_id_value)
@@ -599,7 +925,7 @@ class UpdateLbExternalIds(UpdateObjectExtIdsCommand):
 class AddDHCPOptionsCommand(command.BaseCommand):
     def __init__(self, api, subnet_id, port_id=None, may_exist=True,
                  **columns):
-        super(AddDHCPOptionsCommand, self).__init__(api)
+        super().__init__(api)
         self.columns = columns
         self.may_exist = may_exist
         self.subnet_id = subnet_id
@@ -635,7 +961,7 @@ class AddDHCPOptionsCommand(command.BaseCommand):
 
 class DelDHCPOptionsCommand(command.BaseCommand):
     def __init__(self, api, row_uuid, if_exists=True):
-        super(DelDHCPOptionsCommand, self).__init__(api)
+        super().__init__(api)
         self.if_exists = if_exists
         self.row_uuid = row_uuid
 
@@ -652,7 +978,7 @@ class DelDHCPOptionsCommand(command.BaseCommand):
 class AddNATRuleInLRouterCommand(command.BaseCommand):
     # TODO(chandrav): Add unit tests, bug #1638715.
     def __init__(self, api, lrouter, **columns):
-        super(AddNATRuleInLRouterCommand, self).__init__(api)
+        super().__init__(api)
         self.lrouter = lrouter
         self.columns = columns
 
@@ -674,7 +1000,7 @@ class DeleteNATRuleInLRouterCommand(command.BaseCommand):
     # TODO(chandrav): Add unit tests, bug #1638715.
     def __init__(self, api, lrouter, type, logical_ip, external_ip,
                  if_exists):
-        super(DeleteNATRuleInLRouterCommand, self).__init__(api)
+        super().__init__(api)
         self.lrouter = lrouter
         self.type = type
         self.logical_ip = logical_ip
@@ -702,7 +1028,7 @@ class DeleteNATRuleInLRouterCommand(command.BaseCommand):
 
 class SetNATRuleInLRouterCommand(command.BaseCommand):
     def __init__(self, api, lrouter, nat_rule_uuid, **columns):
-        super(SetNATRuleInLRouterCommand, self).__init__(api)
+        super().__init__(api)
         self.lrouter = lrouter
         self.nat_rule_uuid = nat_rule_uuid
         self.columns = columns
@@ -725,7 +1051,7 @@ class SetNATRuleInLRouterCommand(command.BaseCommand):
 class CheckRevisionNumberCommand(command.BaseCommand):
 
     def __init__(self, api, name, resource, resource_type, if_exists):
-        super(CheckRevisionNumberCommand, self).__init__(api)
+        super().__init__(api)
         self.name = name
         self.resource = resource
         self.resource_type = resource_type
@@ -801,10 +1127,11 @@ class CheckRevisionNumberCommand(command.BaseCommand):
 
 class DeleteLRouterExtGwCommand(command.BaseCommand):
 
-    def __init__(self, api, lrouter, if_exists):
-        super(DeleteLRouterExtGwCommand, self).__init__(api)
+    def __init__(self, api, lrouter, if_exists, maintain_bfd=True):
+        super().__init__(api)
         self.lrouter = lrouter
         self.if_exists = if_exists
+        self.maintain_bfd = maintain_bfd
 
     def run_idl(self, txn):
         try:
@@ -816,12 +1143,22 @@ class DeleteLRouterExtGwCommand(command.BaseCommand):
             msg = _("Logical Router %s does not exist") % self.lrouter
             raise RuntimeError(msg)
 
+        if self.maintain_bfd:
+            lrp_names = set()
+            for lrp in getattr(lrouter, 'ports', []):
+                lrp_names.add(lrp.name)
         for route in lrouter.static_routes:
             external_ids = getattr(route, 'external_ids', {})
             if ovn_const.OVN_ROUTER_IS_EXT_GW in external_ids:
+                bfd = getattr(route, 'bfd', [])
+                if bfd and self.maintain_bfd:
+                    for bfd_rec in bfd:
+                        bfd_logical_port = getattr(bfd_rec, 'logical_port', '')
+                        if bfd_logical_port in lrp_names:
+                            route.delvalue('bfd', bfd_rec)
+                            bfd_rec.delete()
                 lrouter.delvalue('static_routes', route)
                 route.delete()
-                break
 
         for nat in lrouter.nat:
             if nat.type != 'snat':
@@ -829,24 +1166,23 @@ class DeleteLRouterExtGwCommand(command.BaseCommand):
             lrouter.delvalue('nat', nat)
             nat.delete()
 
-        lrouter_ext_ids = getattr(lrouter, 'external_ids', {})
-        gw_port_id = lrouter_ext_ids.get(ovn_const.OVN_GW_PORT_EXT_ID_KEY)
-        if not gw_port_id:
-            return
+        # Remove the router pinning to a chassis (if any).
+        lrouter.delkey('options', 'chassis')
 
-        try:
-            lrouter_port = idlutils.row_by_value(
-                self.api.idl, 'Logical_Router_Port', 'name',
-                utils.ovn_lrouter_port_name(gw_port_id))
-        except idlutils.RowNotFound:
-            return
+        hcg = self.api.lookup('HA_Chassis_Group', lrouter.name, default=None)
+        for gw_port in self.api.get_lrouter_gw_ports(lrouter.name):
+            lrouter.delvalue('ports', gw_port)
+            if hcg:
+                gw_port.delvalue('ha_chassis_group', hcg)
+            gw_port.delete()
 
-        lrouter.delvalue('ports', lrouter_port)
+        # NOTE(ralonsoh): the ``HA_Chassis_Group`` deletion is handled when
+        # the router is deleted.
 
 
 class SetLSwitchPortToVirtualTypeCommand(command.BaseCommand):
     def __init__(self, api, lport, vip, parent, if_exists):
-        super(SetLSwitchPortToVirtualTypeCommand, self).__init__(api)
+        super().__init__(api)
         self.lport = lport
         self.vip = vip
         self.parent = parent
@@ -859,7 +1195,7 @@ class SetLSwitchPortToVirtualTypeCommand(command.BaseCommand):
         except idlutils.RowNotFound:
             if self.if_exists:
                 return
-            msg = "Logical Switch Port %s does not exist" % self.lport
+            msg = _("Logical Switch Port %s does not exist") % self.lport
             raise RuntimeError(msg)
 
         options = lsp.options
@@ -878,7 +1214,7 @@ class SetLSwitchPortToVirtualTypeCommand(command.BaseCommand):
 
 class UnsetLSwitchPortToVirtualTypeCommand(command.BaseCommand):
     def __init__(self, api, lport, parent, if_exists):
-        super(UnsetLSwitchPortToVirtualTypeCommand, self).__init__(api)
+        super().__init__(api)
         self.lport = lport
         self.parent = parent
         self.if_exists = if_exists
@@ -890,7 +1226,7 @@ class UnsetLSwitchPortToVirtualTypeCommand(command.BaseCommand):
         except idlutils.RowNotFound:
             if self.if_exists:
                 return
-            msg = "Logical Switch Port %s does not exist" % self.lport
+            msg = _("Logical Switch Port %s does not exist") % self.lport
             raise RuntimeError(msg)
 
         options = lsp.options
@@ -915,3 +1251,22 @@ class UnsetLSwitchPortToVirtualTypeCommand(command.BaseCommand):
                 virtual_parents)
 
         setattr(lsp, 'options', options)
+
+
+class HAChassisGroupWithHCAddCommand(command.AddCommand):
+    table_name = 'HA_Chassis_Group'
+
+    def __init__(self, api, name, chassis_priority, may_exist=False,
+                 **columns):
+        super().__init__(api)
+        self.name = name
+        self.chassis_priority = copy.deepcopy(chassis_priority)
+        self.may_exist = may_exist
+        self.columns = columns
+
+    def run_idl(self, txn):
+        # HA_Chassis_Group register creation.
+        self.result = _sync_ha_chassis_group(
+            txn, self.api, self.name, self.chassis_priority,
+            may_exist=self.may_exist, table_name=self.table_name,
+            **self.columns)

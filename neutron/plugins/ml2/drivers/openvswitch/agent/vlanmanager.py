@@ -39,21 +39,22 @@ class NotUniqMapping(exceptions.NeutronException):
     message = _('Mapping VLAN for network %(net_id)s should be unique.')
 
 
-class LocalVLANMapping(object):
+class LocalVLANMapping:
     def __init__(self, vlan, network_type, physical_network, segmentation_id,
-                 vif_ports=None):
+                 vif_ports=None, tun_ofports=None):
         self.vlan = vlan
         self.network_type = network_type
         self.physical_network = physical_network
         self.segmentation_id = segmentation_id
         self.vif_ports = vif_ports or {}
         # set of tunnel ports on which packets should be flooded
-        self.tun_ofports = set()
+        self.tun_ofports = tun_ofports or set()
 
     def __str__(self):
-        return ("lv-id = %s type = %s phys-net = %s phys-id = %s" %
+        return ("lv-id = %s type = %s phys-net = %s phys-id = %s "
+                "tun_ofports = %s" %
                 (self.vlan, self.network_type, self.physical_network,
-                 self.segmentation_id))
+                 self.segmentation_id, self.tun_ofports))
 
     def __eq__(self, other):
         return all(hasattr(other, a) and getattr(self, a) == getattr(other, a)
@@ -67,14 +68,14 @@ class LocalVLANMapping(object):
         return id(self)
 
 
-class LocalVlanManager(object):
+class LocalVlanManager:
     """Singleton manager that maps internal VLAN mapping to external network
     segmentation ids.
     """
 
     def __new__(cls):
         if not hasattr(cls, '_instance'):
-            cls._instance = super(LocalVlanManager, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -85,15 +86,13 @@ class LocalVlanManager(object):
         return key in self.mapping
 
     def __iter__(self):
-        for value in list(self.mapping.values()):
-            yield value
+        yield from list(self.mapping.values())
 
     def items(self):
-        for item in self.mapping.items():
-            yield item
+        yield from self.mapping.items()
 
     def add(self, net_id, vlan, network_type, physical_network,
-            segmentation_id, vif_ports=None):
+            segmentation_id, vif_ports=None, tun_ofports=None):
         try:
             if self.get(net_id, segmentation_id):
                 raise MappingAlreadyExists(
@@ -101,7 +100,8 @@ class LocalVlanManager(object):
         except MappingNotFound:
             pass
         self.mapping[net_id][segmentation_id] = LocalVLANMapping(
-            vlan, network_type, physical_network, segmentation_id, vif_ports)
+            vlan, network_type, physical_network, segmentation_id, vif_ports,
+            tun_ofports)
 
     def get_net_and_segmentation_id(self, vif_id, net_uuid=None):
         # TODO(sahid): We should improve algorithm if net_uuid is passed.

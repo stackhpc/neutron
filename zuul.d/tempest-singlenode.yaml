@@ -12,6 +12,11 @@
       tempest_concurrency: 4
       devstack_localrc:
         Q_ML2_TENANT_NETWORK_TYPE: vxlan
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
+        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
       devstack_services:
@@ -54,6 +59,9 @@
         Q_AGENT: openvswitch
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
     irrelevant-files: &openvswitch-irrelevant-files
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^.*\.conf\.sample$
@@ -65,25 +73,30 @@
       - ^setup.cfg$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
       - ^vagrant/.*$
       - ^neutron/agent/ovn/.*$
-      - ^neutron/agent/windows/.*$
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
       - ^neutron/plugins/ml2/drivers/ovn/.*$
       - ^neutron/services/ovn_l3/.*$
       - ^neutron/services/logapi/drivers/ovn/.*$
       - ^neutron/services/portforwarding/drivers/ovn/.*$
-      - ^neutron/services/qos/drivers/linuxbridge/.*$
       - ^neutron/services/qos/drivers/ovn/.*$
-      - ^neutron/services/trunk/drivers/linuxbridge/.*$
       - ^neutron/services/trunk/drivers/ovn/.*$
       - ^neutron/cmd/ovn/.*$
       - ^neutron/common/ovn/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
 
 - job:
     name: neutron-ovs-tempest-dvr
@@ -100,52 +113,6 @@
 - job:
     name: neutron-tempest-dvr
     parent: neutron-ovs-tempest-dvr
-
-- job:
-    name: neutron-linuxbridge-tempest
-    parent: neutron-tempest-base
-    vars:
-      devstack_localrc:
-        Q_AGENT: linuxbridge
-        Q_ML2_PLUGIN_MECHANISM_DRIVERS: linuxbridge
-      devstack_local_conf:
-        post-config:
-          "/$NEUTRON_CORE_PLUGIN_CONF":
-            experimental:
-              linuxbridge: true
-    irrelevant-files:
-      - ^\.pylintrc$
-      - ^test-requirements.txt$
-      - ^.*\.conf\.sample$
-      - ^.*\.rst$
-      - ^doc/.*$
-      - ^neutron/locale/.*$
-      - ^neutron/tests/.*$
-      - ^releasenotes/.*$
-      - ^setup.cfg$
-      - ^tools/.*$
-      - ^tox.ini$
-      - ^vagrant/.*$
-      - ^neutron/agent/linux/openvswitch_firewall/.*$
-      - ^neutron/agent/ovn/.*$
-      - ^neutron/agent/windows/.*$
-      - ^neutron/plugins/ml2/drivers/openvswitch/.*$
-      - ^neutron/plugins/ml2/drivers/macvtap/.*$
-      - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
-      - ^neutron/plugins/ml2/drivers/ovn/.*$
-      - ^neutron/services/ovn_l3/.*$
-      - ^neutron/services/logapi/drivers/openvswitch/.*$
-      - ^neutron/services/logapi/drivers/ovn/.*$
-      - ^neutron/services/portforwarding/drivers/ovn/.*$
-      - ^neutron/services/qos/drivers/openvswitch/.*$
-      - ^neutron/services/qos/drivers/ovn/.*$
-      - ^neutron/services/trunk/drivers/openvswitch/.*$
-      - ^neutron/services/trunk/drivers/ovn/.*$
-      - ^neutron/cmd/ovn/.*$
-      - ^neutron/common/ovn/.*$
-      - ^roles/.*functional.*$
-      - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
 
 - job:
     name: neutron-ovs-tempest-iptables_hybrid
@@ -171,9 +138,6 @@
               quota_floatingip: 500
               quota_security_group: 100
               quota_security_group_rule: 1000
-          # NOTE(slaweq): We can get rid of this hardcoded absolute path when
-          # devstack-tempest job will be switched to use lib/neutron instead of
-          # lib/neutron-legacy
           "/$NEUTRON_CORE_PLUGIN_CONF":
             ml2_type_vlan:
               network_vlan_ranges: foo:1:10
@@ -205,55 +169,6 @@
     parent: neutron-ovs-tempest-iptables_hybrid
 
 - job:
-    name: neutron-ovn-tempest-postgres-full
-    parent: tempest-integrated-networking
-    timeout: 10800
-    required-projects:
-      - openstack/neutron
-      - openstack/tempest
-    vars:
-      devstack_plugins:
-        neutron: https://opendev.org/openstack/neutron.git
-      devstack_services:
-        postgresql: true
-        mysql: false
-        br-ex-tcpdump: true
-        br-int-flows: true
-        # Cinder services
-        c-api: false
-        c-bak: false
-        c-sch: false
-        c-vol: false
-        cinder: false
-        # Swift services
-        s-account: false
-        s-container: false
-        s-object: false
-        s-proxy: false
-      zuul_copy_output:
-        '/var/log/ovn': 'logs'
-        '/var/log/openvswitch': 'logs'
-        '/var/lib/ovn': 'logs'
-    irrelevant-files: &tempest-db-irrelevant-files
-      - ^\.pylintrc$
-      - ^test-requirements.txt$
-      - ^.*\.conf\.sample$
-      - ^.*\.rst$
-      - ^doc/.*$
-      - ^neutron/locale/.*$
-      - ^neutron/tests/.*$
-      - ^releasenotes/.*$
-      - ^setup.cfg$
-      - ^tools/.*$
-      - ^tox.ini$
-      - ^vagrant/.*$
-      - ^neutron/agent/.*$
-      - ^neutron/plugins/ml2/drivers/.*$
-      - ^roles/.*functional.*$
-      - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
-
-- job:
     name: neutron-ovn-tempest-mariadb-full
     parent: tempest-integrated-networking
     timeout: 10800
@@ -263,6 +178,12 @@
     vars:
       devstack_localrc:
         MYSQL_SERVICE_NAME: mariadb
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
+        NEUTRON_DEPLOY_MOD_WSGI: true
+        Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
       devstack_services:
@@ -286,10 +207,40 @@
     # NOTE(ralonsoh): once MariaDB default version in Ubuntu is bumped to
     # >10.1, this workaround can be removed (bug 1855912)
     pre-run: playbooks/add_mariadb_repo.yaml
-    irrelevant-files: *tempest-db-irrelevant-files
+    irrelevant-files: &tempest-db-irrelevant-files
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
+      - ^\.pylintrc$
+      - ^test-requirements.txt$
+      - ^.*\.conf\.sample$
+      - ^.*\.rst$
+      - ^doc/.*$
+      - ^neutron/locale/.*$
+      - ^neutron/tests/.*$
+      - ^releasenotes/.*$
+      - ^setup.cfg$
+      - ^tools/.*$
+      - ^tox.ini$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
+      - ^vagrant/.*$
+      - ^neutron/agent/.*$
+      - ^neutron/plugins/ml2/drivers/.*$
+      - ^roles/.*functional.*$
+      - ^playbooks/.*functional.*$
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
 
 - job:
     name: neutron-ovs-tempest-with-os-ken-master
+    branches: ^master$
     parent: neutron-ovs-tempest-base
     timeout: 10800
     required-projects:
@@ -314,6 +265,9 @@
         s-object: false
         s-proxy: false
     irrelevant-files:
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^.*\.conf\.sample$
@@ -325,17 +279,25 @@
       - ^setup.cfg$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
       - ^vagrant/.*$
-      - ^neutron/agent/windows/.*$
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
 
 - job:
     name: neutron-ovn-tempest-with-neutron-lib-master
+    branches: ^master$
     parent: tempest-integrated-networking
     timeout: 10800
     required-projects:
@@ -343,6 +305,12 @@
       - openstack/tempest
       - openstack/neutron-lib
     vars:
+      devstack_localrc:
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
+        NEUTRON_DEPLOY_MOD_WSGI: true
+        Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
       devstack_services:
@@ -366,12 +334,14 @@
 
 - job:
     name: neutron-ovs-tempest-with-neutron-lib-master
+    branches: ^master$
     parent: neutron-ovs-tempest-base
     required-projects:
       - openstack/neutron-lib
 
 - job:
     name: neutron-ovs-tempest-with-oslo-master
+    branches: ^master$
     parent: neutron-ovs-tempest-base
     description: |
       Job testing for devstack/tempest testing Neutron with OVS driver.
@@ -405,15 +375,27 @@
       - openstack/taskflow
       - openstack/tooz
       - openstack/pbr
-
+      # this is a workaround for a packaging bug in ubuntu
+      # remove when https://bugs.launchpad.net/nova/+bug/2109592
+      # is resolved and oslo config is not a dep of the novnc deb
+      # via the defunct python3-novnc package.
+      - novnc/novnc
+    vars:
+     devstack_localrc:
+        NOVNC_FROM_PACKAGE: false
 - job:
-    name: neutron-ovn-tempest-with-uwsgi
+    name: neutron-ovn-tempest
     parent: tempest-integrated-networking
     description: Run neutron Tempest tests with uwsgi
     timeout: 10800
     vars:
       devstack_localrc:
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
         NEUTRON_DEPLOY_MOD_WSGI: true
+        Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
       devstack_services:
@@ -440,6 +422,9 @@
         '/var/log/openvswitch': 'logs'
         '/var/lib/ovn': 'logs'
     irrelevant-files: &irrelevant-files
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^.*\.conf\.sample$
@@ -451,14 +436,23 @@
       - ^setup.cfg$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
       - ^vagrant/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
 
 - job:
-    name: neutron-ovn-tempest-with-uwsgi-loki
-    parent: neutron-tempest-with-uwsgi
+    name: neutron-ovn-tempest-loki
+    parent: neutron-ovn-tempest
     timeout: 10800
     vars:
       devstack_services:
@@ -480,11 +474,17 @@
           $TEMPEST_CONFIG:
             neutron_plugin_options:
               is_igmp_snooping_enabled: True
+        post-config:
+          $NEUTRON_CONF:
+            DEFAULT:
+              rpc_workers: 0
       devstack_localrc:
-        CIRROS_VERSION: 0.5.1
-        DEFAULT_IMAGE_NAME: cirros-0.5.1-x86_64-uec
-        DEFAULT_IMAGE_FILE_NAME: cirros-0.5.1-x86_64-uec.tar.gz
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
         Q_AGENT: ovn
+        OVN_AGENT_EXTENSIONS: 'metadata'
         ML2_L3_PLUGIN: ovn-router,trunk
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
         Q_ML2_PLUGIN_TYPE_DRIVERS: local,flat,vlan,geneve
@@ -494,7 +494,6 @@
         ENABLE_CHASSIS_AS_GW: true
         OVN_L3_CREATE_PUBLIC_NETWORK: true
         OVN_DBS_LOG_LEVEL: dbg
-        USE_PYTHON3: True
         BUILD_TIMEOUT: 784
         ENABLE_TLS: True
         OVN_IGMP_SNOOPING_ENABLE: True
@@ -505,6 +504,7 @@
         # sources, new job, inheriting from this one, should be created and
         # that option should be overwritten there.
         OVN_BUILD_FROM_SOURCE: False
+        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron
       zuul_copy_output:
@@ -518,17 +518,16 @@
         br-int-flows: true
         dstat: true
         g-api: true
-        g-reg: true
         keystone: true
         n-api-meta: true
         n-api: true
-        n-cauth: true
         n-cond-cell1: true
         n-cpu: true
         n-novnc-cell1: true
         n-sch: true
         n-super-cond: true
-        q-ovn-metadata-agent: true
+        q-ovn-metadata-agent: false
+        q-ovn-agent: true
         ovn-controller: true
         ovn-northd: true
         ovs-vswitchd: true
@@ -557,6 +556,9 @@
         c-vol: false
         cinder: false
     irrelevant-files: &ovn-irrelevant-files
+      - ^\.gitignore$
+      - ^\.gitreview$
+      - ^\.pre-commit-config\.yaml$
       - ^\.pylintrc$
       - ^test-requirements.txt$
       - ^releasenotes/.*$
@@ -568,29 +570,34 @@
       - ^neutron/tests/.*$
       - ^tools/.*$
       - ^tox.ini$
+      - ^plugin.spec$
+      - ^pyproject.toml$
+      - ^tools/ovn_migration/.*$
       - ^neutron/agent/dhcp/.*$
       - ^neutron/agent/l2/.*$
       - ^neutron/agent/l3/.*$
       - ^neutron/agent/metadata/.*$
-      - ^neutron/agent/windows/.*$
       - ^neutron/agent/dhcp_agent.py
       - ^neutron/agent/l3_agent.py
       - ^neutron/agent/metadata_agent.py
       - ^neutron/agent/resource_cache.py
       - ^neutron/agent/rpc.py
       - ^neutron/agent/securitygroup_rpc.py
-      - ^neutron/plugins/ml2/drivers/linuxbridge/.*$
       - ^neutron/plugins/ml2/drivers/openvswitch/.*$
       - ^neutron/plugins/ml2/drivers/macvtap/.*$
       - ^neutron/plugins/ml2/drivers/mech_sriov/.*$
-      - ^neutron/services/qos/drivers/linuxbridge/.*$
       - ^neutron/services/qos/drivers/openvswitch/.*$
-      - ^neutron/services/trunk/drivers/linuxbridge/.*$
       - ^neutron/services/trunk/drivers/openvswitch/.*$
       - ^neutron/scheduler/.*$
       - ^roles/.*functional.*$
       - ^playbooks/.*functional.*$
-      - ^zuul.d/(?!(project)).*\.yaml
+      # Ignore everything except for zuul.d/project.yaml
+      - ^zuul.d/base.yaml
+      - ^zuul.d/grenade.yaml
+      - ^zuul.d/job-templates.yaml
+      - ^zuul.d/rally.yaml
+      - ^zuul.d/tempest-multinode.yaml
+      - ^zuul.d/tempest-singlenode.yaml
 
 - job:
     name: neutron-ovn-tempest-ovs-release
@@ -599,16 +606,51 @@
 
 - job:
     name: neutron-ovn-tempest-ovs-master
+    branches: ^master$
     description: Job testing for devstack/tempest testing Neutron with ovn driver and OVN master branch
     parent: neutron-ovn-base
     vars:
       devstack_localrc:
         OVN_BUILD_FROM_SOURCE: True
         OVN_BRANCH: main
-        OVS_BRANCH: master
+        OVS_BRANCH: main
+
+- job:
+    name: neutron-ovn-tempest-ovs-lts
+    branches: ^master$
+    description: Job testing for devstack/tempest testing Neutron with ovn driver and the latest OVN LTS branch
+    parent: neutron-ovn-base
+    vars:
+      devstack_localrc:
+        OVN_BUILD_FROM_SOURCE: True
+        OVN_BRANCH: branch-24.03
+        OVS_BRANCH: branch-3.3
+
+- job:
+    name: neutron-ovn-tempest-plugin-ovs-master
+    branches: ^master$
+    description: Job testing Neutron tempest plugin with ovn driver and OVN master branch
+    parent: neutron-tempest-plugin-ovn
+    vars:
+      devstack_localrc:
+        OVN_BUILD_FROM_SOURCE: True
+        OVN_BRANCH: main
+        OVS_BRANCH: main
+
+- job:
+    name: neutron-ovn-tempest-plugin-ovs-lts
+    branches: ^master$
+    description: Job testing Neutron tempest plugin with ovn driver and the latest OVN LTS branch
+    parent: neutron-tempest-plugin-ovn
+    vars:
+      devstack_localrc:
+        OVN_BUILD_FROM_SOURCE: True
+        OVN_BRANCH: branch-24.03
+        OVS_BRANCH: branch-3.3
 
 - job:
     name: neutron-ovn-tempest-ovs-release-with-oslo-master
+    branches: ^master$
     description: |
       Job testing for devstack/tempest testing Neutron with OVN driver.
       This job installs all oslo libraries from source.
@@ -644,6 +686,14 @@
       - openstack/taskflow
       - openstack/tooz
       - openstack/pbr
+      # this is a workaround for a packaging bug in ubuntu
+      # remove when https://bugs.launchpad.net/nova/+bug/2109592
+      # is resolved and oslo config is not a dep of the novnc deb
+      # via the defunct python3-novnc package.
+      - novnc/novnc
+    vars:
+     devstack_localrc:
+        NOVNC_FROM_PACKAGE: false
 
 - job:
     name: neutron-ovn-tempest-ovs-master-centos-9-stream
@@ -651,6 +701,9 @@
     parent: neutron-ovn-tempest-ovs-master
     nodeset: devstack-single-node-centos-9-stream
     vars:
+      devstack_localrc:
+        # NOTE(ykarel) remove python3 override with 10-stream switch
+        PYTHON3_VERSION: 3.12
       zuul_copy_output:
         '{{ devstack_base_dir }}/data/ovs': 'logs'
         '{{ devstack_base_dir }}/data/ovn': 'logs'
@@ -670,6 +723,9 @@
       devstack_services:
         br-ex-tcpdump: true
         br-int-flows: true
+      devstack_localrc:
+        # NOTE(ykarel) remove python3 override with 10-stream switch
+        PYTHON3_VERSION: 3.12
       devstack_local_conf:
         test-config:
           "$TEMPEST_CONFIG":
@@ -686,6 +742,9 @@
     vars:
       nslookup_target: 'opendev.org'
       configure_swap_size: 4096
+      devstack_localrc:
+        # NOTE(ykarel) remove python3 override with 10-stream switch
+        PYTHON3_VERSION: 3.12
       devstack_local_conf:
         test-config:
           "$TEMPEST_CONFIG":
@@ -701,9 +760,82 @@
     vars:
       tox_envlist: integrated-network
       devstack_localrc:
-        CIRROS_VERSION: 0.5.1
-        DEFAULT_IMAGE_NAME: cirros-0.5.1-x86_64-uec
-        DEFAULT_IMAGE_FILE_NAME: cirros-0.5.1-x86_64-uec.tar.gz
+        MYSQL_REDUCE_MEMORY: true
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
+        NEUTRON_DEPLOY_MOD_WSGI: true
+        Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn
+      devstack_plugins:
+        neutron: https://opendev.org/openstack/neutron.git
+      devstack_services:
+        br-ex-tcpdump: true
+        br-int-flows: true
+        # Cinder services
+        c-api: false
+        c-bak: false
+        c-sch: false
+        c-vol: false
+        cinder: false
+        # Swift services
+        s-account: false
+        s-container: false
+        s-object: false
+        s-proxy: false
+      devstack_local_conf:
+        post-config:
+          $NEUTRON_CONF:
+            DEFAULT:
+              rpc_workers: 0
+      zuul_copy_output:
+        '/var/log/ovn': 'logs'
+        '/var/log/openvswitch': 'logs'
+        '/var/lib/ovn': 'logs'
+    irrelevant-files: *ovn-irrelevant-files
+
+- job:
+    name: neutron-ovn-tempest-ipv6-only-ovs-release
+    parent: neutron-ovn-tempest-ipv6-only-base
+    vars:
+      # TODO(ykarel) remove once ubuntu jammy contains fixed version
+      # of ovn https://bugs.launchpad.net/neutron/+bug/2007166
+      tempest_exclude_regex: "\
+          (test_update_delete_extra_route)|\
+          (test_update_router_admin_state)|\
+          (test_dhcp_stateful_router)|\
+          (TestSecurityGroupsBasicOps)"
+
+- job:
+    name: neutron-ovn-tempest-ipv6-only-ovs-master
+    branches: ^master$
+    parent: neutron-ovn-tempest-ipv6-only-base
+    vars:
+      devstack_localrc:
+        OVN_BUILD_FROM_SOURCE: True
+        OVN_BRANCH: "main"
+        OVS_BRANCH: main
+
+- job:
+    name: neutron-ovn-tempest-with-sqlalchemy-master
+    branches: ^master$
+    parent: tempest-integrated-networking
+    timeout: 10800
+    required-projects:
+      - openstack/neutron
+      - openstack/tempest
+      - openstack/oslo.db
+      - openstack/neutron-lib
+      - name: github.com/sqlalchemy/sqlalchemy
+        override-checkout: main
+      - name: github.com/sqlalchemy/alembic
+        override-checkout: main
+    vars:
+      devstack_localrc:
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
+        NEUTRON_DEPLOY_MOD_WSGI: true
+        Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
       devstack_services:
@@ -724,17 +856,15 @@
         '/var/log/ovn': 'logs'
         '/var/log/openvswitch': 'logs'
         '/var/lib/ovn': 'logs'
-    irrelevant-files: *ovn-irrelevant-files
 
 - job:
-    name: neutron-ovn-tempest-ipv6-only-ovs-release
-    parent: neutron-ovn-tempest-ipv6-only-base
-
-- job:
-    name: neutron-ovn-tempest-ipv6-only-ovs-master
-    parent: neutron-ovn-tempest-ipv6-only-base
-    vars:
-      devstack_localrc:
-        OVN_BUILD_FROM_SOURCE: True
-        OVN_BRANCH: "main"
-        OVS_BRANCH: "master"
+    name: neutron-ovs-tempest-with-sqlalchemy-master
+    branches: ^master$
+    parent: neutron-ovs-tempest-base
+    required-projects:
+      - name: github.com/sqlalchemy/sqlalchemy
+        override-checkout: main
+      - openstack/oslo.db
+      - openstack/neutron-lib
+      - name: github.com/sqlalchemy/alembic
+        override-checkout: main

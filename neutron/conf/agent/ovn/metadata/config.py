@@ -24,9 +24,10 @@ from neutron._i18n import _
 OVS_OPTS = [
     cfg.StrOpt('ovsdb_connection',
                default='unix:/usr/local/var/run/openvswitch/db.sock',
-               help=_('The connection string for the native OVSDB backend.\n'
-                      'Use tcp:IP:PORT for TCP connection.\n'
-                      'Use unix:FILE for unix domain socket connection.')),
+               regex=r'^(tcp|ssl|unix):.+',
+               help=_('The connection string for the native OVSDB backend. '
+                      'Use tcp:IP:PORT for TCP connections. '
+                      'Use unix:FILE for unix domain socket connections.')),
     cfg.IntOpt('ovsdb_connection_timeout',
                default=180,
                help=_('Timeout in seconds for the OVSDB '
@@ -46,7 +47,9 @@ def list_metadata_agent_opts():
              meta_conf.METADATA_PROXY_HANDLER_OPTS,
              meta_conf.UNIX_DOMAIN_METADATA_PROXY_OPTS)
          ),
-        ('ovs', OVS_OPTS)
+        ('ovs', OVS_OPTS),
+        (meta_conf.RATE_LIMITING_GROUP,
+         meta_conf.METADATA_RATE_LIMITING_OPTS)
     ]
 
 

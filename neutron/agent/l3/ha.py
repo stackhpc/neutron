@@ -13,15 +13,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import io
 import os
+import socketserver
 import threading
+import time
 
-import eventlet
-from neutron_lib.callbacks import events
-from neutron_lib.callbacks import registry
-from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from oslo_log import log as logging
+from oslo_utils import encodeutils
 from oslo_utils import fileutils
 from oslo_utils import netutils
 import webob
@@ -38,29 +38,41 @@ TRANSLATION_MAP = {'primary': constants.HA_ROUTER_STATE_ACTIVE,
                    'fault': constants.HA_ROUTER_STATE_STANDBY,
                    'unknown': constants.HA_ROUTER_STATE_UNKNOWN}
 
+REPLY = """HTTP/1.1 200 OK
+Content-Type: text/plain; charset=UTF-8
+Connection: close
+Content-Location': http://127.0.0.1/"""
 
-class KeepalivedStateChangeHandler(object):
-    def __init__(self, agent):
-        self.agent = agent
 
-    @webob.dec.wsgify(RequestClass=webob.Request)
-    def __call__(self, req):
-        router_id = req.headers['X-Neutron-Router-Id']
-        state = req.headers['X-Neutron-State']
-        self.enqueue(router_id, state)
+class KeepalivedStateChangeHandler(socketserver.StreamRequestHandler):
+    _agent = None
+
+    def handle(self):
+        try:
+            request = self.request.recv(4096)
+            f_request = io.BytesIO(request)
+            req = webob.Request.from_file(f_request)
+            router_id = req.headers.get('X-Neutron-Router-Id')
+            state = req.headers.get('X-Neutron-State')
+            self.enqueue(router_id, state)
+            reply = encodeutils.to_utf8(REPLY)
+            self.wfile.write(reply)
+        except Exception as exc:
+            LOG.exception('Error while receiving data.')
+            raise exc
 
     def enqueue(self, router_id, state):
         LOG.debug('Handling notification for router '
                   '%(router_id)s, state %(state)s', {'router_id': router_id,
                                                      'state': state})
-        self.agent.enqueue_state_change(router_id, state)
+        self._agent.enqueue_state_change(router_id, state)
 
 
-class L3AgentKeepalivedStateChangeServer(object):
+class L3AgentKeepalivedStateChangeServer:
     def __init__(self, agent, conf):
         self.agent = agent
         self.conf = conf
-
+        self._server = None
         agent_utils.ensure_directory_exists_without_file(
             self.get_keepalived_state_change_socket_path(self.conf))
 
@@ -69,35 +81,34 @@ class L3AgentKeepalivedStateChangeServer(object):
         return os.path.join(conf.state_path, 'keepalived-state-change')
 
     def run(self):
-        server = agent_utils.UnixDomainWSGIServer(
+        KeepalivedStateChangeHandler._agent = self.agent
+        self._server = agent_utils.UnixDomainWSGIThreadServer(
             'neutron-keepalived-state-change',
-            num_threads=self.conf.ha_keepalived_state_change_server_threads)
-        server.start(KeepalivedStateChangeHandler(self.agent),
-                     self.get_keepalived_state_change_socket_path(self.conf),
-                     workers=0,
-                     backlog=KEEPALIVED_STATE_CHANGE_SERVER_BACKLOG)
-        server.wait()
+            KeepalivedStateChangeHandler,
+            self.get_keepalived_state_change_socket_path(self.conf),
+        )
+        self._server.run()
+
+    def wait(self):
+        self._server.wait()
 
 
-@registry.has_registry_receivers
-class AgentMixin(object):
+class AgentMixin:
     def __init__(self, host):
         self._init_ha_conf_path()
-        super(AgentMixin, self).__init__(host)
+        super().__init__(host)
+
+    def init_host(self):
+        super().init_host()
         # BatchNotifier queue is needed to ensure that the HA router
         # state change sequence is under the proper order.
         self.state_change_notifier = batch_notifier.BatchNotifier(
             self._calculate_batch_duration(), self.notify_server)
-        eventlet.spawn(self._start_keepalived_notifications_server)
+        notifications_server = threading.Thread(
+            target=self._start_keepalived_notifications_server)
+        notifications_server.start()
         self._transition_states = {}
         self._transition_state_mutex = threading.Lock()
-        self._initial_state_change_per_router = set()
-
-    def initial_state_change(self, router_id):
-        initial_state = router_id not in self._initial_state_change_per_router
-        if initial_state:
-            self._initial_state_change_per_router.add(router_id)
-        return initial_state
 
     def _get_router_info(self, router_id):
         try:
@@ -105,13 +116,6 @@ class AgentMixin(object):
         except KeyError:
             LOG.info('Router %s is not managed by this agent. It was '
                      'possibly deleted concurrently.', router_id)
-
-    @registry.receives(resources.ROUTER, [events.AFTER_DELETE])
-    def _delete_router(self, resource, event, trigger, payload):
-        try:
-            self._initial_state_change_per_router.remove(payload.resource_id)
-        except KeyError:
-            pass
 
     def check_ha_state_for_router(self, router_id, current_state):
         ri = self._get_router_info(router_id)
@@ -128,6 +132,7 @@ class AgentMixin(object):
         state_change_server = (
             L3AgentKeepalivedStateChangeServer(self, self.conf))
         state_change_server.run()
+        state_change_server.wait()
 
     def _calculate_batch_duration(self):
         # Set the BatchNotifier interval to ha_vrrp_advert_int,
@@ -146,14 +151,14 @@ class AgentMixin(object):
     def enqueue_state_change(self, router_id, state):
         """Inform the server about the new router state
 
-        This function will also update the metadata proxy, the radvd daemon,
-        process the prefix delegation and inform to the L3 extensions. If the
-        HA router changes to "primary", this transition will be delayed for at
-        least "ha_vrrp_advert_int" seconds. When the "primary" router
-        transitions to "backup", "keepalived" will set the rest of HA routers
-        to "primary" until it decides which one should be the only "primary".
-        The transition from "backup" to "primary" and then to "backup" again,
-        should not be registered in the Neutron server.
+        This function will also update the metadata proxy, the radvd daemon and
+        inform to the L3 extensions. If the HA router changes to "primary",
+        this transition will be delayed for at least "ha_vrrp_advert_int"
+        seconds. When the "primary" router transitions to "backup",
+        "keepalived" will set the rest of HA routers to "primary" until it
+        decides which one should be the only "primary". The transition from
+        "backup" to "primary" and then to "backup" again, should not be
+        registered in the Neutron server.
 
         :param router_id: router ID
         :param state: ['primary', 'backup']
@@ -161,13 +166,16 @@ class AgentMixin(object):
         if not self._update_transition_state(router_id, state):
             LOG.debug("Enqueueing router's %s state change to %s",
                       router_id, state)
-            eventlet.spawn_n(self._enqueue_state_change, router_id, state)
-            eventlet.sleep(0)
+            state_change = threading.Thread(target=self._enqueue_state_change,
+                                            args=(router_id, state))
+            state_change.start()
+            # TODO(ralonsoh): remove once the eventlet deprecation is finished.
+            time.sleep(0)
 
     def _enqueue_state_change(self, router_id, state):
         # NOTE(ralonsoh): move 'primary' and 'backup' constants to n-lib
-        if state == 'primary' and not self.initial_state_change(router_id):
-            eventlet.sleep(self.conf.ha_vrrp_advert_int)
+        if state == 'primary':
+            time.sleep(self.conf.ha_vrrp_advert_int)
         transition_state = self._update_transition_state(router_id)
         if transition_state != state:
             # If the current "transition state" is not the initial "state" sent
@@ -198,7 +206,6 @@ class AgentMixin(object):
         if self.conf.enable_metadata_proxy:
             self._update_metadata_proxy(ri, router_id, state)
         self._update_radvd_daemon(ri, state)
-        self.pd.process_ha_state(router_id, state == 'primary')
         self.state_change_notifier.queue_event((router_id, state))
         self.l3_ext_manager.ha_state_change(self.context, state_change_data)
 
@@ -254,8 +261,8 @@ class AgentMixin(object):
             ri.disable_radvd()
 
     def notify_server(self, batched_events):
-        translated_states = dict((router_id, TRANSLATION_MAP[state]) for
-                                 router_id, state in batched_events)
+        translated_states = {router_id: TRANSLATION_MAP[state] for
+                             router_id, state in batched_events}
         LOG.debug('Updating server with HA routers states %s',
                   translated_states)
         self.plugin_rpc.update_ha_routers_states(

@@ -22,14 +22,14 @@ from neutron.tests.unit.conf.policies import test_base as base
 class LoggingAPITestCase(base.PolicyBaseTestCase):
 
     def setUp(self):
-        super(LoggingAPITestCase, self).setUp()
+        super().setUp()
         self.target = {'project_id': self.project_id}
 
 
 class SystemAdminTests(LoggingAPITestCase):
 
     def setUp(self):
-        super(SystemAdminTests, self).setUp()
+        super().setUp()
         self.context = self.system_admin_ctx
 
     def test_get_loggable_resource(self):
@@ -61,21 +61,21 @@ class SystemAdminTests(LoggingAPITestCase):
 class SystemMemberTests(LoggingAPITestCase):
 
     def setUp(self):
-        super(SystemMemberTests, self).setUp()
+        super().setUp()
         self.context = self.system_member_ctx
 
 
 class SystemReaderTests(SystemMemberTests):
 
     def setUp(self):
-        super(SystemReaderTests, self).setUp()
+        super().setUp()
         self.context = self.system_reader_ctx
 
 
 class AdminTests(LoggingAPITestCase):
 
     def setUp(self):
-        super(AdminTests, self).setUp()
+        super().setUp()
         self.context = self.project_admin_ctx
 
     def test_get_loggable_resource(self):
@@ -99,10 +99,37 @@ class AdminTests(LoggingAPITestCase):
             policy.enforce(self.context, 'delete_log', self.target))
 
 
-class ProjectMemberTests(AdminTests):
+class ProjectManagerTests(AdminTests):
 
     def setUp(self):
-        super(ProjectMemberTests, self).setUp()
+        super().setUp()
+        self.context = self.project_manager_ctx
+
+    def test_get_loggable_resource(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_loggable_resource', self.target))
+
+    def test_create_log(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_log', self.target))
+
+    def test_get_log(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_log', self.target))
+
+    def test_update_log(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_log', self.target))
+
+    def test_delete_log(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_log', self.target))
+
+
+class ProjectMemberTests(ProjectManagerTests):
+
+    def setUp(self):
+        super().setUp()
         self.context = self.project_member_ctx
 
     def test_get_loggable_resource(self):
@@ -134,5 +161,37 @@ class ProjectMemberTests(AdminTests):
 class ProjectReaderTests(ProjectMemberTests):
 
     def setUp(self):
-        super(ProjectReaderTests, self).setUp()
+        super().setUp()
         self.context = self.project_reader_ctx
+
+
+class ServiceRoleTests(LoggingAPITestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.service_ctx
+
+    def test_get_loggable_resource(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'get_loggable_resource', self.target)
+
+    def test_create_log(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_log', self.target)
+
+    def test_get_log(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'get_log', self.target)
+
+    def test_update_log(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_log', self.target)
+
+    def test_delete_log(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'delete_log', self.target)

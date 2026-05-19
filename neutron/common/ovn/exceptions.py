@@ -20,7 +20,7 @@ from neutron._i18n import _
 
 class RevisionConflict(n_exc.NeutronException):
     message = _('OVN revision number for %(resource_id)s (type: '
-                '%(resource_type)s) is equal or higher than the given '
+                '%(resource_type)s) is higher than the given '
                 'resource. Skipping update')
 
 
@@ -33,6 +33,20 @@ class StandardAttributeIDNotFound(n_exc.NeutronException):
 
 
 class HashRingIsEmpty(n_exc.NeutronException):
-    message = _('Hash Ring returned empty when hashing "%(key)s". '
-                'This should never happen in a normal situation, please '
-                'check the status of your cluster')
+    message = _('Hash Ring returned empty when hashing "%(key)s". All '
+                '%(node_count)d nodes were found offline. This should never '
+                'happen in a normal situation, please check the status '
+                'of your cluster')
+
+
+class InvalidPortForwardingConfiguration(n_exc.NeutronException):
+    message = _('Neutron configuration is invalid. Port forwardings '
+                'can not be used with ML2/OVN backend, distributed '
+                'floating IPs and provider network type(s) used as '
+                'tenant networks.')
+
+
+class InvalidVirtualMACAddress(n_exc.InvalidInput):
+    message = _('Virtual MAC address %(mac_address)s in allowed address pair '
+                'does not belong to the RFC 5798 VRRP virtual MAC ranges '
+                '(00:00:5e:00:01:XX for IPv4 or 00:00:5e:00:02:XX for IPv6).')

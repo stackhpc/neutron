@@ -13,23 +13,127 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import threading
+import time
 from unittest import mock
 
 from futurist import periodics
+from neutron_lib.api.definitions import external_net
+from neutron_lib import constants as n_const
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from oslo_config import cfg
-from oslo_utils import uuidutils
 
 from neutron.common.ovn import constants
 from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
+from neutron.db.models import ovn as ovn_models
 from neutron.db import ovn_revision_numbers_db
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import maintenance
-from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
+from neutron.tests import base
+from neutron.tests.unit.extensions import test_address_group as test_ag
 from neutron.tests.unit import fake_resources as fakes
 from neutron.tests.unit.plugins.ml2 import test_security_group as test_sg
 from neutron.tests.unit import testlib_api
+
+
+class TestMaintenanceThread(base.BaseTestCase):
+
+    def test_start_bounds_thread_pool_executor(self):
+        """Verify MaintenanceThread runs periodic tasks with one worker."""
+        num_tasks = 5
+        run_counter = [0] * num_tasks
+        active_threads = []
+        target_runs = 5
+
+        class _PeriodicTask:
+            def __init__(self, idx):
+                self.idx = idx
+
+            @periodics.periodic(spacing=0.05)
+            def trivial_task(self):
+                run_counter[self.idx] += 1
+                active_threads.append(threading.active_count())
+                time.sleep(0)
+                if run_counter[self.idx] >= target_runs:
+                    raise periodics.NeverAgain
+
+        mt = maintenance.MaintenanceThread()
+        for idx in range(num_tasks):
+            mt.add_periodics(_PeriodicTask(idx))
+
+        threads_before = threading.active_count()
+        mt.start()
+        threads_after_start = threading.active_count()
+        self.assertGreater(threads_after_start, threads_before)
+
+        executor = mt._worker._executor_factory()
+        # Let some tasks be executed.
+        time.sleep(2)
+        threads_after_wait = threading.active_count()
+        self.assertEqual(threads_after_wait, threads_after_start + 1)
+
+        executor.shutdown(wait=False)
+        mt._thread.join(timeout=3)
+        threads_end = threading.active_count()
+        self.assertEqual(threads_end, threads_after_wait)
+        self.assertTrue(all(target_runs == _c for _c in run_counter))
+
+
+class TestHasLockPeriodicDecorator(base.BaseTestCase):
+
+    def test_decorator_no_limit_have_lock(self):
+        run_counter = 0
+
+        @maintenance.has_lock_periodic(
+            periodic_run_limit=0, spacing=30)
+        def test_maintenance_task(worker):
+            nonlocal run_counter
+            run_counter += 1
+
+        worker_mock = mock.MagicMock()
+        worker_mock.has_lock = True
+
+        for _ in range(3):
+            test_maintenance_task(worker_mock)
+        self.assertEqual(3, run_counter)
+
+    def test_decorator_no_lock_no_limit(self):
+        run_counter = 0
+
+        @maintenance.has_lock_periodic(
+            periodic_run_limit=0, spacing=30)
+        def test_maintenance_task(worker):
+            nonlocal run_counter
+            run_counter += 1
+
+        worker_mock = mock.MagicMock()
+        has_lock_values = [False, False, True]
+
+        for has_lock in has_lock_values:
+            worker_mock.has_lock = has_lock
+            test_maintenance_task(worker_mock)
+        self.assertEqual(1, run_counter)
+
+    def test_decorator_no_lock_with_limit(self):
+        run_counter = 0
+
+        @maintenance.has_lock_periodic(
+            periodic_run_limit=1, spacing=30)
+        def test_maintenance_task(worker):
+            nonlocal run_counter
+            run_counter += 1
+
+        worker_mock = mock.MagicMock()
+
+        worker_mock.has_lock = False
+        test_maintenance_task(worker_mock)
+        self.assertEqual(0, run_counter)
+
+        worker_mock.has_lock = False
+        self.assertRaises(periodics.NeverAgain,
+                          test_maintenance_task, worker_mock)
+        self.assertEqual(0, run_counter)
 
 
 class TestSchemaAwarePeriodicsBase(testlib_api.SqlTestCaseLight):
@@ -80,15 +184,19 @@ class TestSchemaAwarePeriodicsBase(testlib_api.SqlTestCaseLight):
 @mock.patch.object(maintenance.DBInconsistenciesPeriodics,
                    'has_lock', mock.PropertyMock(return_value=True))
 class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
-                                     test_sg.Ml2SecurityGroupsTestCase):
+                                     test_sg.Ml2SecurityGroupsTestCase,
+                                     test_ag.AddressGroupTestCase):
 
     def setUp(self):
         ovn_conf.register_opts()
-        super(TestDBInconsistenciesPeriodics, self).setUp()
+        super().setUp()
         self.net = self._make_network(
             self.fmt, name='net1', admin_state_up=True)['network']
         self.port = self._make_port(
             self.fmt, self.net['id'], name='port1')['port']
+        self.ag = self.deserialize(
+            self.fmt, self._create_address_group(
+                **{'name': 'ag1'}))['address_group']
         self.fake_ovn_client = mock.MagicMock()
         self.periodic = maintenance.DBInconsistenciesPeriodics(
             self.fake_ovn_client)
@@ -102,74 +210,6 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         mock_get_incon_res.return_value = [fake_row, ]
         self.periodic.check_for_inconsistencies()
         mock_fix_net.assert_called_once_with(mock.ANY, fake_row)
-
-    def _test_migrate_to_port_groups_helper(self, a_sets, migration_expected,
-                                            never_again):
-        self.fake_ovn_client._nb_idl.get_address_sets.return_value = a_sets
-        with mock.patch.object(ovn_db_sync.OvnNbSynchronizer,
-                               'migrate_to_port_groups') as mtpg:
-            if never_again:
-                self.assertRaises(periodics.NeverAgain,
-                                  self.periodic.migrate_to_port_groups)
-            else:
-                self.periodic.migrate_to_port_groups()
-
-            if migration_expected:
-                mtpg.assert_called_once_with(mock.ANY)
-            else:
-                mtpg.assert_not_called()
-
-    def test_migrate_to_port_groups_not_needed(self):
-        self._test_migrate_to_port_groups_helper(a_sets=None,
-                                                 migration_expected=False,
-                                                 never_again=True)
-
-    def test_migrate_to_port_groups(self):
-        # Check normal migration path: if the migration has to be done, it will
-        # take place and won't be attempted in the future.
-        self._test_migrate_to_port_groups_helper(a_sets=['as1', 'as2'],
-                                                 migration_expected=True,
-                                                 never_again=True)
-
-    def test_migrate_to_port_groups_no_lock(self):
-        with mock.patch.object(maintenance.DBInconsistenciesPeriodics,
-                               'has_lock', mock.PropertyMock(
-                                   return_value=False)):
-            # Check that if this worker doesn't have the lock, it won't
-            # perform the migration and it will try again later.
-            self._test_migrate_to_port_groups_helper(a_sets=['as1', 'as2'],
-                                                     migration_expected=False,
-                                                     never_again=False)
-
-    def _test_migrate_to_stateful_fips_helper(
-            self, migration_expected, never_again):
-        with mock.patch.object(ovn_db_sync.OvnNbSynchronizer,
-                               'migrate_to_stateful_fips') as mtsf:
-            if never_again:
-                self.assertRaises(periodics.NeverAgain,
-                                  self.periodic.migrate_to_stateful_fips)
-            else:
-                self.periodic.migrate_to_stateful_fips()
-
-            if migration_expected:
-                mtsf.assert_called_once_with(mock.ANY)
-            else:
-                mtsf.assert_not_called()
-
-    def test_migrate_to_stateful_fips(self):
-        # Check normal migration path: if the migration has to be done, it will
-        # take place and won't be attempted in the future.
-        self._test_migrate_to_stateful_fips_helper(migration_expected=True,
-                                                   never_again=True)
-
-    def test_migrate_to_stateful_fips_no_lock(self):
-        with mock.patch.object(maintenance.DBInconsistenciesPeriodics,
-                               'has_lock', mock.PropertyMock(
-                                   return_value=False)):
-            # Check that if this worker doesn't have the lock, it won't
-            # perform the migration and it will try again later.
-            self._test_migrate_to_stateful_fips_helper(
-                migration_expected=False, never_again=False)
 
     def _test_fix_create_update_network(self, ovn_rev, neutron_rev):
         with db_api.CONTEXT_WRITER.using(self.ctx):
@@ -295,6 +335,63 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
     def test_fix_security_group_create_version_mismatch(self):
         self._test_fix_security_group_create(revision_number=2)
 
+    def _test_fix_create_update_address_group(self, ovn_rev, neutron_rev):
+        _nb_idl = self.fake_ovn_client._nb_idl
+        with db_api.CONTEXT_WRITER.using(self.ctx):
+            self.ag['revision_number'] = neutron_rev
+
+            # Create an entry to the revision_numbers table and assert the
+            # initial revision_number for our test object is the expected
+            ovn_revision_numbers_db.create_initial_revision(
+                self.ctx, self.ag['id'], constants.TYPE_ADDRESS_GROUPS,
+                revision_number=ovn_rev)
+            row = ovn_revision_numbers_db.get_revision_row(self.ctx,
+                                                           self.ag['id'])
+            self.assertEqual(ovn_rev, row.revision_number)
+
+            if ovn_rev < 0:
+                _nb_idl.get_address_set.return_value = None, None
+            else:
+                fake_as_v4 = mock.Mock(external_ids={
+                    constants.OVN_REV_NUM_EXT_ID_KEY: ovn_rev})
+                fake_as_v6 = mock.Mock(external_ids={
+                    constants.OVN_REV_NUM_EXT_ID_KEY: ovn_rev})
+                _nb_idl.get_address_set.return_value = fake_as_v4, fake_as_v6
+
+            self.fake_ovn_client._plugin.get_address_group.return_value = \
+                self.ag
+            self.periodic._fix_create_update(self.ctx, row)
+
+            # Since the revision number was < 0, make sure
+            # create_address_group() is invoked with the latest
+            # version of the object in the neutron database
+            if ovn_rev < 0:
+                self.fake_ovn_client.create_address_group.\
+                    assert_called_once_with(self.ctx, self.ag)
+            # If the revision number is > 0 it means that the object already
+            # exist and we just need to update to match the latest in the
+            # neutron database so, update_address_group() should be called.
+            else:
+                self.fake_ovn_client.update_address_group.\
+                    assert_called_once_with(self.ctx, self.ag)
+
+    def test_fix_address_group_create(self):
+        self._test_fix_create_update_address_group(ovn_rev=-1, neutron_rev=2)
+
+    def test_fix_address_group_update(self):
+        self._test_fix_create_update_address_group(ovn_rev=5, neutron_rev=7)
+
+    @mock.patch.object(maintenance, 'LOG')
+    def test__fix_create_update_no_sttd_attr(self, mock_log):
+        row_net = ovn_models.OVNRevisionNumbers(
+            standard_attr_id=1, resource_uuid=2,
+            resource_type=constants.TYPE_NETWORKS)
+        self.fake_ovn_client._plugin.get_network.return_value = {
+            'id': 'net_id', 'revision_number': 1}
+        self.periodic._fix_create_update(self.ctx, row_net)
+        mock_log.error.assert_called_once_with(
+            'Standard attribute ID not found for object ID %s', 'net_id')
+
     def test__create_lrouter_port(self):
         port = {'id': 'port-id',
                 'device_id': 'router-id'}
@@ -348,30 +445,44 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
             attrs={'name': 'ls0',
                    'other_config': {
                        constants.MCAST_SNOOP: 'false',
-                       constants.MCAST_FLOOD_UNREGISTERED: 'false'}})
+                       constants.MCAST_FLOOD_UNREGISTERED: 'false'},
+                   'external_ids': {
+                       constants.OVN_NETWORK_NAME_EXT_ID_KEY: 'port0'}})
         ls1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': 'ls1',
-                   'other_config': {}})
+                   'other_config': {},
+                   'external_ids': {
+                       constants.OVN_NETWORK_NAME_EXT_ID_KEY: 'port1'}})
         ls2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': 'ls2',
                    'other_config': {
-                        constants.MCAST_SNOOP: 'true',
-                        constants.MCAST_FLOOD_UNREGISTERED: 'false'}})
+                       constants.MCAST_SNOOP: 'true',
+                       constants.MCAST_FLOOD_UNREGISTERED: 'false'},
+                   'external_ids': {
+                       constants.OVN_NETWORK_NAME_EXT_ID_KEY: 'port2'}})
         ls3 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': '',
-                   'other_config': {}})
+                   'other_config': {},
+                   'external_ids': {
+                       constants.OVN_NETWORK_NAME_EXT_ID_KEY: 'port3'}})
         ls4 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
             attrs={'name': '',
-                   'other_config': {constants.MCAST_SNOOP: 'false'}})
-
+                   'other_config': {constants.MCAST_SNOOP: 'false'},
+                   'external_ids': {
+                       constants.OVN_NETWORK_NAME_EXT_ID_KEY: 'port4'}})
+        ls5 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'ls5',
+                   'other_config': {},
+                   'external_ids': {}})
         nb_idl.ls_list.return_value.execute.return_value = [ls0, ls1, ls2, ls3,
-                                                            ls4]
+                                                            ls4, ls5]
 
         self.assertRaises(periodics.NeverAgain,
                           self.periodic.check_for_igmp_snoop_support)
 
         # "ls2" is not part of the transaction because it already
-        # have the right value set; "ls3" and "ls4" do not have a name set.
+        # have the right value set; "ls3" and "ls4" do not have a name set;
+        # "ls5" is not managed by neutron.
         expected_calls = [
             mock.call('Logical_Switch', 'ls0',
                       ('other_config', {
@@ -384,203 +495,223 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         ]
         nb_idl.db_set.assert_has_calls(expected_calls)
 
-    def test_check_for_ha_chassis_group_not_supported(self):
-        self.fake_ovn_client.is_external_ports_supported.return_value = False
-        self.assertRaises(periodics.NeverAgain,
-                          self.periodic.check_for_ha_chassis_group)
-        self.assertFalse(
-            self.fake_ovn_client._nb_idl.ha_chassis_group_add.called)
-
-    def test_check_for_ha_chassis_group_no_external_ports(self):
-        self.fake_ovn_client.is_external_ports_supported.return_value = True
-        nb_idl = self.fake_ovn_client._nb_idl
-        nb_idl.db_find_rows.return_value.execute.return_value = []
-        self.assertRaises(periodics.NeverAgain,
-                          self.periodic.check_for_ha_chassis_group)
-        self.assertFalse(
-            self.fake_ovn_client.sync_ha_chassis_group.called)
-
-    def test_check_for_ha_chassis_group(self):
-        self.fake_ovn_client.is_external_ports_supported.return_value = True
+    def test_check_localnet_port_has_learn_fdb(self):
+        cfg.CONF.set_override('localnet_learn_fdb', 'True',
+                              group='ovn')
         nb_idl = self.fake_ovn_client._nb_idl
 
-        hcg0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'uuid': '1f4323db-fb58-48e9-adae-6c6e833c581d',
-                   'name': 'test-ha-grp'})
-        hcg1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'uuid': 'e95ff98f-7f03-484b-a156-d8c7e366dd3d',
-                   'name': 'another-test-ha-grp'})
-        p0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'type': constants.LSP_TYPE_EXTERNAL,
-                   'name': 'p0',
-                   'ha_chassis_group': [hcg0],
-                   'external_ids': {
-                       constants.OVN_NETWORK_NAME_EXT_ID_KEY: 'neutron-net0'}})
-        p1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'type': constants.LSP_TYPE_EXTERNAL,
-                   'name': 'p1',
-                   'ha_chassis_group': [hcg1],
-                   'external_ids': {
-                       constants.OVN_NETWORK_NAME_EXT_ID_KEY: 'neutron-net1'}})
-
-        nb_idl.db_find_rows.return_value.execute.return_value = [p0, p1]
-        self.fake_ovn_client.sync_ha_chassis_group.return_value = hcg0.uuid
-
-        # Invoke the periodic method, it meant to run only once at startup
-        # so NeverAgain will be raised at the end
-        self.assertRaises(periodics.NeverAgain,
-                          self.periodic.check_for_ha_chassis_group)
-
-        # Assert sync_ha_chassis_group() is called for both networks
-        expected_calls = [
-            mock.call(mock.ANY, 'net0', mock.ANY),
-            mock.call(mock.ANY, 'net1', mock.ANY)]
-        self.fake_ovn_client.sync_ha_chassis_group.assert_has_calls(
-            expected_calls)
-
-        # Assert set_lswitch_port() is only called for p1 because
-        # the ha_chassis_group is different than what was returned
-        # by sync_ha_chassis_group()
-        nb_idl.set_lswitch_port.assert_called_once_with(
-            'p1', ha_chassis_group=hcg0.uuid)
-
-    def test_check_for_mcast_flood_reports(self):
-        nb_idl = self.fake_ovn_client._nb_idl
+        # Already has the learn fdb option enabled
         lsp0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp0',
-                   'options': {
-                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true'},
-                   'type': ""})
+            attrs={
+                "name": "lsp0",
+                "options": {
+                    constants.LSP_OPTIONS_LOCALNET_LEARN_FDB: "true",
+                },
+            }
+        )
+
+        # learn fdb option missing, needs update
         lsp1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp1', 'options': {}, 'type': ""})
+            attrs={
+                "name": "lsp1",
+                "options": {},
+            }
+        )
+
+        # learn fdb option set to false, needs update
         lsp2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp2', 'options': {},
-                   'type': "vtep"})
-        lsp3 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp3', 'options': {},
-                   'type': constants.LSP_TYPE_LOCALPORT})
-        lsp4 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp4', 'options': {},
-                   'type': "router"})
-        lsp5 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp5', 'options': {}, 'type': 'localnet'})
-        lsp6 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp6',
-                   'options': {
-                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true',
-                       constants.LSP_OPTIONS_MCAST_FLOOD: 'true'},
-                   'type': 'localnet'})
-        lsp7 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp7',
-                   'options': {
-                       constants.LSP_OPTIONS_MCAST_FLOOD_REPORTS: 'true',
-                       constants.LSP_OPTIONS_MCAST_FLOOD: 'false'},
-                   'type': 'localnet'})
+            attrs={
+                "name": "lsp2",
+                "options": {
+                    constants.LSP_OPTIONS_LOCALNET_LEARN_FDB: "false",
+                },
+            }
+        )
 
-        nb_idl.lsp_list.return_value.execute.return_value = [
-            lsp0, lsp1, lsp2, lsp3, lsp4, lsp5, lsp6, lsp7]
+        nb_idl.db_find_rows.return_value.execute.return_value = [
+            lsp0,
+            lsp1,
+            lsp2,
+        ]
 
-        # Invoke the periodic method, it meant to run only once at startup
-        # so NeverAgain will be raised at the end
-        self.assertRaises(periodics.NeverAgain,
-                          self.periodic.check_for_mcast_flood_reports)
-
-        # Assert only lsp1, lsp5 and lsp6 were called because they are the
-        # only ones meeting the criteria
-        expected_calls = [
-            mock.call('lsp1', mcast_flood_reports='true'),
-            mock.call('lsp5', mcast_flood_reports='true', mcast_flood='false'),
-            mock.call('lsp6', mcast_flood_reports='true', mcast_flood='false')]
-
-        nb_idl.lsp_set_options.assert_has_calls(expected_calls)
-
-    def test_check_router_mac_binding_options(self):
-        nb_idl = self.fake_ovn_client._nb_idl
-        lr0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lr0',
-                   'options': {'always_learn_from_arp_request': 'false',
-                               'dynamic_neigh_routers': 'true'}})
-        lr1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lr1', 'options': {}})
-        lr2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lr2', 'options': {}})
-        nb_idl.lr_list.return_value.execute.return_value = [lr0, lr1, lr2]
-
-        # Invoke the periodic method, it meant to run only once at startup
-        # so NeverAgain will be raised at the end
-        self.assertRaises(periodics.NeverAgain,
-                          self.periodic.check_router_mac_binding_options)
-
-        # Assert lr1 and lr2 had their options updated since the values
-        # were not set
-        expected_calls = [
-            mock.call('lr1',
-                      options={'always_learn_from_arp_request': 'false',
-                               'dynamic_neigh_routers': 'true'}),
-            mock.call('lr2',
-                      options={'always_learn_from_arp_request': 'false',
-                               'dynamic_neigh_routers': 'true'})]
-        nb_idl.update_lrouter.assert_has_calls(expected_calls)
-
-    def test_update_port_qos_with_external_ids_reference(self):
-        nb_idl = self.fake_ovn_client._nb_idl
-        lrs = [fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lr%s' % idx}) for idx in range(3)]
-        uuid1 = uuidutils.generate_uuid()
-        qoses1 = [fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'external_ids': {}, 'match': 'inport == "%s"' % uuid1})]
-        qoses2 = [fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'external_ids': {constants.OVN_PORT_EXT_ID_KEY: uuid1},
-                   'match': 'inport == "%s"' % uuid1})]
-        qoses3 = []
-        nb_idl.ls_list.return_value.execute.return_value = lrs
-        nb_idl.qos_list.return_value.execute.side_effect = [qoses1, qoses2,
-                                                            qoses3]
         self.assertRaises(
             periodics.NeverAgain,
-            self.periodic.update_port_qos_with_external_ids_reference)
+            self.periodic.check_localnet_port_has_learn_fdb)
 
-        external_ids = {constants.OVN_PORT_EXT_ID_KEY: uuid1}
-        expected_calls = [mock.call('QoS', qoses1[0].uuid,
-                                    ('external_ids', external_ids))]
+        options = {constants.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'true'}
+        expected_calls = [mock.call('Logical_Switch_Port', 'lsp1',
+                                    ('options', options)),
+                          mock.call('Logical_Switch_Port', 'lsp2',
+                                    ('options', options))]
         nb_idl.db_set.assert_has_calls(expected_calls)
 
-    def _test_check_vlan_distributed_ports(self, opt_value=None):
+    def test_check_localnet_port_has_learn_fdb_disabled(self):
+        nb_idl = self.fake_ovn_client._nb_idl
+
+        # learn fdb option enabled, needs update
+        lsp0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                "name": "lsp0",
+                "options": {
+                    constants.LSP_OPTIONS_LOCALNET_LEARN_FDB: "true",
+                },
+            }
+        )
+
+        # learn fdb option missing, no update needed
+        lsp1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                "name": "lsp1",
+                "options": {},
+            }
+        )
+
+        # learn fdb option set to false, no update needed
+        lsp2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                "name": "lsp2",
+                "options": {
+                    constants.LSP_OPTIONS_LOCALNET_LEARN_FDB: "false",
+                },
+            }
+        )
+
+        nb_idl.db_find_rows.return_value.execute.return_value = [
+            lsp0,
+            lsp1,
+            lsp2,
+        ]
+
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.periodic.check_localnet_port_has_learn_fdb)
+
+        options = {constants.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'false'}
+        expected_calls = [mock.call('Logical_Switch_Port', 'lsp0',
+                                    ('options', options))]
+        nb_idl.db_set.assert_has_calls(expected_calls)
+
+    def _test_check_redirect_type_router_gateway_ports(self, networks,
+                                                       redirect_value,
+                                                       flavored_router=False):
+        self.fake_ovn_client._plugin.get_ports.return_value = [{
+            'device_owner': n_const.DEVICE_OWNER_ROUTER_GW,
+            'id': 'fake-id',
+            'device_id': 'fake-device-id'}]
+        self.fake_ovn_client._get_router_ports.return_value = []
+        self.fake_ovn_client._plugin.get_networks.return_value = networks
+        if flavored_router:
+            self.fake_ovn_client._l3_plugin.get_router.return_value = {
+                'id': 'fake-id',
+                'flavor_id': 'fake-flavor-id'}
+        else:
+            self.fake_ovn_client._l3_plugin.get_router.return_value = {
+                'id': 'fake-id',
+                'flavor_id': None}
+
+        lrp_redirect = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                'options': {constants.LRP_OPTIONS_REDIRECT_TYPE: "bridged"}})
+        lrp_no_redirect = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={
+                'options': {}})
+
+        # set the opossite so that the value is changed
+        if redirect_value:
+            self.fake_ovn_client._nb_idl.get_lrouter_port.return_value = (
+                lrp_no_redirect)
+        else:
+            self.fake_ovn_client._nb_idl.get_lrouter_port.return_value = (
+                lrp_redirect)
+
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.periodic.check_redirect_type_router_gateway_ports)
+
+        if flavored_router:
+            self.fake_ovn_client._nb_idl.db_set.assert_not_called()
+            self.fake_ovn_client._nb_idl.db_remove.assert_not_called()
+        else:
+            if redirect_value:
+                expected_calls = [
+                    mock.call.db_set('Logical_Router_Port',
+                                     mock.ANY,
+                                     ('options', {'redirect-type': 'bridged'}))
+                ]
+                self.fake_ovn_client._nb_idl.db_set.assert_has_calls(
+                    expected_calls)
+            else:
+                expected_calls = [
+                    mock.call.db_remove('Logical_Router_Port', mock.ANY,
+                                        'options', 'redirect-type')
+                ]
+                self.fake_ovn_client._nb_idl.db_remove.assert_has_calls(
+                    expected_calls)
+
+    def test_check_redirect_type_router_gateway_ports_enable_redirect(self):
+        cfg.CONF.set_override('enable_distributed_floating_ip', 'True',
+                              group='ovn')
+        networks = [{'network_id': 'foo',
+                     'provider:network_type': n_const.TYPE_VLAN}]
+        self._test_check_redirect_type_router_gateway_ports(networks, True)
+
+    def test_check_redirect_type_router_gateway_ports_disable_redirect(self):
+        cfg.CONF.set_override('enable_distributed_floating_ip', 'True',
+                              group='ovn')
+        networks = [{'network_id': 'foo',
+                     'provider:network_type': n_const.TYPE_GENEVE}]
+        self._test_check_redirect_type_router_gateway_ports(networks, False)
+
+    def test_check_redirect_type_router_gateway_ports_flavored_router(self):
+        cfg.CONF.set_override('enable_distributed_floating_ip', 'True',
+                              group='ovn')
+        networks = [{'network_id': 'foo',
+                     'provider:network_type': n_const.TYPE_VLAN}]
+        self._test_check_redirect_type_router_gateway_ports(
+            networks, True, flavored_router=True)
+        networks = [{'network_id': 'foo',
+                     'provider:network_type': n_const.TYPE_GENEVE}]
+        self._test_check_redirect_type_router_gateway_ports(
+            networks, False, flavored_router=True)
+
+    def _test_check_provider_distributed_ports(self, opt_value=None,
+                                               flavor_router=False):
         fake_net0 = {'id': 'net0'}
         fake_net1 = {'id': 'net1'}
-        fake_port0 = {'id': 'port0'}
-        fake_port1 = {'id': 'port1'}
+        fake_port0 = {'id': 'port0', 'device_id': 'device0'}
+        fake_port1 = {'id': 'port1', 'device_id': 'device1'}
 
         self.fake_ovn_client._plugin.get_networks.return_value = [
             fake_net0, fake_net1]
         self.fake_ovn_client._plugin.get_ports.return_value = [
             fake_port0, fake_port1]
+        (self.fake_ovn_client._get_reside_redir_for_gateway_port
+             .return_value) = 'true'
 
-        fake_lrp = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={
-                'name': 'lrp',
-                'options': {constants.LRP_OPTIONS_RESIDE_REDIR_CH: opt_value}})
+        if flavor_router:
+            fake_lrp = None
+        else:
+            fake_lrp = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+                attrs={'name': 'lrp',
+                       'options': {
+                           constants.LRP_OPTIONS_RESIDE_REDIR_CH: opt_value}})
         self.fake_ovn_client._nb_idl.get_lrouter_port.return_value = fake_lrp
 
         # Invoke the periodic method, it meant to run only once at startup
         # so NeverAgain will be raised at the end
         self.assertRaises(periodics.NeverAgain,
-                          self.periodic.check_vlan_distributed_ports)
+                          self.periodic.check_provider_distributed_ports)
 
-    def test_check_vlan_distributed_ports_expected_value(self):
-        cfg.CONF.set_override('enable_distributed_floating_ip', 'False',
-                              group='ovn')
-        self._test_check_vlan_distributed_ports(opt_value='true')
+    def test_check_provider_distributed_ports_expected_value(self):
+        self._test_check_provider_distributed_ports(opt_value='true')
 
         # If the "reside-on-redirect-chassis" option value do match
         # the expected value, assert we do not update the database
         self.assertFalse(
             self.fake_ovn_client._nb_idl.db_set.called)
 
-    def test_check_vlan_distributed_ports_non_expected_value(self):
-        cfg.CONF.set_override('enable_distributed_floating_ip', 'False',
-                              group='ovn')
-        self._test_check_vlan_distributed_ports(opt_value='false')
+    def test_check_provider_distributed_ports_non_expected_value(self):
+        self._test_check_provider_distributed_ports(opt_value='false')
 
         # If the "reside-on-redirect-chassis" option value does not match
         # the expected value, assert we update the database
@@ -591,36 +722,15 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         self.fake_ovn_client._nb_idl.db_set.assert_has_calls(
             expected_calls)
 
-    def test_update_logical_router_with_gateway_network_id(self):
-        nb_idl = self.fake_ovn_client._nb_idl
-        # lr0: GW port ID, not GW network ID --> we need to add network ID.
-        lr0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-            'name': 'lr0',
-            'external_ids': {constants.OVN_GW_PORT_EXT_ID_KEY: 'port0'}})
-        # lr1: GW port ID and not GW network ID --> register already updated.
-        lr1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-                'name': 'lr1',
-                'external_ids': {constants.OVN_GW_PORT_EXT_ID_KEY: 'port1',
-                                 constants.OVN_GW_NETWORK_EXT_ID_KEY: 'net1'}})
-        # lr2: no GW port ID (nor GW network ID) --> no QoS.
-        lr2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={
-                'name': 'lr2', 'external_ids': {}})
-        nb_idl.lr_list.return_value.execute.return_value = (lr0, lr1, lr2)
-        self.fake_ovn_client._plugin.get_port.return_value = {
-            'network_id': 'net0'}
-
-        self.assertRaises(
-            periodics.NeverAgain,
-            self.periodic.update_logical_router_with_gateway_network_id)
-        ext_ids = {constants.OVN_GW_NETWORK_EXT_ID_KEY: 'net0'}
-        expected_calls = [mock.call('Logical_Router', lr0.uuid,
-                                    ('external_ids', ext_ids))]
-        nb_idl.db_set.assert_has_calls(expected_calls)
+    def test_check_provider_distributed_ports_flavor_router(self):
+        self._test_check_provider_distributed_ports(opt_value=mock.ANY,
+                                                    flavor_router=True)
+        # No LRPs are created, not LRP ``db_set`` can be done.
+        self.fake_ovn_client._nb_idl.db_set.assert_not_called()
 
     def _test_check_baremetal_ports_dhcp_options(self, dhcp_disabled=False):
         cfg.CONF.set_override('disable_ovn_dhcp_for_baremetal_ports',
                               dhcp_disabled, group='ovn')
-        self.fake_ovn_client.is_external_ports_supported.return_value = True
         nb_idl = self.fake_ovn_client._nb_idl
         self.fake_ovn_client._get_port_options.return_value = 'fake-port-opts'
 
@@ -687,21 +797,159 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         self.fake_ovn_client._nb_idl.set_lswitch_port.assert_has_calls(
             expected_calls)
 
-    @mock.patch.object(utils, 'get_virtual_port_parents',
-                       return_value=[mock.ANY])
-    def test_update_port_virtual_type(self, *args):
+    def test_check_router_default_route_empty_dst_ip(self):
         nb_idl = self.fake_ovn_client._nb_idl
-        lsp0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp0', 'type': ''})
-        lsp1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'lsp1', 'type': constants.LSP_TYPE_VIRTUAL})
-        port0 = {'fixed_ips': [{'ip_address': mock.ANY}],
-                 'network_id': mock.ANY, 'id': mock.ANY}
-        nb_idl.lsp_list.return_value.execute.return_value = (lsp0, lsp1)
-        self.fake_ovn_client._plugin.get_port.return_value = port0
+        route0 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'ip_prefix': n_const.IPv4_ANY,
+                   'nexthop': '10.42.0.1'})
+        route1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'ip_prefix': n_const.IPv4_ANY,
+                   'nexthop': ''})
+        route2 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'ip_prefix': n_const.IPv6_ANY,
+                   'nexthop': '2001:db8:42::1'})
+        route3 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'ip_prefix': n_const.IPv6_ANY,
+                   'nexthop': ''})
+        router0 = fakes.FakeOvsdbRow.create_one_ovsdb_row()
+        router1 = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+                attrs={
+                    'external_ids': {
+                        constants.OVN_ROUTER_NAME_EXT_ID_KEY: 'router1'}
+                })
+        nb_idl.lr_list.return_value.execute.return_value = (router0, router1)
+        nb_idl.lr_route_list.return_value.execute.return_value = (
+            route0, route1, route2, route3)
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.periodic.check_router_default_route_empty_dst_ip)
+        nb_idl.delete_static_routes.assert_has_calls([
+            mock.call(router1.name, [(route1.ip_prefix, route1.nexthop),
+                                     (route3.ip_prefix, route3.nexthop)]),
+        ])
+        self.assertEqual(
+            1,
+            nb_idl.delete_static_routes.call_count)
+
+    def test_check_network_broadcast_arps_to_all_routers(self):
+        cfg.CONF.set_override('broadcast_arps_to_all_routers', 'true',
+                              group='ovn')
+        networks = [{'id': 'foo', external_net.EXTERNAL: True}]
+        self.fake_ovn_client._plugin.get_networks.return_value = networks
+        fake_ls = mock.Mock(other_config={})
+        self.fake_ovn_client._nb_idl.get_lswitch.return_value = fake_ls
 
         self.assertRaises(
-            periodics.NeverAgain, self.periodic.update_port_virtual_type)
-        expected_calls = [mock.call('Logical_Switch_Port', lsp0.uuid,
-                                    ('type', constants.LSP_TYPE_VIRTUAL))]
-        nb_idl.db_set.assert_has_calls(expected_calls)
+            periodics.NeverAgain,
+            self.periodic.check_network_broadcast_arps_to_all_routers)
+
+        self.fake_ovn_client._nb_idl.db_set.assert_called_once_with(
+            'Logical_Switch', 'neutron-foo',
+            ('other_config',
+             {constants.LS_OPTIONS_BROADCAST_ARPS_ROUTERS: 'true'}))
+
+    def test_check_network_broadcast_arps_to_all_routers_already_set(self):
+        cfg.CONF.set_override('broadcast_arps_to_all_routers', 'false',
+                              group='ovn')
+        networks = [{'id': 'foo', external_net.EXTERNAL: True}]
+        self.fake_ovn_client._plugin.get_networks.return_value = networks
+        fake_ls = mock.Mock(other_config={
+            constants.LS_OPTIONS_BROADCAST_ARPS_ROUTERS: 'false'})
+        self.fake_ovn_client._nb_idl.get_lswitch.return_value = fake_ls
+
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.periodic.check_network_broadcast_arps_to_all_routers)
+
+        # Assert there was no transactions because the value was already set
+        self.fake_ovn_client._nb_idl.db_set.assert_not_called()
+
+    def test_update_static_routes_with_external_ids(self):
+        _nb_idl = self.fake_ovn_client._nb_idl
+
+        sroute_a = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'ip_prefix': '30.0.0.0/24', 'nexthop': '20.0.2.5',
+                   'external_ids': {}})
+        sroute_b = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'ip_prefix': '30.1.0.0/24', 'nexthop': '20.0.2.6',
+                   'external_ids': {}})
+
+        self.fake_external_fixed_ips = {
+            'network_id': 'ext-network-id',
+            'external_fixed_ips': [{'ip_address': '20.0.2.1',
+                                    'subnet_id': 'ext-subnet-id'}]}
+        lrouter = {
+            'id': 'lr-test',
+            'routes': [{'nexthop': '20.0.2.5',
+                        'destination': '30.0.0.0/24'},
+                       {'nexthop': '20.0.2.6',
+                        'destination': '30.1.0.0/24'}],
+            'name': 'lr-test',
+            'admin_state_up': True,
+            'external_gateway_info': self.fake_external_fixed_ips
+        }
+        self.fake_ovn_client._l3_plugin.get_router.return_value = lrouter
+
+        expected = [{'name': 'lr-test',
+                     'static_routes': [sroute_a, sroute_b]}]
+        _nb_idl.get_all_logical_routers_static_routes.return_value = expected
+
+        # Call the maintenance task and check that the value has been
+        # updated in the external_ids
+        self.assertRaises(periodics.NeverAgain,
+                          self.periodic.update_router_static_routes)
+
+        # Check static routes calls to verify if the maintenance task work
+        # as expected
+        external_ids = {constants.OVN_LRSR_EXT_ID_KEY: 'true'}
+        _nb_idl.set_static_route.assert_has_calls([
+            mock.call(sroute_a, external_ids=external_ids),
+            mock.call(sroute_b, external_ids=external_ids),
+        ])
+
+    def _test_set_ovn_owned_dns_option(self, dns):
+        nb_idl = self.fake_ovn_client._nb_idl
+        nb_idl.dns_list.return_value.execute.return_value = [dns]
+
+        self.assertRaises(
+            periodics.NeverAgain,
+            self.periodic.set_ovn_owned_dns_option)
+
+    def test_set_ovn_owned_dns_option(self):
+        cfg.CONF.set_override('dns_records_ovn_owned', 'true',
+                              group='ovn')
+        dns = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'external_ids': {'ls_name': 'neutron-foo'},
+                   'options': {constants.OVN_OWNED: 'false'}})
+
+        self._test_set_ovn_owned_dns_option(dns)
+
+        ovn_owned = ('true' if ovn_conf.is_dns_records_ovn_owned()
+                     else 'false')
+        dns_options = {constants.OVN_OWNED: ovn_owned}
+
+        self.fake_ovn_client._nb_idl.dns_set_options.assert_called_once_with(
+            dns.uuid, **dns_options)
+
+    def test_set_ovn_owned_dns_option_already_set(self):
+        cfg.CONF.set_override('dns_records_ovn_owned', 'true',
+                              group='ovn')
+        dns = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'external_ids': {'ls_name': 'neutron-foo'},
+                   'options': {constants.OVN_OWNED: 'true'}})
+
+        self._test_set_ovn_owned_dns_option(dns)
+
+        # Assert there was no transactions because the value was already set
+        self.fake_ovn_client._nb_idl.dns_set_options.assert_not_called()
+
+    def test_set_ovn_owned_dns_option_ovn_direct_record(self):
+        dns = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'external_ids': {'ovn_direct': 'ovn-foo'},
+                   'options': {constants.OVN_OWNED: 'true'}})
+
+        self._test_set_ovn_owned_dns_option(dns)
+
+        # Assert there was no transactions because the record directly
+        # created in ovn i.e not created by neutron
+        self.fake_ovn_client._nb_idl.dns_set_options.assert_not_called()

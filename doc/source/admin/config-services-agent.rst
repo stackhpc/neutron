@@ -1,7 +1,7 @@
 .. _config-services-agent:
 
 ===================
-Services and agents
+Agents and Services
 ===================
 
 A usual neutron setup consists of multiple services and agents running on one
@@ -11,7 +11,7 @@ Among those of special interest are:
 
 #. The neutron-server that provides API endpoints and serves as a single point
    of access to the database. It usually runs on the controller nodes.
-#. Layer2 agent that can utilize Open vSwitch, Linux Bridge or other
+#. Layer2 agent that can utilize Open vSwitch or other
    vendor-specific technology to provide network segmentation and isolation
    for project networks.
    The L2 agent should run on every node where it is deemed
@@ -70,7 +70,7 @@ L2 agents
 
 The ``admin_state_up`` field of the agent in the Neutron database is set to
 ``False``, but the agent is still capable of binding ports.
-This is true for openvswitch-agent, linuxbridge-agent, and sriov-agent.
+This is true for openvswitch-agent and sriov-agent.
 
 .. note::
 
@@ -111,11 +111,11 @@ To address this problem, operators should use the ``AGENT`` config group option
 ``kill_scripts_path`` to configure a path to where ``kill scripts`` for such
 processes live. By default, it is set to ``/etc/neutron/kill_scripts/``.
 If option ``kill_scripts_path`` is changed in the config to the different
-location, ``exec_dirs`` in ``/etc/rootwrap.conf`` should be changed accordingly.
-If ``kill_scripts_path`` is set, every time neutron has to kill a process,
-for example ``dnsmasq``, it will look in this directory for a file with the name
-``<process_name>-kill``. So for ``dnsmasq`` process it will look for a
-``dnsmasq-kill`` script. If such a file exists there, it will be called
+location, ``exec_dirs`` in ``/etc/neutron/rootwrap.conf`` should be changed
+accordingly. If ``kill_scripts_path`` is set, every time neutron has to kill a
+process, for example ``dnsmasq``, it will look in this directory for a file
+with the name ``<process_name>-kill``. So for ``dnsmasq`` process it will look
+for a ``dnsmasq-kill`` script. If such a file exists there, it will be called
 instead of using the ``kill`` command.
 
 Kill scripts are called with two parameters:

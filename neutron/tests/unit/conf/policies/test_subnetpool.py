@@ -22,7 +22,7 @@ from neutron.tests.unit.conf.policies import test_base as base
 class SubnetpoolAPITestCase(base.PolicyBaseTestCase):
 
     def setUp(self):
-        super(SubnetpoolAPITestCase, self).setUp()
+        super().setUp()
         self.target = {'project_id': self.project_id}
         self.alt_target = {'project_id': self.alt_project_id}
 
@@ -30,7 +30,7 @@ class SubnetpoolAPITestCase(base.PolicyBaseTestCase):
 class SystemAdminTests(SubnetpoolAPITestCase):
 
     def setUp(self):
-        super(SystemAdminTests, self).setUp()
+        super().setUp()
         self.context = self.system_admin_ctx
 
     def test_create_subnetpool(self):
@@ -63,6 +63,16 @@ class SystemAdminTests(SubnetpoolAPITestCase):
             policy.enforce,
             self.context, 'create_subnetpool:is_default', self.alt_target)
 
+    def test_create_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'create_subnetpool:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'create_subnetpool:tags', self.alt_target)
+
     def test_get_subnetpool(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -72,6 +82,16 @@ class SystemAdminTests(SubnetpoolAPITestCase):
             base_policy.InvalidScope,
             policy.enforce,
             self.context, 'get_subnetpool', self.alt_target)
+
+    def test_get_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'get_subnetpool:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'get_subnetpool:tags', self.alt_target)
 
     def test_update_subnetpool(self):
         self.assertRaises(
@@ -93,6 +113,16 @@ class SystemAdminTests(SubnetpoolAPITestCase):
             policy.enforce,
             self.context, 'update_subnetpool:is_default', self.alt_target)
 
+    def test_update_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_subnetpool:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_subnetpool:tags', self.alt_target)
+
     def test_delete_subnetpool(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -102,6 +132,16 @@ class SystemAdminTests(SubnetpoolAPITestCase):
             base_policy.InvalidScope,
             policy.enforce,
             self.context, 'delete_subnetpool', self.alt_target)
+
+    def test_delete_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'delete_subnetpool:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'delete_subnetpool:tags', self.alt_target)
 
     def test_onboard_network_subnets(self):
         self.assertRaises(
@@ -137,21 +177,21 @@ class SystemAdminTests(SubnetpoolAPITestCase):
 class SystemMemberTests(SystemAdminTests):
 
     def setUp(self):
-        super(SystemMemberTests, self).setUp()
+        super().setUp()
         self.context = self.system_member_ctx
 
 
 class SystemReaderTests(SystemMemberTests):
 
     def setUp(self):
-        super(SystemReaderTests, self).setUp()
+        super().setUp()
         self.context = self.system_reader_ctx
 
 
 class AdminTests(SubnetpoolAPITestCase):
 
     def setUp(self):
-        super(AdminTests, self).setUp()
+        super().setUp()
         self.context = self.project_admin_ctx
 
     def test_create_subnetpool(self):
@@ -176,11 +216,25 @@ class AdminTests(SubnetpoolAPITestCase):
             policy.enforce(
                 self.context, 'create_subnetpool:default', self.alt_target))
 
+    def test_create_subnetpool_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_subnetpool:tags',
+                           self.target))
+        self.assertTrue(policy.enforce(self.context, 'create_subnetpool:tags',
+                                       self.alt_target))
+
     def test_get_subnetpool(self):
         self.assertTrue(
             policy.enforce(self.context, 'get_subnetpool', self.target))
         self.assertTrue(
             policy.enforce(self.context, 'get_subnetpool', self.alt_target))
+
+    def test_get_subnetpool_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_subnetpool:tags', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'get_subnetpool:tags',
+                           self.alt_target))
 
     def test_update_subnetpool(self):
         self.assertTrue(
@@ -196,11 +250,27 @@ class AdminTests(SubnetpoolAPITestCase):
             policy.enforce(
                 self.context, 'update_subnetpool:default', self.alt_target))
 
+    def test_update_subnetpool_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_subnetpool:tags',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'update_subnetpool:tags',
+                           self.alt_target))
+
     def test_delete_subnetpool(self):
         self.assertTrue(
             policy.enforce(self.context, 'delete_subnetpool', self.target))
         self.assertTrue(
             policy.enforce(self.context, 'delete_subnetpool', self.alt_target))
+
+    def test_delete_subnetpool_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_subnetpool:tags',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_subnetpool:tags',
+                           self.alt_target))
 
     def test_onboard_network_subnets(self):
         self.assertTrue(
@@ -223,11 +293,11 @@ class AdminTests(SubnetpoolAPITestCase):
             policy.enforce(self.context, 'remove_prefixes', self.alt_target))
 
 
-class ProjectMemberTests(AdminTests):
+class ProjectManagerTests(AdminTests):
 
     def setUp(self):
-        super(ProjectMemberTests, self).setUp()
-        self.context = self.project_member_ctx
+        super().setUp()
+        self.context = self.project_manager_ctx
 
     def test_create_subnetpool(self):
         self.assertTrue(
@@ -257,6 +327,15 @@ class ProjectMemberTests(AdminTests):
             policy.enforce,
             self.context, 'create_subnetpool:is_default', self.alt_target)
 
+    def test_create_subnetpool_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_subnetpool:tags',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_subnetpool:tags', self.alt_target)
+
     def test_get_subnetpool(self):
         self.assertTrue(
             policy.enforce(self.context, 'get_subnetpool', self.target))
@@ -264,6 +343,14 @@ class ProjectMemberTests(AdminTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'get_subnetpool', self.alt_target)
+
+    def test_get_subnetpool_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_subnetpool:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_subnetpool:tags', self.alt_target)
 
     def test_update_subnetpool(self):
         self.assertTrue(
@@ -283,6 +370,15 @@ class ProjectMemberTests(AdminTests):
             policy.enforce,
             self.context, 'update_subnetpool:is_default', self.alt_target)
 
+    def test_update_subnetpool_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_subnetpool:tags',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_subnetpool:tags', self.alt_target)
+
     def test_delete_subnetpool(self):
         self.assertTrue(
             policy.enforce(self.context, 'delete_subnetpool', self.target))
@@ -290,6 +386,15 @@ class ProjectMemberTests(AdminTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'delete_subnetpool', self.alt_target)
+
+    def test_delete_subnetpool_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_subnetpool:tags',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'delete_subnetpool:tags', self.alt_target)
 
     def test_onboard_network_subnets(self):
         self.assertTrue(
@@ -317,10 +422,17 @@ class ProjectMemberTests(AdminTests):
             self.context, 'remove_prefixes', self.alt_target)
 
 
+class ProjectMemberTests(ProjectManagerTests):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.project_member_ctx
+
+
 class ProjectReaderTests(ProjectMemberTests):
 
     def setUp(self):
-        super(ProjectReaderTests, self).setUp()
+        super().setUp()
         self.context = self.project_reader_ctx
 
     def test_create_subnetpool(self):
@@ -333,6 +445,16 @@ class ProjectReaderTests(ProjectMemberTests):
             policy.enforce,
             self.context, 'create_subnetpool', self.alt_target)
 
+    def test_create_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_subnetpool:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_subnetpool:tags', self.alt_target)
+
     def test_update_subnetpool(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
@@ -343,6 +465,16 @@ class ProjectReaderTests(ProjectMemberTests):
             policy.enforce,
             self.context, 'update_subnetpool', self.alt_target)
 
+    def test_update_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_subnetpool:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_subnetpool:tags', self.alt_target)
+
     def test_delete_subnetpool(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
@@ -352,6 +484,16 @@ class ProjectReaderTests(ProjectMemberTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'delete_subnetpool', self.alt_target)
+
+    def test_delete_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'delete_subnetpool:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'delete_subnetpool:tags', self.alt_target)
 
     def test_onboard_network_subnets(self):
         self.assertRaises(
@@ -382,3 +524,94 @@ class ProjectReaderTests(ProjectMemberTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'remove_prefixes', self.alt_target)
+
+
+class ServiceRoleTests(SubnetpoolAPITestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.service_ctx
+
+    def test_create_subnetpool(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_subnetpool', self.target)
+
+    def test_create_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_subnetpool:tags', self.target)
+
+    def test_create_subnetpool_shared(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_subnetpool:shared', self.target)
+
+    def test_create_subnetpool_default(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_subnetpool:is_default', self.target)
+
+    def test_get_subnetpool(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_subnetpool', self.target)
+
+    def test_get_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'get_subnetpool:tags', self.target)
+
+    def test_update_subnetpool(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_subnetpool', self.target)
+
+    def test_update_subnetpool_default(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_subnetpool:is_default', self.target)
+
+    def test_update_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_subnetpool:tags', self.target)
+
+    def test_delete_subnetpool(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'delete_subnetpool', self.target)
+
+    def test_delete_subnetpool_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'delete_subnetpool:tags', self.target)
+
+    def test_onboard_network_subnets(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'onboard_network_subnets', self.target)
+
+    def test_add_prefixes(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'add_prefixes', self.target)
+
+    def test_remove_prefixes(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'remove_prefixes', self.target)

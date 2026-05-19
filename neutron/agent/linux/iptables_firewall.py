@@ -155,6 +155,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
                 jump_rule = self._generate_trusted_port_rules(port)
                 self._add_rules_to_chain_v4v6(
                     'FORWARD', jump_rule, jump_rule, comment=ic.TRUSTED_ACCEPT)
+                self._add_nat_short_ciruit(port)
                 self.trusted_ports.append(port)
 
     def remove_trusted_ports(self, port_ids):
@@ -163,7 +164,14 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
                 jump_rule = self._generate_trusted_port_rules(port)
                 self._remove_rule_from_chain_v4v6(
                     'FORWARD', jump_rule, jump_rule)
+                self._remove_nat_short_ciruit(port)
                 self.trusted_ports.remove(port)
+
+    def _generate_nat_shortcircuit_port_rules(self, port):
+        rt = '-m physdev --%%s %s -j ACCEPT' % (
+            self._get_device_name(port))
+        return [rt % (self.IPTABLES_DIRECTION[constants.INGRESS_DIRECTION]),
+                rt % (self.IPTABLES_DIRECTION[constants.EGRESS_DIRECTION])]
 
     def _generate_trusted_port_rules(self, port):
         rt = '-m physdev --%%s %s --physdev-is-bridged -j ACCEPT' % (
@@ -248,12 +256,13 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
     def _remove_rule_port_sec(self, port, direction):
         self._update_port_sec_rules(port, direction, add=False)
 
-    def _remove_rule_from_chain_v4v6(self, chain_name, ipv4_rules, ipv6_rules):
+    def _remove_rule_from_chain_v4v6(self, chain_name, ipv4_rules, ipv6_rules,
+                                     table='filter'):
         for rule in ipv4_rules:
-            self.iptables.ipv4['filter'].remove_rule(chain_name, rule)
+            self.iptables.ipv4[table].remove_rule(chain_name, rule)
 
         for rule in ipv6_rules:
-            self.iptables.ipv6['filter'].remove_rule(chain_name, rule)
+            self.iptables.ipv6[table].remove_rule(chain_name, rule)
 
     def _setup_chains(self):
         """Setup ingress and egress chain for a port."""
@@ -268,6 +277,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         for pname in sorted(ports):
             port = ports[pname]
             self._add_conntrack_jump(port)
+            self._add_nat_short_ciruit(port)
             self._setup_chain(port, constants.INGRESS_DIRECTION)
             self._setup_chain(port, constants.EGRESS_DIRECTION)
         self.iptables.ipv4['filter'].add_rule(SG_CHAIN, '-j ACCEPT')
@@ -276,6 +286,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         for port in unfiltered_ports.values():
             self._add_accept_rule_port_sec(port, constants.INGRESS_DIRECTION)
             self._add_accept_rule_port_sec(port, constants.EGRESS_DIRECTION)
+            self._add_nat_short_ciruit(port)
 
     def _remove_chains(self):
         """Remove ingress and egress chain for a port."""
@@ -289,9 +300,11 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
             self._remove_chain(port, constants.EGRESS_DIRECTION)
             self._remove_chain(port, SPOOF_FILTER)
             self._remove_conntrack_jump(port)
+            self._remove_nat_short_ciruit(port)
         for port in unfiltered_ports.values():
             self._remove_rule_port_sec(port, constants.INGRESS_DIRECTION)
             self._remove_rule_port_sec(port, constants.EGRESS_DIRECTION)
+            self._remove_nat_short_ciruit(port)
         self._remove_chain_by_name_v4v6(SG_CHAIN)
 
     def _setup_chain(self, port, DIRECTION):
@@ -319,14 +332,14 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         self.iptables.ipv6['filter'].remove_chain(chain_name)
 
     def _add_rules_to_chain_v4v6(self, chain_name, ipv4_rules, ipv6_rules,
-                                 top=False, comment=None):
+                                 top=False, comment=None, table='filter'):
         for rule in ipv4_rules:
-            self.iptables.ipv4['filter'].add_rule(chain_name, rule,
-                                                  top=top, comment=comment)
+            self.iptables.ipv4[table].add_rule(chain_name, rule,
+                                               top=top, comment=comment)
 
         for rule in ipv6_rules:
-            self.iptables.ipv6['filter'].add_rule(chain_name, rule,
-                                                  top=top, comment=comment)
+            self.iptables.ipv6[table].add_rule(chain_name, rule,
+                                               top=top, comment=comment)
 
     def _get_device_name(self, port):
         if not isinstance(port, dict):
@@ -416,8 +429,8 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         for dev, match in ((br_dev, match_physdev), (br_dev, match_interface),
                            (port_dev, match_physdev)):
             match = match % dev
-            rule = '%s -m comment --comment "%s" -j CT %s' % (match, comment,
-                                                              conntrack)
+            rule = '{} -m comment --comment "{}" -j CT {}'.format(
+                match, comment, conntrack)
             rules.append(rule)
         return rules
 
@@ -465,6 +478,16 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         self.iptables.ipv4['raw'].remove_rule(chain, rule)
         self.iptables.ipv6['raw'].remove_rule(chain, rule)
 
+    def _add_nat_short_ciruit(self, port):
+        jump_rule = self._generate_nat_shortcircuit_port_rules(port)
+        self._add_rules_to_chain_v4v6('PREROUTING', jump_rule, jump_rule,
+                                      comment=ic.TRUSTED_ACCEPT, table='nat')
+
+    def _remove_nat_short_ciruit(self, port):
+        jump_rule = self._generate_nat_shortcircuit_port_rules(port)
+        self._remove_rule_from_chain_v4v6('PREROUTING', jump_rule,
+                                          jump_rule, table='nat')
+
     def _split_sgr_by_ethertype(self, security_group_rules):
         ipv4_sg_rules = []
         ipv6_sg_rules = []
@@ -510,7 +533,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         else:
             mac_ipv6_pairs.append((mac, ip_address))
             lla = str(netutils.get_ipv6_addr_by_EUI64(
-                    constants.IPv6_LLA_PREFIX, mac))
+                constants.IPv6_LLA_PREFIX, mac))
             if (mac, lla) not in mac_ipv6_pairs:
                 # only add once so we don't generate duplicate rules
                 mac_ipv6_pairs.append((mac, lla))
@@ -599,9 +622,15 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
                                 rule, port, direction))
         return port_rules
 
+    def _get_any_remote_group_id_in_rule(self, rule):
+        remote_group_id = rule.get('remote_group_id')
+        if not remote_group_id:
+            remote_group_id = rule.get('remote_address_group_id')
+        return remote_group_id
+
     def _expand_sg_rule_with_remote_ips(self, rule, port, direction):
         """Expand a remote group rule to rule per remote group IP."""
-        remote_group_id = rule.get('remote_group_id')
+        remote_group_id = self._get_any_remote_group_id_in_rule(rule)
         if remote_group_id:
             ethertype = rule['ethertype']
             port_ips = port.get('fixed_ips', [])
@@ -623,7 +652,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         for sg_id in sg_ids:
             for rule in self.sg_rules.get(sg_id, []):
                 if not direction or rule['direction'] == direction:
-                    remote_sg_id = rule.get('remote_group_id')
+                    remote_sg_id = self._get_any_remote_group_id_in_rule(rule)
                     ether_type = rule.get('ethertype')
                     if remote_sg_id and ether_type:
                         remote_sg_ids[ether_type].add(remote_sg_id)
@@ -703,11 +732,10 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         return args
 
     def _convert_sg_rule_to_iptables_args(self, sg_rule):
-        remote_gid = sg_rule.get('remote_group_id')
+        remote_gid = self._get_any_remote_group_id_in_rule(sg_rule)
         if self.enable_ipset and remote_gid:
             return self._generate_ipset_rule_args(sg_rule, remote_gid)
-        else:
-            return self._generate_plain_rule_args(sg_rule)
+        return self._generate_plain_rule_args(sg_rule)
 
     def _convert_sgr_to_iptables_rules(self, security_group_rules):
         iptables_rules = []
@@ -731,7 +759,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
 
     def _drop_invalid_packets(self, iptables_rules):
         # Always drop invalid packets
-        iptables_rules += [comment_rule('-m state --state ' 'INVALID -j DROP',
+        iptables_rules += [comment_rule('-m state --state INVALID -j DROP',
                                         comment=ic.INVALID_DROP)]
         return iptables_rules
 
@@ -769,6 +797,14 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
         if not self._iptables_protocol_name_map:
             tmp_map = constants.IPTABLES_PROTOCOL_NAME_MAP.copy()
             tmp_map.update(self._local_protocol_name_map())
+            # iptables-save uses different strings for 'ipip' (protocol 4)
+            # depending on the distro, which corresponds to the entry for
+            # '4' in /etc/protocols. For example:
+            # - 'ipencap' in Ubuntu
+            # - 'ipv4' in CentOS/Fedora
+            # For this reason, we need to map the string for 'ipip' to the
+            # system-dependent string for '4', see bug #2054324.
+            tmp_map[constants.PROTO_NAME_IPIP] = tmp_map['4']
             self._iptables_protocol_name_map = tmp_map
         return self._iptables_protocol_name_map
 
@@ -816,7 +852,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
                     args += ['--%s' % direction, '%s' % port_range_min]
             else:
                 args += ['-m', 'multiport', '--%ss' % direction,
-                         '%s:%s' % (port_range_min, port_range_max)]
+                         f'{port_range_min}:{port_range_max}']
         return args
 
     def _ip_prefix_arg(self, direction, ip_prefix):
@@ -835,7 +871,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
 
     def _port_chain_name(self, port, direction):
         return iptables_manager.get_chain_name(
-            '%s%s' % (CHAIN_NAME_PREFIX[direction], port['device'][3:]))
+            '{}{}'.format(CHAIN_NAME_PREFIX[direction], port['device'][3:]))
 
     def filter_defer_apply_on(self):
         if not self._defer_apply:
@@ -923,14 +959,14 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
                 del self.sg_members[sg_id]
 
     def _find_deleted_sg_rules(self, sg_id):
-        del_rules = list()
+        del_rules = []
         for pre_rule in self.pre_sg_rules.get(sg_id, []):
             if pre_rule not in self.sg_rules.get(sg_id, []):
                 del_rules.append(pre_rule)
         return del_rules
 
     def _find_devices_on_security_group(self, sg_id):
-        device_list = list()
+        device_list = []
         for device in self.filtered_ports.values():
             if sg_id in device.get('security_groups', []):
                 device_list.append(device)
@@ -995,7 +1031,7 @@ class IptablesFirewallDriver(firewall.FirewallDriver):
 
     def _get_sg_members(self, sg_info, sg_id, ethertype):
         ip_mac_addresses = sg_info.get(sg_id, {}).get(ethertype, [])
-        return set([ip_mac[0] for ip_mac in ip_mac_addresses])
+        return {ip_mac[0] for ip_mac in ip_mac_addresses}
 
     def filter_defer_apply_off(self):
         if self._defer_apply:
@@ -1017,12 +1053,11 @@ class OVSHybridIptablesFirewallDriver(IptablesFirewallDriver):
 
     def _port_chain_name(self, port, direction):
         return iptables_manager.get_chain_name(
-            '%s%s' % (CHAIN_NAME_PREFIX[direction], port['device']))
+            '{}{}'.format(CHAIN_NAME_PREFIX[direction], port['device']))
 
     def _get_br_device_name(self, port):
         return ('qvb' + port['device'])[:constants.LINUX_DEV_LEN]
 
     def _get_device_name(self, port):
-        device_name = super(
-            OVSHybridIptablesFirewallDriver, self)._get_device_name(port)
+        device_name = super()._get_device_name(port)
         return get_hybrid_port_name(device_name)

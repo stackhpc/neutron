@@ -14,19 +14,56 @@
 
 import contextlib
 
-from neutron.services.trunk import plugin as trunk_plugin
-from neutron.tests.functional import base
 from neutron_lib import constants as n_consts
 from neutron_lib.objects import registry as obj_reg
 from neutron_lib.plugins import utils
 from neutron_lib.services.trunk import constants as trunk_consts
 from oslo_utils import uuidutils
+from ovsdbapp.backend.ovs_idl import event
+
+from neutron.common.ovn import constants as ovn_const
+from neutron.services.trunk import plugin as trunk_plugin
+from neutron.tests.functional import base
+
+
+class WaitForPortBindingDeleteEvent(event.WaitEvent):
+    def __init__(self, port_id):
+        table = 'Port_Binding'
+        events = (self.ROW_DELETE, )
+        conditions = (('logical_port', '=', port_id), )
+        super().__init__(events, table, conditions, timeout=10)
+
+
+class WaitForPortBindingCreateEvent(event.WaitEvent):
+    def __init__(self, port_id):
+        table = 'Port_Binding'
+        events = (self.ROW_CREATE, )
+        conditions = (('logical_port', '=', port_id), )
+        super().__init__(events, table, conditions, timeout=10)
+
+
+class WaitForLSPSubportEvent(event.WaitEvent):
+    event_name = 'WaitForLSPSubportEvent'
+
+    def __init__(self, port_id):
+        table = 'Logical_Switch_Port'
+        events = (self.ROW_UPDATE, self.ROW_CREATE)
+        conditions = (('name', '=', port_id), )
+        super().__init__(events, table, conditions, timeout=10)
+
+    def matches(self, event, row, old=None):
+        # Check the "conditions" defined (name=port_id)
+        if not super().matches(event, row, old):
+            return False
+        device_owner = row.external_ids.get(
+            ovn_const.OVN_DEVICE_OWNER_EXT_ID_KEY)
+        return device_owner == trunk_consts.TRUNK_SUBPORT_OWNER
 
 
 class TestOVNTrunkDriver(base.TestOVNFunctionalBase):
 
     def setUp(self):
-        super(TestOVNTrunkDriver, self).setUp()
+        super().setUp()
         self.trunk_plugin = trunk_plugin.TrunkPlugin()
         self.trunk_plugin.add_segmentation_type(
             trunk_consts.SEGMENTATION_TYPE_VLAN,
@@ -38,10 +75,10 @@ class TestOVNTrunkDriver(base.TestOVNFunctionalBase):
         with self.network() as network:
             with self.subnet(network=network) as subnet:
                 with self.port(subnet=subnet) as parent_port:
-                    tenant_id = uuidutils.generate_uuid()
+                    project_id = uuidutils.generate_uuid()
                     trunk = {'trunk': {
                         'port_id': parent_port['port']['id'],
-                        'tenant_id': tenant_id, 'project_id': tenant_id,
+                        'project_id': project_id,
                         'admin_state_up': True,
                         'name': 'trunk', 'sub_ports': sub_ports}}
                     trunk = self.trunk_plugin.create_trunk(self.context, trunk)
@@ -60,18 +97,29 @@ class TestOVNTrunkDriver(base.TestOVNFunctionalBase):
         for row in self.nb_api.tables[
                 'Logical_Switch_Port'].rows.values():
             if row.parent_name and row.tag:
+                device_owner = row.external_ids[
+                    ovn_const.OVN_DEVICE_OWNER_EXT_ID_KEY]
+                revision_number = row.external_ids[
+                    ovn_const.OVN_REV_NUM_EXT_ID_KEY]
                 ovn_trunk_info.append({'port_id': row.name,
                                        'parent_port_id': row.parent_name,
-                                       'tag': row.tag})
+                                       'tag': row.tag,
+                                       'device_owner': device_owner,
+                                       'revision_number': revision_number,
+                                       })
         return ovn_trunk_info
 
     def _verify_trunk_info(self, trunk, has_items):
         ovn_subports_info = self._get_ovn_trunk_info()
         neutron_subports_info = []
         for subport in trunk.get('sub_ports', []):
-            neutron_subports_info.append({'port_id': subport['port_id'],
-                                          'parent_port_id': [trunk['port_id']],
-                                          'tag': [subport['segmentation_id']]})
+            neutron_subports_info.append(
+                {'port_id': subport['port_id'],
+                 'parent_port_id': [trunk['port_id']],
+                 'tag': [subport['segmentation_id']],
+                 'device_owner': trunk_consts.TRUNK_SUBPORT_OWNER,
+                 'revision_number': '2',
+                 })
             # Check that the subport has the binding is active.
             binding = obj_reg.load_class('PortBinding').get_object(
                 self.context, port_id=subport['port_id'], host='')
@@ -103,11 +151,26 @@ class TestOVNTrunkDriver(base.TestOVNFunctionalBase):
 
     def test_subport_delete(self):
         with self.subport() as subport:
+            lsp_subport = WaitForLSPSubportEvent(subport['port_id'])
+            self.mech_driver.nb_ovn.idl.notify_handler.watch_event(
+                lsp_subport)
+            pb_create = WaitForPortBindingCreateEvent(subport['port_id'])
+            self.mech_driver.sb_ovn.idl.notify_handler.watch_event(
+                pb_create)
             with self.trunk([subport]) as trunk:
+                # Wait for the subport LSP to be assigned as a subport.
+                self.assertTrue(lsp_subport.wait())
+                self.assertTrue(pb_create.wait())
+
+                pb_delete = WaitForPortBindingDeleteEvent(subport['port_id'])
+                self.mech_driver.sb_ovn.idl.notify_handler.watch_event(
+                    pb_delete)
                 self.trunk_plugin.remove_subports(self.context, trunk['id'],
                                                   {'sub_ports': [subport]})
                 new_trunk = self.trunk_plugin.get_trunk(self.context,
                                                         trunk['id'])
+                # Wait for the subport LSP to be unbound.
+                self.assertTrue(pb_delete.wait())
                 self._verify_trunk_info(new_trunk, has_items=False)
 
     def test_trunk_delete(self):

@@ -25,10 +25,8 @@ class TimeStampPlugin(service_base.ServicePluginBase,
 
     supported_extension_aliases = ['standard-attr-timestamp']
 
-    __filter_validation_support = True
-
     def __init__(self):
-        super(TimeStampPlugin, self).__init__()
+        super().__init__()
         self.register_db_events()
         # TODO(jlibosva): Move this to register_model_query_hook
         base_obj.register_filter_hook_on_model(

@@ -29,7 +29,7 @@ from neutron.tests.unit.plugins.ml2.drivers.openvswitch.agent \
 class TestOVSAgentExtensionAPI(ovs_test_base.OVSOSKenTestBase):
 
     def setUp(self):
-        super(TestOVSAgentExtensionAPI, self).setUp()
+        super().setUp()
         self.br_int = self.br_int_cls("br-int")
         self.br_tun = self.br_tun_cls("br-tun")
         self.br_phys = {'br-phys1': self.br_phys_cls('br-phys1'),
@@ -68,11 +68,19 @@ class TestOVSAgentExtensionAPI(ovs_test_base.OVSOSKenTestBase):
         for phys_br in agent_extension_api.request_phy_brs():
             self._test_bridge(self.br_phys[phys_br.br_name], phys_br)
 
+    def test_request_physical_br(self):
+        agent_extension_api = ovs_ext_agt.OVSAgentExtensionAPI(
+            self.br_int, self.br_tun,
+            {'phys1': self.br_phys['br-phys1'],
+             'phys2': self.br_phys['br-phys2']})
+        phys_br = agent_extension_api.request_physical_br('phys1')
+        self._test_bridge(self.br_phys[phys_br.br_name], phys_br)
+
 
 class TestOVSCookieBridgeOSKen(native_ovs_bridge_test_base.OVSBridgeTestBase):
 
     def setUp(self):
-        super(TestOVSCookieBridgeOSKen, self).setUp()
+        super().setUp()
         self.setup_bridge_mock('br-int', self.br_int_cls)
         self.tested_bridge = ovs_ext_agt.OVSCookieBridge(self.br)
 

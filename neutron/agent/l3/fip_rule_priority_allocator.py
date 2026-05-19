@@ -15,7 +15,7 @@
 from neutron.agent.l3.item_allocator import ItemAllocator
 
 
-class FipPriority(object):
+class FipPriority:
     def __init__(self, index):
         self.index = index
 
@@ -28,8 +28,7 @@ class FipPriority(object):
     def __eq__(self, other):
         if isinstance(other, FipPriority):
             return (self.index == other.index)
-        else:
-            return False
+        return False
 
     def __int__(self):
         return int(self.index)
@@ -42,15 +41,16 @@ class FipRulePriorityAllocator(ItemAllocator):
         This class provides an allocator which saves the priorities
         to a datastore which will survive L3 agent restarts.
     """
+
     def __init__(self, data_store_path, priority_rule_start,
                  priority_rule_end):
         """Create the necessary pool and create the item allocator
             using ',' as the delimiter and FipRulePriorityAllocator as the
             class type
         """
-        pool = set(FipPriority(str(s)) for s in range(priority_rule_start,
-                                                      priority_rule_end))
+        pool = {FipPriority(str(s)) for s in range(priority_rule_start,
+                                                   priority_rule_end)}
 
-        super(FipRulePriorityAllocator, self).__init__(data_store_path,
-                                                       FipPriority,
-                                                       pool)
+        super().__init__(data_store_path,
+                         FipPriority,
+                         pool)

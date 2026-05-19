@@ -17,7 +17,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: neutron VERSION\n"
 "Report-Msgid-Bugs-To: https://bugs.launchpad.net/openstack-i18n/\n"
-"POT-Creation-Date: 2022-04-29 17:06+0000\n"
+"POT-Creation-Date: 2025-07-11 07:53+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -100,11 +100,6 @@ msgstr "0 は CIDR プレフィックス長として許可されていません"
 msgid "A cidr must be specified in the absence of a subnet pool"
 msgstr "サブネットプールがない場合、cidr の指定は必須です"
 
-msgid ""
-"A decimal value as Vendor's Registered Private Enterprise Number as required "
-"by RFC3315 DUID-EN."
-msgstr "RFC3315 DUID-EN が必要とするベンダーが登録した私企業番号の 10 進数値。"
-
 #, python-format
 msgid "A default external network already exists: %(net_id)s."
 msgstr "デフォルトの外部ネットワークが既に存在します: %(net_id)s"
@@ -143,26 +138,9 @@ msgid "Agent %(id)s is not a L3 Agent or has been disabled"
 msgstr ""
 "エージェント %(id)s は、L3 エージェントでないか、使用不可になっています"
 
-msgid ""
-"Agent starts with admin_state_up=False when enable_new_agents=False. In the "
-"case, user's resources will not be scheduled automatically to the agent "
-"until admin changes admin_state_up to True."
-msgstr ""
-"enable_new_agents=False の場合、エージェントは admin_state_up=False の状態で"
-"処理を開始します。この場合、 管理者が admin_state_up を True に変更するまで、"
-"ユーザーのリソースが自動的にエージェントにスケジュール設定されることはありま"
-"せん。"
-
 #, python-format
 msgid "Agent updated: %(payload)s"
 msgstr "エージェントが更新されました: %(payload)s"
-
-msgid "Allow auto scheduling networks to DHCP agent."
-msgstr "DHCP エージェントに対するネットワークの自動スケジューリングを許可"
-
-msgid "Allow auto scheduling of routers to L3 agent."
-msgstr ""
-"L3 エージェントに対するルーターの自動スケジューリングを許可してください。"
 
 msgid "Allow running metadata proxy."
 msgstr "メタデータプロキシーの実行を許可します。"
@@ -175,11 +153,6 @@ msgstr "PTR レコードの作成の許可"
 
 msgid "Allow the usage of the bulk API"
 msgstr "Bulk API の使用を許可"
-
-msgid "Allow to perform insecure SSL (https) requests to nova metadata"
-msgstr ""
-"Nova メタデータに対する非セキュアな SSL (https) 要求を実行することを許可しま"
-"す"
 
 msgid ""
 "Allows for serving metadata requests coming from a dedicated metadata access "
@@ -223,9 +196,6 @@ msgstr "不明なエラーが発生しました。要求を再試行してくだ
 
 msgid "Async process didn't respawn"
 msgstr "非同期プロセスが再生成されませんでした"
-
-msgid "Authorization URL for connecting to designate in admin context"
-msgstr "管理者のコンテキストにおける designate への接続用認証 URL"
 
 msgid "Automatically remove networks from offline DHCP agents."
 msgstr "ネットワークをオフライン DHCP エージェントから自動的に削除します。"
@@ -305,15 +275,6 @@ msgstr "ルーターポートには複数の IPv4 サブネットは設定でき
 
 #, python-format
 msgid ""
-"Cannot have multiple router ports with the same network id if both contain "
-"IPv6 subnets. Existing port %(p)s has IPv6 subnet(s) and network id %(nid)s"
-msgstr ""
-"同じネットワーク ID を持つ複数のルーターポートのいずれにも IPv6 サブネットが"
-"含まれる場合、これらのポートは使用できません。既存のポート %(p)s には IPv6 サ"
-"ブネットがあり、ネットワーク ID は %(nid)s です"
-
-#, python-format
-msgid ""
 "Cannot host distributed router %(router_id)s on legacy L3 agent %(agent_id)s."
 msgstr ""
 "レガシーの L3 エージェント %(agent_id)s で分散ルーター %(router_id)s をホスト"
@@ -353,9 +314,6 @@ msgstr "OVS vxlan サポートの検査"
 msgid "Check for iproute2 vxlan support"
 msgstr "iproute2 vxlan サポートの検査"
 
-msgid "Check for nova notification support"
-msgstr "Nova 通知サポートの検査"
-
 msgid "Check for patch port support"
 msgstr "パッチポートのサポートの検査"
 
@@ -367,9 +325,6 @@ msgstr "ipset のインストールの検査"
 
 msgid "Check keepalived IPv6 support"
 msgstr "Keepalived の IPv6 サポートの検査"
-
-msgid "Check minimal dibbler version"
-msgstr "Dibbler の最小バージョンの検査"
 
 msgid "Check minimal dnsmasq version"
 msgstr "最小 dnsmasq バージョンの検査"
@@ -393,9 +348,6 @@ msgstr ""
 
 msgid "Cleanup resources of a specific agent type only."
 msgstr "特定のエージェントタイプのみのリソースをクリーンアップします。"
-
-msgid "Client certificate for nova metadata api server."
-msgstr "Nova メタデータ API サーバー用のクライアント証明書。"
 
 msgid ""
 "Comma-separated list of <network_device>:<vfs_to_exclude> tuples, mapping "
@@ -457,31 +409,9 @@ msgid ""
 "Comma-separated list of the DNS servers which will be used as forwarders."
 msgstr "フォワーダーとして使用される DNS サーバーのカンマ区切りのリスト。"
 
-msgid "Command to execute"
-msgstr "実行するコマンド"
-
-msgid "Config file for interface driver (You may also use l3_agent.ini)"
-msgstr ""
-"インターフェースドライバーの構成ファイル (l3_agent.ini を使用することもできま"
-"す)"
-
 #, python-format
 msgid "Conflicting value ethertype %(ethertype)s for CIDR %(cidr)s"
 msgstr "CIDR %(cidr)s とイーサネットタイプ値 %(ethertype)s が競合しています"
-
-msgid ""
-"Controls whether the neutron security group API is enabled in the server. It "
-"should be false when using no security groups or using the nova security "
-"group API."
-msgstr ""
-"Neutron セキュリティーグループ API をサーバーで有効化するかどうかを制御しま"
-"す。セキュリティーグループを使用しない場合、または Nova セキュリティーグルー"
-"プ API を使用する場合には、False にする必要があります。"
-
-#, python-format
-msgid "Could not bind to %(host)s:%(port)s after trying for %(time)d seconds"
-msgstr ""
-"%(time)d 秒間試行しましたが %(host)s:%(port)s にバインドできませんでした"
 
 msgid "Could not deserialize data"
 msgstr "シリアライズされたデータを復元することができませんでした"
@@ -529,13 +459,6 @@ msgid ""
 msgstr ""
 "テナントごとの RBAC 項目のデフォルト数。負の値がある場合、制限が設定されてい"
 "ないことを指します。"
-
-msgid ""
-"Default number of resource allowed per tenant. A negative value means "
-"unlimited."
-msgstr ""
-"テナント当たりに許可されるリソースのデフォルト数。負の値は無制限を意味しま"
-"す。"
 
 msgid "Default security group"
 msgstr "デフォルトセキュリティグループ"
@@ -609,25 +532,6 @@ msgstr "外部 DNS の連携のためのドライバー。"
 msgid "Driver for security groups firewall in the L2 agent"
 msgstr "L2 エージェントのセキュリティーグループのファイアウォールのドライバー"
 
-msgid "Driver to use for scheduling network to DHCP agent"
-msgstr ""
-"DHCP エージェントに対するネットワークのスケジューリングに使用するドライバー"
-
-msgid "Driver to use for scheduling router to a default L3 agent"
-msgstr ""
-"デフォルトの L3 エージェントに対するルーターのスケジューリングに使用するドラ"
-"イバー"
-
-msgid ""
-"Driver used for ipv6 prefix delegation. This needs to be an entry point "
-"defined in the neutron.agent.linux.pd_drivers namespace. See setup.cfg for "
-"entry points included with the neutron source."
-msgstr ""
-"ipv6 のプレフィックスデリゲーションを行うためのドライバー。neutron.agent."
-"linux.pd_drivers の名前空間で定義したエントリーポイントである必要があります。"
-"neutron のソースに含まれるエントリーポイントについては、setup.cfg を参照して"
-"ください。"
-
 #, python-format
 msgid ""
 "Duplicate L3HARouterAgentPortBinding is created for router(s) %(router)s. "
@@ -655,13 +559,6 @@ msgstr ""
 "エラー: デフォルトの検索パス (~/.neutron/, ~/, /etc/neutron/, /etc/) および "
 "'--config-file' オプションを使用して、構成ファイルが見つかりません。"
 
-msgid ""
-"Either one of parameter network_id or router_id must be passed to _get_ports "
-"method."
-msgstr ""
-"パラメーター network_id または router_id のいずれかを _get_ports メソッドに渡"
-"す必要があります。"
-
 msgid "Either subnet_id or port_id must be specified"
 msgstr "subnet_id または port_id のいずれかを指定する必要があります"
 
@@ -670,14 +567,6 @@ msgstr "仮想ルーターのために HA モードを有効化します。"
 
 msgid "Enable SSL on the API server"
 msgstr "API サーバー上で SSL を有効にします"
-
-msgid ""
-"Enable VXLAN on the agent. Can be enabled when agent is managed by ml2 "
-"plugin using linuxbridge mechanism driver"
-msgstr ""
-"エージェントで VXLAN を有効にしてください。linuxbridge メカニズムドライバーを"
-"使用してエージェントが ml2 プラグインによって管理されているときに、VXLAN を有"
-"効にできます"
 
 msgid ""
 "Enable services on an agent with admin_state_up False. If this option is "
@@ -733,14 +622,6 @@ msgid ""
 msgstr ""
 "サービスプラグイン %(service_plugin)s に必要な拡張ドライバー %(driver)s が見"
 "つかりませんでした。"
-
-msgid ""
-"Extension to use alongside ml2 plugin's l2population mechanism driver. It "
-"enables the plugin to populate VXLAN forwarding table."
-msgstr ""
-"ml2 プラグインの l2population メカニズムドライバーとともに使用する拡張機能。"
-"これにより、このプラグインは VXLAN 転送テーブルにデータを追加できるようになり"
-"ます。"
 
 #, python-format
 msgid "Extension with alias %s does not exist"
@@ -845,18 +726,6 @@ msgstr ""
 "ICMP コード (port-range-max) %(value)s が指定されましたが、ICMP タイプ (port-"
 "range-min) がありません。"
 
-msgid "ID of network"
-msgstr "ネットワークの ID"
-
-msgid "ID of network to probe"
-msgstr "プローブするネットワークの ID"
-
-msgid "ID of probe port to delete"
-msgstr "削除するプローブポートの ID"
-
-msgid "ID of probe port to execute command"
-msgstr "コマンドを実行するプローブ ポートの ID"
-
 msgid "ID of the router"
 msgstr "ルーターの ID"
 
@@ -920,18 +789,6 @@ msgid "Illegal IP version number"
 msgstr "IP バージョン番号が正しくありません"
 
 msgid ""
-"In some cases the Neutron router is not present to provide the metadata IP "
-"but the DHCP server can be used to provide this info. Setting this value "
-"will force the DHCP server to append specific host routes to the DHCP "
-"request. If this option is set, then the metadata service will be activated "
-"for all the networks."
-msgstr ""
-"Neutron ルーターが存在せず、メタデータ IP を提供できない場合に、DHCP サーバー"
-"を使用してこの情報を提供することができます。この値を設定すると、DHCP サーバー"
-"は DHCP 要求に対して特定のホストの経路を追加します。このオプションを設定する"
-"と、すべてのネットワークに対してメタデータサービスが有効化されます。"
-
-msgid ""
 "Indicates that this L3 agent should also handle routers that do not have an "
 "external network gateway configured. This option should be True only for a "
 "single agent in a Neutron deployment, and may be False for all agents if all "
@@ -971,10 +828,6 @@ msgstr ""
 
 msgid "Interface to monitor"
 msgstr "モニター対象のインターフェース"
-
-msgid ""
-"Interval between checks of child process liveness (seconds), use 0 to disable"
-msgstr "子プロセスの動作状況を確認する間隔 (秒)、無効にするには 0 を指定します"
 
 msgid "Interval between two metering measures"
 msgstr "2 つの計測間の間隔"
@@ -1051,14 +904,6 @@ msgid "Invalid value for port %(port)s"
 msgstr "ポート %(port)s の無効値"
 
 msgid ""
-"Iptables mangle mark used to mark ingress from external network. This mark "
-"will be masked with 0xffff so that only the lower 16 bits will be used."
-msgstr ""
-"Iptables は外部ネットワークからの進入を示すために使用されるマークを分割しま"
-"す。このマークを 0xffff でマスキングすることで、後半の 16 ビットのみを使用し"
-"ます。"
-
-msgid ""
 "Iptables mangle mark used to mark metadata valid requests. This mark will be "
 "masked with 0xffff so that only the lower 16 bits will be used."
 msgstr ""
@@ -1086,9 +931,6 @@ msgstr "L3 エージェントによる Floating IP のセットアップの失�
 msgid "Limit number of leases to prevent a denial-of-service."
 msgstr "Denial-of-Service を防ぐためにリースの数を制限してください。"
 
-msgid "List of <physical_network>:<physical_bridge>"
-msgstr "<physical_network> のリスト: <physical_bridge>"
-
 msgid ""
 "List of network type driver entrypoints to be loaded from the neutron.ml2."
 "type_drivers namespace."
@@ -1114,12 +956,6 @@ msgstr "メタデータプロキシーの UNIX ドメインソケットの場所
 msgid "Location to store DHCP server config files."
 msgstr "DHCP サーバーの構成ファイルを保存するロケーション。"
 
-msgid "Location to store IPv6 PD files."
-msgstr "IPv6 PD ファイルを保存するロケーション。"
-
-msgid "Location to store IPv6 RA config files"
-msgstr "IPv6 RA 設定ファイルを保存する場所"
-
 msgid "Location to store child pid files"
 msgstr "子プロセスの PID ファイルを保持する場所"
 
@@ -1139,9 +975,6 @@ msgstr ""
 "VXLAN のようなオーバーレイネットワークの場合は、Neutron はこの値からオーバー"
 "レイプロトコルオーバーヘッドの値を自動的に減算します。デフォルト値は "
 "Ethernet の標準値である 1500 です。"
-
-msgid "MTU size of veth interfaces"
-msgstr "veth インターフェースの MTU サイズ"
 
 msgid "Make the l2 agent run in DVR mode."
 msgstr "L2 エージェントを DVR モードで実行します。"
@@ -1194,11 +1027,6 @@ msgstr "計測ドライバー"
 msgid "MinRtrAdvInterval setting for radvd.conf"
 msgstr " radvd.conf の MinRtrAdvInterval 設定"
 
-msgid "Minimize polling by monitoring ovsdb for interface changes."
-msgstr ""
-"インターフェース変更の検出に関して ovsdb をモニターすることでポーリングが最小"
-"化されます。"
-
 #, python-format
 msgid "Missing key in mapping: '%s'"
 msgstr "マッピングにキーがありません: '%s'"
@@ -1211,21 +1039,6 @@ msgstr ""
 "VXLAN のマルチキャストグループ。設定されると、このマルチキャストグループにす"
 "べてのブロードキャストトラフィックを送信できます。設定されないままにすると、"
 "マルチキャスト VXLAN モードを無効化します。"
-
-msgid ""
-"Multicast group(s) for vxlan interface. A range of group addresses may be "
-"specified by using CIDR notation. Specifying a range allows different VNIs "
-"to use different group addresses, reducing or eliminating spurious broadcast "
-"traffic to the tunnel endpoints. To reserve a unique group for each possible "
-"(24-bit) VNI, use a /8 such as 239.0.0.0/8. This setting must be the same on "
-"all the agents."
-msgstr ""
-"vxlan インターフェースのマルチキャストグループ。CIDR 表記を使用することで、一"
-"定の範囲のグループアドレスを指定できます。範囲を指定するとさまざまな VNI がさ"
-"まざまなグループアドレスを使用できるため、トンネルのエンドポイントへの不適切"
-"なブロードキャストトラフィックを削減または排除できます。使用する可能性のある"
-"各 (24 ビットの) VNI に独自のグループを予約するには、 /8 (239.0.0.0/8 など) "
-"を使用します。この設定はすべてのエージェントで同じである必要があります。"
 
 #, python-format
 msgid "Multiple default providers for service %s"
@@ -1245,15 +1058,6 @@ msgstr ""
 
 msgid "Must specify one or more actions on flow addition or modification"
 msgstr "フローの追加または変更について、1 つ以上のアクションを指定してください"
-
-msgid "Name of Open vSwitch bridge to use"
-msgstr "使用する Open vSwitch ブリッジの名前"
-
-msgid ""
-"Name of nova region to use. Useful if keystone manages more than one region."
-msgstr ""
-"使用する nova リージョンの名前。Keystone で複数のリージョンを管理する場合に役"
-"立ちます。"
 
 msgid "Namespace of the router"
 msgstr "ルーターの名前空間"
@@ -1332,39 +1136,11 @@ msgstr ""
 msgid "Not allowed to manually remove a router from an agent in 'dvr' mode."
 msgstr "'dvr' モードのエージェントからの手動でのルーター削除は許可されません。"
 
-msgid ""
-"Number of DHCP agents scheduled to host a tenant network. If this number is "
-"greater than 1, the scheduler automatically assigns multiple DHCP agents for "
-"a given tenant network, providing high availability for DHCP service."
-msgstr ""
-"テナントネットワークをホストするようにスケジュール設定された DHCP エージェン"
-"トの数。この数が 1 より大きい場合、スケジューラーが自動的に特定のテナントネッ"
-"トワークに複数の DHCP エージェントを割り当てるため、DHCP サービスの高可用性が"
-"実現します。"
-
 msgid "Number of backlog requests to configure the metadata server socket with"
 msgstr "メタデータサーバーソケットの構成に使用されるバックログ要求の数"
 
 msgid "Number of backlog requests to configure the socket with"
 msgstr "ソケットに設定するリクエストのバックログ数"
-
-msgid ""
-"Number of bits in an ipv4 PTR zone that will be considered network prefix. "
-"It has to align to byte boundary. Minimum value is 8. Maximum value is 24. "
-"As a consequence, range of values is 8, 16 and 24"
-msgstr ""
-"ネットワークのプレフィックスとみなされる Ipv4 PTR ゾーン内のビット数。バイト"
-"境界と同じ桁数である必要があります。最小値は 8 で、最大値は 24 です。そのた"
-"め、使用できる値は 8、16、および 24 です。"
-
-msgid ""
-"Number of bits in an ipv6 PTR zone that will be considered network prefix. "
-"It has to align to nyble boundary. Minimum value is 4. Maximum value is 124. "
-"As a consequence, range of values is 4, 8, 12, 16,..., 124"
-msgstr ""
-"ネットワークのプレフィックスとみなされる Ipv6 PTR ゾーン内のビット数。nyble "
-"境界と同じ桁数である必要があります。最小値は 4 で、最大値は 124 です。そのた"
-"め、使用できる値は 4、 8、12、16、... 124 です。"
 
 msgid ""
 "Number of floating IPs allowed per tenant. A negative value means unlimited."
@@ -1381,11 +1157,6 @@ msgstr "テナント当たりに許可されるポート数。負の値は無制
 msgid "Number of routers allowed per tenant. A negative value means unlimited."
 msgstr "テナント当たりに許可されるルーター数。負の値は無制限を意味します。"
 
-msgid ""
-"Number of seconds between sending events to nova if there are any events to "
-"send."
-msgstr "送信するイベントがある場合の nova へのイベント送信間の秒数。"
-
 msgid "Number of seconds to keep retrying to listen"
 msgstr "リッスンを試行し続ける秒数"
 
@@ -1394,13 +1165,6 @@ msgid ""
 "unlimited."
 msgstr ""
 "テナント当たりに許可されるセキュリティーグループ数。負の値は無制限を意味しま"
-"す。 "
-
-msgid ""
-"Number of security rules allowed per tenant. A negative value means "
-"unlimited."
-msgstr ""
-"テナント当たりに許可されるセキュリティールール数。負の値は無制限を意味しま"
 "す。 "
 
 msgid "Number of subnets allowed per tenant, A negative value means unlimited."
@@ -1415,14 +1179,6 @@ msgstr ""
 
 msgid "OK"
 msgstr "OK"
-
-msgid ""
-"OVS datapath to use. 'system' is the default value and corresponds to the "
-"kernel datapath. To enable the userspace datapath set this value to 'netdev'."
-msgstr ""
-"使用する OVS データパス。デフォルト値は 'system' であり、これはカーネルのデー"
-"タパスに該当します。ユーザースペースのデータパスを有効化するには、この値を "
-"'netdev' に設定します。"
 
 msgid "OVS vhost-user socket directory."
 msgstr "OVS の vhost-user ソケットディレクトリー。"
@@ -1451,9 +1207,6 @@ msgid "Override the default dnsmasq settings with this file."
 msgstr ""
 "このファイルを使用して、デフォルトの dnsmasq 設定をオーバーライドします。"
 
-msgid "Owner type of the device: network/compute"
-msgstr "デバイスの所有者タイプ: network/compute"
-
 msgid "POST requests are not supported on this resource."
 msgstr "POST 要求は、このリソースではサポートされていません。"
 
@@ -1464,9 +1217,6 @@ msgstr "パッケージ %s はインストールされていません"
 #, python-format
 msgid "Parsing bridge_mappings failed: %s."
 msgstr "bridge_mappings の解析に失敗しました: %s。"
-
-msgid "Password for connecting to designate in admin context"
-msgstr "管理者のコンテキストにおける designate への接続用パスワード"
 
 msgid "Path to PID file for this process"
 msgstr "このプロセスの PID ファイルのパス"
@@ -1483,9 +1233,6 @@ msgstr "統合ブリッジのトンネルブリッジ内のピアパッチポー
 msgid "Phase upgrade options do not accept revision specification"
 msgstr ""
 "フェーズのアップグレードオプションでは、変更の指定を行うことはできません"
-
-msgid "Ping timeout"
-msgstr "ping タイムアウト"
 
 #, python-format
 msgid "Port %(id)s does not have fixed ip %(address)s"
@@ -1510,22 +1257,11 @@ msgstr ""
 msgid "Private key of client certificate."
 msgstr "クライアント証明書の秘密鍵。"
 
-#, python-format
-msgid "Probe %s deleted"
-msgstr "プローブ %s が削除されました"
-
-#, python-format
-msgid "Probe created : %s "
-msgstr "作成されたプローブ: %s "
-
 msgid "Process is already started"
 msgstr "プロセスが既に実行されています"
 
 msgid "Process is not running."
 msgstr "プロセスが実行されていません"
-
-msgid "Protocol to access nova metadata, http or https"
-msgstr "Nova メタデータ、http、または https にアクセスするためのプロトコル"
 
 #, python-format
 msgid "Provider name %(name)s is limited by %(len)s characters"
@@ -1576,27 +1312,6 @@ msgstr "リモートメタデータサーバーで内部サーバーエラーが
 msgid ""
 "Repository does not contain HEAD files for contract and expand branches."
 msgstr "リポジトリーに縮小分岐と拡張分岐の HEAD ファイルが含まれていません。"
-
-msgid ""
-"Representing the resource type whose load is being reported by the agent. "
-"This can be \"networks\", \"subnets\" or \"ports\". When specified (Default "
-"is networks), the server will extract particular load sent as part of its "
-"agent configuration object from the agent report state, which is the number "
-"of resources being consumed, at every report_interval.dhcp_load_type can be "
-"used in combination with network_scheduler_driver = neutron.scheduler."
-"dhcp_agent_scheduler.WeightScheduler When the network_scheduler_driver is "
-"WeightScheduler, dhcp_load_type can be configured to represent the choice "
-"for the resource being balanced. Example: dhcp_load_type=networks"
-msgstr ""
-"負荷がエージェントによって報告されているリソースタイプを表します。このタイプ"
-"には、\"networks\"、\"subnets\"、または \"ports\" があります。指定した場合 "
-"(デフォルトは networks)、サーバーは、エージェントレポート状態 "
-"(report_interval ごとに消費されるリソース数) からそのエージェント構成オブジェ"
-"クトの一部として送信された特定の負荷を抽出します。dhcp_load_type は "
-"network_scheduler_driver = neutron.scheduler.dhcp_agent_scheduler."
-"WeightScheduler と組み合わせて使用できます。network_scheduler_driver が "
-"WeightScheduler の場合、dhcp_load_type は平衡を取るリソースの選択肢を表すよう"
-"に構成することができます。例: dhcp_load_type=networks"
 
 msgid "Request Failed: internal server error while processing your request."
 msgstr "要求が失敗しました。要求の処理中に内部サーバーエラーが発生しました。"
@@ -1675,14 +1390,6 @@ msgstr ""
 "ノード状態をサーバーに報告する間隔 (秒)。agent_down_time  未満である必要があ"
 "ります。agent_down_time  の半分以下であれば最適です。"
 
-msgid ""
-"Seconds to regard the agent is down; should be at least twice "
-"report_interval, to be sure the agent is down for good."
-msgstr ""
-"エージェントがダウンしていると見なすまでの時間 (秒)。エージェントが完全にダウ"
-"ンしていることを確実にするには、この値を少なくとも report_interval の 2 倍に"
-"してください。"
-
 #, python-format
 msgid "Security Group %(id)s %(reason)s."
 msgstr "セキュリティーグループ %(id)s %(reason)s。"
@@ -1721,16 +1428,6 @@ msgstr ""
 "セキュリティーグループルールのプロトコル %(protocol)s が対応していません。使"
 "用できるのは、プロトコルの値 %(values)s と整数値 [0 から 255 まで] のみです。"
 
-msgid ""
-"Send notification to nova when port data (fixed_ips/floatingip) changes so "
-"nova can update its cache."
-msgstr ""
-"nova がそのキャッシュを更新できるように、ポートデータ (fixed_ips/floatingip) "
-"が変更されたときに通知を nova に送信します。"
-
-msgid "Send notification to nova when port status changes"
-msgstr "ポート状態の変更時の nova への通知送信"
-
 #, python-format
 msgid ""
 "Service provider '%(provider)s' could not be found for service type "
@@ -1739,28 +1436,11 @@ msgstr ""
 "サービスタイプ %(service_type)s のサービスプロバイダー '%(provider)s' は見つ"
 "かりませんでした"
 
-msgid "Service to handle DHCPv6 Prefix delegation."
-msgstr "DHCPv6 のプレフィックスデリゲーションを処理するサービス。"
-
 #, python-format
 msgid "Service type %(service_type)s does not have a default service provider"
 msgstr ""
 "サービスタイプ %(service_type)s にはデフォルトのサービスプロバイダーがありま"
 "せん"
-
-msgid ""
-"Set new timeout in seconds for new rpc calls after agent receives SIGTERM. "
-"If value is set to 0, rpc timeout won't be changed"
-msgstr ""
-"エージェントによる SIGTERM 受信後の新規 rpc 呼び出しの新規タイムアウト(秒) を"
-"設定します。値を 0 に設定すると、rpc タイムアウトは変更されません"
-
-msgid ""
-"Set or un-set the don't fragment (DF) bit on outgoing IP packet carrying GRE/"
-"VXLAN tunnel."
-msgstr ""
-"GRE/VXLAN トンネルを構成した発信 IP パケットで、フラグメント禁止 (DF) ビット"
-"を設定または設定解除します。"
 
 msgid "Shared address scope can't be unshared"
 msgstr "共有アドレススコープは共有を解除できません"
@@ -1778,9 +1458,6 @@ msgstr "ルーターインターフェースのサブネットにはゲートウ
 msgid "Subnet pool has existing allocations"
 msgstr "サブネットプールに既存の割り当てがあります"
 
-msgid "Subnet used for the l3 HA admin network."
-msgstr "l3 HA 管理ネットワークに使用されるサブネット。"
-
 msgid ""
 "System-wide flag to determine the type of router that tenants can create. "
 "Only admin can override."
@@ -1794,9 +1471,6 @@ msgstr "Neutron メタデータ名前空間プロキシーが使用する TCP Po
 msgid "TCP Port used by Nova metadata server."
 msgstr "Nova メタデータサーバーによって使用される TCP ポート。"
 
-msgid "TTL for vxlan interface protocol packets."
-msgstr "vxlan インターフェースプロトコルパケットの TTL。"
-
 #, python-format
 msgid "Tag %(tag)s could not be found."
 msgstr "タグ %(tag)s が見つかりませんでした。"
@@ -1806,27 +1480,6 @@ msgid "Tenant %(tenant_id)s not allowed to create %(resource)s on this network"
 msgstr ""
 "テナント %(tenant_id)s は、このネットワークでの %(resource)s の作成を許可され"
 "ていません"
-
-msgid "Tenant id for connecting to designate in admin context"
-msgstr "管理者のコンテキストにおける designate への接続用テナント ID"
-
-msgid "Tenant name for connecting to designate in admin context"
-msgstr "管理者のコンテキストにおける designate への接続用テナント名"
-
-msgid ""
-"The DHCP server can assist with providing metadata support on isolated "
-"networks. Setting this value to True will cause the DHCP server to append "
-"specific host routes to the DHCP request. The metadata service will only be "
-"activated when the subnet does not contain any router port. The guest "
-"instance must be configured to request host routes via DHCP (Option 121). "
-"This option doesn't have any effect when force_metadata is set to True."
-msgstr ""
-"DHCP サーバーは孤立したネットワークに対してメタデータサポートを提供することが"
-"できます。この値を True に設定すると、DHCP サーバーは DHCP 要求に対する特定の"
-"ホストへの経路を追加できます。このメタデータサービスが有効化されるのは、サブ"
-"ネットにルーターのポートが含まれない場合に限られます。ゲストインスタンスに"
-"は、DHCP (オプション 121) 経由でホストの経路を要求するよう設定を行う必要があ"
-"ります。force_metadata を True に設定する場合、このオプションは機能しません。"
 
 msgid "The UDP port to use for VXLAN tunnels."
 msgstr "VXLAN トンネルで使用する UDP ポート。"
@@ -1848,30 +1501,11 @@ msgstr ""
 "しません。4 つ目のオクテットが 00 の場合、これも使用できます。その他のオク"
 "テットはランダムに生成されます。"
 
-msgid ""
-"The base mac address used for unique DVR instances by Neutron. The first 3 "
-"octets will remain unchanged. If the 4th octet is not 00, it will also be "
-"used. The others will be randomly generated. The 'dvr_base_mac' *must* be "
-"different from 'base_mac' to avoid mixing them up with MAC's allocated for "
-"tenant ports. A 4 octet example would be dvr_base_mac = fa:16:3f:4f:00:00. "
-"The default is 3 octet"
-msgstr ""
-"Neutron によって独自の DVR インスタンスに使用される基本の MAC アドレス。最初"
-"の 3  つのオクテットは変更されません。4 つ目のオクテットが 00 でない場合は、"
-"このオクテットも使用できます。その他のオクテットはランダムに生成されます。 テ"
-"ナントポートに割り当てられた MAC アドレスとの混同を避けるために、 "
-"'dvr_base_mac' は 'base_mac' とは違う値である必要があります。4 つ目のオクテッ"
-"トの例としては、dvr_base_mac = fa:16:3f:4f:00:00 があります。デフォルトは、3 "
-"つ目のオクテットです。"
-
 msgid "The core plugin Neutron will use"
 msgstr "Neutron が使用するコアプラグイン"
 
 msgid "The driver used to manage the DHCP server."
 msgstr "DHCP サーバーの管理に使用されるドライバー。"
-
-msgid "The driver used to manage the virtual interface."
-msgstr "仮想インターフェースの管理に使用されるドライバー。"
 
 msgid ""
 "The email address to be used when creating PTR zones. If not specified, the "
@@ -1881,53 +1515,13 @@ msgstr ""
 "スは admin@<dns_domain> になります。"
 
 msgid ""
-"The maximum number of items returned in a single response, value was "
-"'infinite' or negative integer means no limit"
-msgstr ""
-"1 回の応答で最大数の項目が返されました。値は 'infinite' または (無制限を意味"
-"する) 負の整数でした"
-
-msgid ""
-"The network type to use when creating the HA network for an HA router. By "
-"default or if empty, the first 'tenant_network_types' is used. This is "
-"helpful when the VRRP traffic should use a specific network which is not the "
-"default one."
-msgstr ""
-"HA ルーター用に HA ネットワークを作成する際に使用するネットワークタイプ。デ"
-"フォルトまたはこの値が空の場合、最初の 'tenant_network_types' が使用されま"
-"す。VRRP トラフィックがデフォルトではない特定のネットワークを使用しなければな"
-"らない場合には、この設定が役立ちます。"
-
-msgid ""
 "The number of seconds the agent will wait between polling for local device "
 "changes."
 msgstr ""
 "ローカルデバイスの変更のポーリング間にエージェントが待機する間隔 (秒)。"
 
-msgid ""
-"The number of seconds to wait before respawning the ovsdb monitor after "
-"losing communication with it."
-msgstr ""
-"ovsdb モニターとの通信が途絶えた後で ovsdb モニターを再作成する前に待機する時"
-"間 (秒)"
-
 msgid "The number of sort_keys and sort_dirs must be same"
 msgstr "sort_keys と sort_dirs の数は同じでなければなりません"
-
-msgid ""
-"The path for API extensions. Note that this can be a colon-separated list of "
-"paths. For example: api_extensions_path = extensions:/path/to/more/exts:/"
-"even/more/exts. The __path__ of neutron.extensions is appended to this, so "
-"if your extensions are in there you don't need to specify them here."
-msgstr ""
-"API 強化機能のパス。このパスはコロンで区切られたパスのリストであることに注意"
-"してください。例としては、api_extensions_path = extensions:/path/to/more/"
-"exts:/even/more/exts があります。このパスには neutron.extensions の __path__ "
-"が付いているため、強化機能がこのパスにある場合、ここで指定する必要はありませ"
-"ん。"
-
-msgid "The physical network name with which the HA network can be created."
-msgstr "HA ネットワークを作成可能な物理ネットワーク名。"
 
 #, python-format
 msgid "The port '%s' was deleted"
@@ -1985,14 +1579,6 @@ msgstr "トンネル IP 値が ML2 プラグインに必要です"
 
 msgid "Tunnel bridge to use."
 msgstr "使用するトンネルブリッジ。"
-
-msgid ""
-"Type of the nova endpoint to use.  This endpoint will be looked up in the "
-"keystone catalog and should be one of public, internal or admin."
-msgstr ""
-"使用する nova のエンドポイントのタイプ。このエンドポイントは Keystone のカタ"
-"ログで参照され、public、internal、または admin のいずれかである必要がありま"
-"す。"
 
 msgid "URL for connecting to designate"
 msgstr "designate への接続用 URL"
@@ -2113,14 +1699,6 @@ msgid "Use either --delta or relative revision, not both"
 msgstr "--delta と相対的な変更の両方ではなく、どちらか一方を使用してください"
 
 msgid ""
-"Use ipset to speed-up the iptables based security groups. Enabling ipset "
-"support requires that ipset is installed on L2 agent node."
-msgstr ""
-"iptables ベースのセキュリティーグループの速度を向上させるために、ipset を使用"
-"します。ipset へのサポートを有効にするには、L2 のエージェントノードに ipset "
-"をインストールする必要があります。"
-
-msgid ""
 "Use the root helper when listing the namespaces on a system. This may not be "
 "required depending on the security configuration. If the root helper is not "
 "required, set this to False for a performance improvement."
@@ -2139,42 +1717,11 @@ msgstr ""
 msgid "User (uid or name) running this process after its initialization"
 msgstr "初期化後にこのプロセスを実行するユーザー (uid または名前)"
 
-msgid "Username for connecting to designate in admin context"
-msgstr "管理者のコンテキストにおける designate への接続用ユーザー名"
-
 msgid "VRRP authentication password"
 msgstr "VRRP 認証パスワード"
 
 msgid "VRRP authentication type"
 msgstr "VRRP 認証タイプ"
-
-msgid ""
-"Value of host kernel tick rate (hz) for calculating minimum burst value in "
-"bandwidth limit rules for a port with QoS. See kernel configuration file for "
-"HZ value and tc-tbf manual for more information."
-msgstr ""
-"QoS を設定したポートについて、帯域幅の制限ルールに基づいて最小バースト値を計"
-"算するためのホストのカーネルのチックレート値 (Hz)。詳細情報については、Hz 値"
-"のカーネル設定ファイルと tc-tbf マニュアルを参照してください。"
-
-msgid ""
-"Value of latency (ms) for calculating size of queue for a port with QoS. See "
-"tc-tbf manual for more information."
-msgstr ""
-"QoS を設定したポートについて、キューのサイズを検索するたためのレイテンシー値 "
-"(ミリ秒)。詳細情報については、tc-tbf マニュアルを参照してください。"
-
-msgid ""
-"When proxying metadata requests, Neutron signs the Instance-ID header with a "
-"shared secret to prevent spoofing. You may select any string for a secret, "
-"but it must match here and in the configuration used by the Nova Metadata "
-"Server. NOTE: Nova uses the same config key, but in [neutron] section."
-msgstr ""
-"メタデータ要求のプロキシーを実行する際に、Neutron はスプーフィングを防止する"
-"ために共有秘密鍵を使用して インスタンス ID ヘッダーに署名します。秘密鍵として"
-"任意の文字列を選択できるものの、その値はここと Nova Metadata Server が使用す"
-"る設定で一致する必要があります。注意: Nova は同じ設定鍵を使用するものの、その"
-"値は [neutron] セクションにあります。"
 
 msgid ""
 "Where to store Neutron state files. This directory must be writable by the "
@@ -2183,40 +1730,8 @@ msgstr ""
 "Neutron 状態ファイルの保管場所。このディレクトリーは、エージェントが書き込み"
 "を行える場所でなければなりません。"
 
-msgid ""
-"With IPv6, the network used for the external gateway does not need to have "
-"an associated subnet, since the automatically assigned link-local address "
-"(LLA) can be used. However, an IPv6 gateway address is needed for use as the "
-"next-hop for the default route. If no IPv6 gateway address is configured "
-"here, (and only then) the neutron router will be configured to get its "
-"default route from router advertisements (RAs) from the upstream router; in "
-"which case the upstream router must also be configured to send these RAs. "
-"The ipv6_gateway, when configured, should be the LLA of the interface on the "
-"upstream router. If a next-hop using a global unique address (GUA) is "
-"desired, it needs to be done via a subnet allocated to the network and not "
-"through this parameter. "
-msgstr ""
-"IPv6 では、自動的に割り当てられたリンクローカルアドレス (LLA) を使用できるた"
-"め、外部ゲートウェイに使用するネットワークにはサブネットを関連付ける必要はあ"
-"りません。ただし、IPv6 ゲートウェイアドレスはデフォルト経路のネクストホップと"
-"して使用するために必要です。IPv6 ゲートウェイアドレスをここで構成しない場合に"
-"のみ、上流ルーターのルーター広告 (RA) からデフォルト経路を取得するように "
-"Neutron ルーターが構成されます。この場合、これらの RA を送信するように上流"
-"ルーターを構成することも必要です。ipv6_gateway を構成する場合、これは上流ルー"
-"ター上のインターフェースの LLA でなければなりません。グローバルユニークアドレ"
-"ス (GUA) を使用したネクストホップが必要な場合は、このパラメーターを使用するの"
-"ではなく、ネットワークに割り振られたサブネットを介してこれを行う必要がありま"
-"す。"
-
 msgid "You must implement __call__"
 msgstr "__call__ を実装する必要があります"
-
-msgid ""
-"You must provide a config file for bridge - either --config-file or "
-"env[NEUTRON_TEST_CONFIG_FILE]"
-msgstr ""
-"ブリッジの構成ファイルとして --config-file または "
-"env[NEUTRON_TEST_CONFIG_FILE] のいずれかを指定する必要があります"
 
 msgid "You must provide a revision or relative delta"
 msgstr "変更または相対デルタを指定する必要があります"

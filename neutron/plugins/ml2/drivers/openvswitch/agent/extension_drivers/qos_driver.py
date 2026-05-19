@@ -14,7 +14,7 @@
 #    under the License.
 
 import collections
-import random
+import secrets
 
 from neutron_lib import constants
 from neutron_lib.services.qos import constants as qos_consts
@@ -22,6 +22,7 @@ from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron.agent.l2.extensions import qos_linux as qos
+from neutron.plugins.ml2.common import constants as comm_consts
 from neutron.services.qos.drivers.openvswitch import driver
 
 
@@ -30,27 +31,71 @@ LOG = logging.getLogger(__name__)
 MAX_RETIES = 1000
 
 
-class MeterRuleManager(object):
+class MeterIDGenerator:
     # This cache will be:
     #  PORT_METER_ID = {"port_id_1_ingress": 1,
     #                   "port_id_1_egress: 2,
     #                   "port_id_2_ingress": 3,
     #                   "port_id_2_egress: 4}
-    PORT_METER_ID = {}
-    # This will be:
-    #  PORT_INFO_INGRESS = {"port_id_1": (of_port_name, mac_1, local_vlan_1),
-    #                       "port_id_2": (of_port_name, mac_2, local_vlan_2),
-    PORT_INFO_INGRESS = {}
-    #  PORT_INFO_EGRESS = {"port_id_1": (of_port_name, mac_1, of_port_1),
-    #                      "port_id_2": (of_port_name, mac_2, of_port_2),
-    PORT_INFO_EGRESS = {}
 
-    def __init__(self, br_int):
+    def __new__(cls, *args, **kwargs):
+        # make it a singleton
+        if not hasattr(cls, '_instance'):
+            cls._instance = super().__new__(cls)
+            cls.PORT_METER_ID = {}
+        return cls._instance
+
+    def __init__(self, max_meter):
+        self.max_meter = max_meter
+
+    def _generate_meter_id(self):
+        if self.max_meter <= 0:
+            return
+        used_meter_ids = self.PORT_METER_ID.values()
+        cid = None
+        times = 0
+        while not cid or cid in used_meter_ids:
+            cid = secrets.SystemRandom().randint(1, self.max_meter)
+            times += 1
+            if times >= MAX_RETIES:
+                return
+        return cid
+
+    def allocate_meter_id(self, key):
+        meter_id = self._generate_meter_id()
+        if not meter_id:
+            return
+        self.set_meter_id(key, meter_id)
+        return meter_id
+
+    def remove_port_meter_id(self, key):
+        return self.PORT_METER_ID.pop(key, None)
+
+    def set_meter_id(self, key, meter_id):
+        self.PORT_METER_ID[key] = meter_id
+
+
+class MeterRuleManager:
+
+    def __init__(self, br_int, type_=comm_consts.METER_FLAG_PPS):
         self.br_int = br_int
+        self.max_meter = 0
         self._init_max_meter_id()
+        self.rule_type = type_
+        self.generator = MeterIDGenerator(self.max_meter)
+        # This will be:
+        #  PORT_INFO_INGRESS = {"port_id_1": (mac_1, 1),
+        #                       "port_id_2": (mac_2, 2),
+        #                       "port_id_3": (mac_3, 3),
+        #                       "port_id_4": (mac_4, 4)}
+        self.PORT_INFO_INGRESS = {}
+        #  PORT_INFO_EGRESS = {"port_id_1": (mac_1, 1),
+        #                      "port_id_2": (mac_2, 1),
+        #                      "port_id_3": (mac_3, 1),
+        #                      "port_id_4": (mac_4, 1)}
+        self.PORT_INFO_EGRESS = {}
 
     def _init_max_meter_id(self):
-        self.max_meter = 0
         features = self.br_int.list_meter_features()
         for f in features:
             if f["max_meter"] > 0:
@@ -58,20 +103,20 @@ class MeterRuleManager(object):
                 break
 
     def get_data_key(self, port_id, direction):
-        return "%s_%s" % (port_id, direction)
+        return "{}_{}_{}".format(self.rule_type, port_id, direction)
 
     def load_port_meter_id(self, port_name, port_id, direction):
         key = self.get_data_key(port_id, direction)
-        meter_id = self.br_int.get_value_from_other_config(
-            port_name, key, value_type=int)
-        if meter_id:
-            self.PORT_METER_ID[key] = meter_id
-        else:
-            LOG.warning("Failed to load port %(port)s meter id in "
+        try:
+            meter_id = self.br_int.get_value_from_other_config(
+                port_name, key, value_type=int)
+            self.generator.set_meter_id(key, meter_id)
+            return meter_id
+        except Exception:
+            LOG.warning("Failed to load port $(port)s meter id in "
                         "direction %(direction)s",
                         {"direction": direction,
                          "port": port_id})
-        return meter_id
 
     def store_port_meter_id_to_ovsdb(self, port_name, port_id,
                                      direction, meter_id):
@@ -84,32 +129,13 @@ class MeterRuleManager(object):
         self.br_int.remove_value_from_other_config(
             port_name, key)
 
-    def generate_meter_id(self):
-        if self.max_meter <= 0:
-            return
-        used_meter_ids = self.PORT_METER_ID.values()
-        cid = None
-        times = 0
-        while not cid or cid in used_meter_ids:
-            cid = random.randint(1, self.max_meter)
-            times += 1
-            if times >= MAX_RETIES:
-                LOG.warning("Failed to allocate meter "
-                            "id after %d retries", times)
-                return
-        return cid
-
     def allocate_meter_id(self, port_id, direction):
-        meter_id = self.generate_meter_id()
-        if not meter_id:
-            return
         key = self.get_data_key(port_id, direction)
-        self.PORT_METER_ID[key] = meter_id
-        return meter_id
+        return self.generator.allocate_meter_id(key)
 
     def remove_port_meter_id(self, port_id, direction):
         key = self.get_data_key(port_id, direction)
-        return self.PORT_METER_ID.pop(key, None)
+        return self.generator.remove_port_meter_id(key)
 
     def set_port_info_ingress(self, port_id, port_name, mac, vlan):
         self.PORT_INFO_INGRESS[port_id] = (port_name, mac, vlan)
@@ -124,7 +150,7 @@ class MeterRuleManager(object):
         return self.PORT_INFO_EGRESS.pop(port_id, (None, None, None))
 
 
-class OVSPacketRatelimitDriver(object):
+class OVSMeterQoSDriver:
 
     SUPPORT_METER = None
 
@@ -142,76 +168,112 @@ class OVSPacketRatelimitDriver(object):
             self.SUPPORT_METER = self.check_meter_features()
         return self.SUPPORT_METER
 
-    def create_packet_rate_limit(self, port, rule):
-        self.update_packet_rate_limit(port, rule)
-
-    def update_packet_rate_limit(self, port, rule):
+    def _delete_meter_rate_limit(self, port_id, direction, cache, type_):
         if not self.support_meter:
-            LOG.debug("Meter feature is not supported by ovs %s bridge",
+            LOG.debug("Meter feature was not support by ovs %s bridge",
                       self.br_int.br_name)
             return
 
-        LOG.debug("Update packet rate limit for port: %s", port)
-        vif_port = port.get('vif_port')
-        if not vif_port:
-            port_id = port.get('port_id')
-            LOG.debug("update_packet_rate_limit was received for port %s but "
-                      "vif_port was not found. It seems that port is already "
-                      "deleted", port_id)
-            return
-        self.ports[port['port_id']][(qos_consts.RULE_TYPE_PACKET_RATE_LIMIT,
-                                     rule.direction)] = port
-
-        self._update_packet_rate_limit(vif_port, rule, rule.direction)
-
-    def delete_packet_rate_limit(self, port):
-        if not self.support_meter:
-            LOG.debug("Meter feature is not supported by ovs bridge")
-            return
-        self._delete_packet_rate_limit(port, constants.EGRESS_DIRECTION)
-
-    def delete_packet_rate_limit_ingress(self, port):
-        if not self.support_meter:
-            LOG.debug("Meter feature is not supported by ovs bridge")
-            return
-        self._delete_packet_rate_limit(port, constants.INGRESS_DIRECTION)
-
-    def _delete_packet_rate_limit(self, port, direction):
-        port_id = port.get('port_id')
-        LOG.debug("Delete %(direction)s packet rate limit for port %(port)s.",
-                  {"direction": direction,
+        LOG.debug("Delete %(direction)s %(qos_type)s rate limit "
+                  "for port %(port)s.",
+                  {"qos_type": type_,
+                   "direction": direction,
                    "port": port_id})
 
-        port = self.ports[port_id].pop(
-            (qos_consts.RULE_TYPE_PACKET_RATE_LIMIT, direction), None)
+        pkt_rate = qos_consts.RULE_TYPE_PACKET_RATE_LIMIT
+        bw_rate = qos_consts.RULE_TYPE_BANDWIDTH_LIMIT
+        qos_type = pkt_rate if type_ == comm_consts.METER_FLAG_PPS else bw_rate
+        self.ports[port_id].pop((qos_type, direction), None)
 
-        meter_id = self.meter_cache.remove_port_meter_id(
+        meter_id = cache.remove_port_meter_id(
             port_id, direction)
 
         if direction == constants.INGRESS_DIRECTION:
             port_name, mac, local_vlan = (
-                self.meter_cache.remove_port_info_ingress(port_id))
+                cache.remove_port_info_ingress(port_id))
             if mac is not None and local_vlan is not None:
                 self.br_int.remove_meter_from_port(
-                    direction, mac, local_vlan=local_vlan)
+                    direction, mac, local_vlan=local_vlan,
+                    type_=type_)
             if port_name is not None:
-                self.meter_cache.clean_port_meter_id_from_ovsdb(
+                cache.clean_port_meter_id_from_ovsdb(
                     port_name, port_id, direction)
         else:
             port_name, mac, ofport = (
-                self.meter_cache.remove_port_info_egress(port_id))
+                cache.remove_port_info_egress(port_id))
             if mac is not None and ofport is not None:
                 self.br_int.remove_meter_from_port(
-                    direction, mac, in_port=ofport)
+                    direction, mac, in_port=ofport,
+                    type_=type_)
             if port_name is not None:
-                self.meter_cache.clean_port_meter_id_from_ovsdb(
+                cache.clean_port_meter_id_from_ovsdb(
                     port_name, port_id, direction)
 
         if meter_id:
             self.br_int.delete_meter(meter_id)
 
-    def _update_packet_rate_limit(self, vif_port, rule, direction):
+    def _update_meter_rate_limit(self, vif_port, direction, rate,
+                                 burst, cache, type_):
+        if not self.support_meter:
+            LOG.debug("Meter feature was not support by ovs %s bridge",
+                      self.br_int.br_name)
+            return
+
         port_name = vif_port.port_name
+        LOG.debug("Update port %(port)s %(direction)s %(qos_type)s rate limit "
+                  "with rate: %(rate)s, burst: %(burst)s",
+                  {"qos_type": type_,
+                   "port": vif_port.vif_id,
+                   "direction": direction,
+                   "rate": rate,
+                   "burst": burst})
+
+        meter_id = cache.load_port_meter_id(
+            port_name, vif_port.vif_id, direction)
+        if not meter_id:
+            meter_id = cache.allocate_meter_id(
+                vif_port.vif_id, direction)
+            if not meter_id:
+                LOG.warning("Failed to retrieve and re-allocate meter id, "
+                            "skipping updating port %(port)s "
+                            "%(direction)s %(qos_type)s rate limit",
+                            {"qos_type": type_,
+                             "port": vif_port.vif_id,
+                             "direction": direction})
+                return
+            cache.store_port_meter_id_to_ovsdb(
+                port_name, vif_port.vif_id, direction, meter_id)
+
+        try:
+            self.br_int.create_meter(meter_id, rate,
+                                     burst=burst, type_=type_)
+        except Exception:
+            self.br_int.update_meter(meter_id, rate,
+                                     burst=burst, type_=type_)
+
+        local_vlan = self.br_int.get_port_tag_by_name(port_name)
+
+        if direction == constants.INGRESS_DIRECTION:
+            cache.set_port_info_ingress(
+                vif_port.vif_id,
+                port_name, vif_port.vif_mac, local_vlan)
+            self.br_int.apply_meter_to_port(
+                meter_id, direction, vif_port.vif_mac,
+                local_vlan=local_vlan, type_=type_)
+        else:
+            cache.set_port_info_egress(
+                vif_port.vif_id,
+                port_name, vif_port.vif_mac, vif_port.ofport)
+            self.br_int.apply_meter_to_port(
+                meter_id, direction, vif_port.vif_mac,
+                in_port=vif_port.ofport, type_=type_)
+
+    def _delete_packet_rate_limit(self, port, direction):
+        self._delete_meter_rate_limit(port.get('port_id'), direction,
+                                      self.meter_cache_pps,
+                                      type_=comm_consts.METER_FLAG_PPS)
+
+    def _update_packet_rate_limit(self, vif_port, rule, direction):
         max_kpps = rule.max_kpps * 1000
         max_burst_kpps = rule.max_burst_kpps * 1000 or 0
         LOG.debug("Update port %(port)s %(direction)s packet rate limit "
@@ -220,54 +282,37 @@ class OVSPacketRatelimitDriver(object):
                    "direction": direction,
                    "rate": rule.max_kpps,
                    "burst": rule.max_burst_kpps})
+        self._update_meter_rate_limit(vif_port, direction,
+                                      max_kpps, max_burst_kpps,
+                                      self.meter_cache_pps,
+                                      type_=comm_consts.METER_FLAG_PPS)
 
-        meter_id = self.meter_cache.load_port_meter_id(
-            port_name, vif_port.vif_id, direction)
-        if not meter_id:
-            meter_id = self.meter_cache.allocate_meter_id(
-                vif_port.vif_id, direction)
-            if not meter_id:
-                LOG.warning("Failed to retrieve and re-allocate meter id, "
-                            "skipping updating port %(port)s "
-                            "%(direction)s packet rate limit",
-                            {"port": vif_port.vif_id,
-                             "direction": direction})
-                return
-            self.meter_cache.store_port_meter_id_to_ovsdb(
-                port_name, vif_port.vif_id, direction, meter_id)
+    def _delete_meter_bandwidth_rate_limit(self, port_id, direction):
+        self._delete_meter_rate_limit(port_id, direction, self.meter_cache_bps,
+                                      type_=comm_consts.METER_FLAG_BPS)
 
-        try:
-            self.br_int.create_meter(meter_id, max_kpps,
-                                     burst=max_burst_kpps)
-        except Exception:
-            self.br_int.update_meter(meter_id, max_kpps,
-                                     burst=max_burst_kpps)
-
-        local_vlan = self.br_int.get_port_tag_by_name(port_name)
-
-        if direction == constants.INGRESS_DIRECTION:
-            self.meter_cache.set_port_info_ingress(
-                vif_port.vif_id,
-                port_name, vif_port.vif_mac, local_vlan)
-            self.br_int.apply_meter_to_port(
-                meter_id, direction, vif_port.vif_mac,
-                local_vlan=local_vlan)
-        else:
-            self.meter_cache.set_port_info_egress(
-                vif_port.vif_id,
-                port_name, vif_port.vif_mac, vif_port.ofport)
-            self.br_int.apply_meter_to_port(
-                meter_id, direction, vif_port.vif_mac,
-                in_port=vif_port.ofport)
+    def _update_meter_bandwidth_rate_limit(self, vif_port, rule, direction):
+        max_kbps = rule.max_kbps
+        max_burst_kbps = rule.max_burst_kbps or 0
+        LOG.debug("Update port %(port)s %(direction)s meter bandwidth limit "
+                  "with rate: %(rate)s, burst: %(burst)s",
+                  {"port": vif_port.vif_id,
+                   "direction": direction,
+                   "rate": max_kbps,
+                   "burst": max_burst_kbps})
+        self._update_meter_rate_limit(vif_port, direction,
+                                      max_kbps, max_burst_kbps,
+                                      self.meter_cache_bps,
+                                      type_=comm_consts.METER_FLAG_BPS)
 
 
 class QosOVSAgentDriver(qos.QosLinuxAgentDriver,
-                        OVSPacketRatelimitDriver):
+                        OVSMeterQoSDriver):
 
     SUPPORTED_RULES = driver.SUPPORTED_RULES
 
     def __init__(self):
-        super(QosOVSAgentDriver, self).__init__()
+        super().__init__()
         self.br_int_name = cfg.CONF.OVS.integration_bridge
         self.br_int = None
         self.agent_api = None
@@ -292,7 +337,9 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver,
         self.br_int = self.agent_api.request_int_br()
         self.cookie = self.br_int.default_cookie
         self._qos_bandwidth_initialize()
-        self.meter_cache = MeterRuleManager(self.br_int)
+        self.meter_cache_pps = MeterRuleManager(self.br_int)
+        self.meter_cache_bps = MeterRuleManager(
+            self.br_int, type_=comm_consts.METER_FLAG_BPS)
 
     def create_bandwidth_limit(self, port, rule):
         self.update_bandwidth_limit(port, rule)
@@ -326,7 +373,12 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver,
                       port_id)
             return
         vif_port = vif_port or port.get('vif_port')
-        self.br_int.delete_egress_bw_limit_for_port(vif_port.port_name)
+
+        if cfg.CONF.OVS.qos_meter_bandwidth:
+            self._delete_meter_bandwidth_rate_limit(
+                port_id, direction=constants.EGRESS_DIRECTION)
+        else:
+            self.br_int.delete_egress_bw_limit_for_port(vif_port.port_name)
 
     def delete_bandwidth_limit_ingress(self, port):
         port_id = port.get('port_id')
@@ -341,7 +393,12 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver,
                       port_id)
             return
         vif_port = vif_port or port.get('vif_port')
-        self.br_int.delete_ingress_bw_limit_for_port(vif_port.port_name)
+
+        if cfg.CONF.OVS.qos_meter_bandwidth:
+            self._delete_meter_bandwidth_rate_limit(
+                port_id, direction=constants.INGRESS_DIRECTION)
+        else:
+            self.br_int.delete_ingress_bw_limit_for_port(vif_port.port_name)
 
     def create_dscp_marking(self, port, rule):
         self.update_dscp_marking(port, rule)
@@ -381,20 +438,28 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver,
         # ovs accepts only integer values of burst:
         max_burst_kbps = int(self._get_egress_burst_value(rule))
 
-        self.br_int.create_egress_bw_limit_for_port(vif_port.port_name,
-                                                    max_kbps,
-                                                    max_burst_kbps)
+        if cfg.CONF.OVS.qos_meter_bandwidth:
+            self._update_meter_bandwidth_rate_limit(
+                vif_port, rule, direction=constants.EGRESS_DIRECTION)
+        else:
+            self.br_int.create_egress_bw_limit_for_port(vif_port.port_name,
+                                                        max_kbps,
+                                                        max_burst_kbps)
 
     def _update_ingress_bandwidth_limit(self, vif_port, rule):
         port_name = vif_port.port_name
         max_kbps = rule.max_kbps or 0
         max_burst_kbps = rule.max_burst_kbps or 0
 
-        self.br_int.update_ingress_bw_limit_for_port(
-            port_name,
-            max_kbps,
-            max_burst_kbps
-        )
+        if cfg.CONF.OVS.qos_meter_bandwidth:
+            self._update_meter_bandwidth_rate_limit(
+                vif_port, rule, direction=constants.INGRESS_DIRECTION)
+        else:
+            self.br_int.update_ingress_bw_limit_for_port(
+                port_name,
+                max_kbps,
+                max_burst_kbps
+            )
 
     def create_minimum_bandwidth(self, port, rule):
         self.update_minimum_bandwidth(port, rule)
@@ -405,6 +470,11 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver,
             LOG.debug('update_minimum_bandwidth was received for port %s but '
                       'vif_port was not found. It seems that port is already '
                       'deleted', port.get('port_id'))
+            return
+        if not port.get('physical_network'):
+            LOG.debug('update_minimum_bandwidth was received for port %s but '
+                      'has no physical network associated',
+                      port.get('port_id'))
             return
 
         self.ports[port['port_id']][(qos_consts.RULE_TYPE_MINIMUM_BANDWIDTH,
@@ -477,3 +547,26 @@ class QosOVSAgentDriver(qos.QosLinuxAgentDriver,
     def delete_minimum_packet_rate_ingress(self, port):
         LOG.debug("Minimum packet rate rule for ingress direction was deleted "
                   "for port %s", port['port_id'])
+
+    def create_packet_rate_limit(self, port, rule):
+        self.update_packet_rate_limit(port, rule)
+
+    def update_packet_rate_limit(self, port, rule):
+        LOG.debug("Update packet rate limit for port: %s", port)
+        vif_port = port.get('vif_port')
+        if not vif_port:
+            port_id = port.get('port_id')
+            LOG.debug("update_packet_rate_limit was received for port %s but "
+                      "vif_port was not found. It seems that port is already "
+                      "deleted", port_id)
+            return
+        self.ports[port['port_id']][(qos_consts.RULE_TYPE_PACKET_RATE_LIMIT,
+                                     rule.direction)] = port
+
+        self._update_packet_rate_limit(vif_port, rule, rule.direction)
+
+    def delete_packet_rate_limit(self, port):
+        self._delete_packet_rate_limit(port, constants.EGRESS_DIRECTION)
+
+    def delete_packet_rate_limit_ingress(self, port):
+        self._delete_packet_rate_limit(port, constants.INGRESS_DIRECTION)

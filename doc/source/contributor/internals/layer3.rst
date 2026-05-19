@@ -21,8 +21,8 @@
       (Avoid deeper levels because they do not render well.)
 
 
-Layer 3 Networking in Neutron - via Layer 3 agent & OpenVSwitch
-===============================================================
+Layer 3 Networking via Layer 3 & OpenVSwitch Agents
+===================================================
 
 This page discusses the usage of Neutron with Layer 3 functionality enabled.
 
@@ -141,7 +141,8 @@ Neutron Routers are realized in OpenVSwitch
 .. image:: images/under-the-hood-scenario-1-ovs-network.png
 
 
-"router1" in the Neutron logical network is realized through a port ("qr-0ba8700e-da") in OpenVSwitch - attached to "br-int"::
+"router1" in the Neutron logical network is realized through a port
+("qr-0ba8700e-da") in OpenVSwitch - attached to "br-int"::
 
         vagrant@bionic64:~/devstack$ sudo ovs-vsctl show
         b9b27fc3-5057-47e7-ba64-0b6afe70a398
@@ -183,32 +184,35 @@ Neutron Routers are realized in OpenVSwitch
 
 
         vagrant@bionic64:~/devstack$ brctl show
-        bridge name	bridge id		STP enabled	interfaces
-        br-eth1		0000.e2e7fc5ccb4d	no
-        br-ex		0000.82ee46beaf4d	no		phy-br-ex
-                                                                qg-39efb3f9-f0
-                                                                qg-77e0666b-cd
-        br-int		0000.5e46cb509849	no		int-br-ex
-                                                                qr-54c9cd83-43
-                                                                qvo199abeb2-63
-                                                                qvo1abbbb60-b8
-                                                                tap74b45335-cc
-        qbr199abeb2-63		8000.ba06e5f8675c	no		qvb199abeb2-63
-                                                                tap199abeb2-63
-        qbr1abbbb60-b8		8000.46a87ed4fb66	no		qvb1abbbb60-b8
-                                                                tap1abbbb60-b8
-        virbr0		8000.000000000000	yes
+        bridge name         bridge id           STP enabled    interfaces
+        br-eth1             0000.e2e7fc5ccb4d   no
+        br-ex               0000.82ee46beaf4d   no             phy-br-ex
+                                                               qg-41efb3f9-f0
+                                                               qg-77e0666b-cd
+        br-int              0000.5e46cb509849   no             int-br-ex
+                                                               qr-54c9cd83-43
+                                                               qvo199abeb2-63
+                                                               qvo1abbbb60-b8
+                                                               tap74b45335-cc
+        qbr199abeb2-63      8000.ba06e5f8675c   no             qvb199abeb2-63
+                                                               tap199abeb2-63
+        qbr1abbbb60-b8      8000.46a87ed4fb66   no             qvb1abbbb60-b8
+                                                               tap1abbbb60-b8
+        virbr0              8000.000000000000   yes
 
 Finding the router in ip/ipconfig
 ---------------------------------
 
-The neutron-l3-agent uses the Linux IP stack and iptables to perform L3 forwarding and NAT.
-In order to support multiple routers with potentially overlapping IP addresses, neutron-l3-agent
-defaults to using Linux network namespaces to provide isolated forwarding contexts. As a result,
-the IP addresses of routers will not be visible simply by running "ip addr list" or "ifconfig" on
+The neutron-l3-agent uses the Linux IP stack and iptables to perform L3
+forwarding and NAT. In order to support multiple routers with potentially
+overlapping IP addresses, neutron-l3-agent defaults to using Linux network
+namespaces to provide isolated forwarding contexts. As a result,
+the IP addresses of routers will not be visible simply by running
+"ip addr list" or "ifconfig" on
 the node. Similarly, you will not be able to directly ping fixed IPs.
 
-To do either of these things, you must run the command within a particular router's network
+To do either of these things, you must run the command within a particular
+router's network
 namespace. The namespace will have the name "qrouter-<UUID of the router>.
 
 .. image:: images/under-the-hood-scenario-1-ovs-netns.png
@@ -242,7 +246,7 @@ For example::
 Provider Networking
 -------------------
 
-Neutron can also be configured to create `provider networks <../../admin/archives/adv-features.html#provider-networks>`_.
+Neutron can also be configured to create provider networks.
 
 L3 agent extensions
 -------------------

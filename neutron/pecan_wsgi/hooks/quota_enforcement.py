@@ -15,12 +15,14 @@
 
 import collections
 
+from neutron_lib import context
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
 from oslo_log import log as logging
 from pecan import hooks
 
 from neutron import manager
+from neutron.pecan_wsgi.hooks import utils
 from neutron import quota
 from neutron.quota import resource_registry
 
@@ -38,21 +40,33 @@ class QuotaEnforcementHook(hooks.PecanHook):
         if state.request.method != 'POST' or not resource or not items:
             return
         plugin = manager.NeutronManager.get_plugin_for_resource(collection)
-        # Store requested resource amounts grouping them by tenant
-        deltas = collections.Counter(map(lambda x: x['tenant_id'], items))
+        parent_id = state.request.context.get('parent_id')
+        parent_project_id = None
+        if parent_id and any(not x.get('project_id') for x in items):
+            parent_getter = getattr(
+                plugin, 'get_%s' % utils.get_controller(state).parent)
+            try:
+                parent_project_id = parent_getter(
+                    context.get_admin_context(), parent_id).get('project_id')
+            except exceptions.NotFound:
+                pass
+        # Store requested resource amounts grouping them by project
+        deltas = collections.Counter(
+            map(lambda x: x.get('project_id', parent_project_id), items))
         # Perform quota enforcement
         reservations = []
         neutron_context = state.request.context.get('neutron_context')
-        for (tenant_id, delta) in deltas.items():
+        for (project_id, delta) in deltas.items():
             try:
                 reservation = quota.QUOTAS.make_reservation(
                     neutron_context,
-                    tenant_id,
+                    project_id,
                     {resource: delta},
                     plugin)
-                LOG.debug("Made reservation on behalf of %(tenant_id)s "
+                LOG.debug("Made reservation on behalf of %(project_id)s "
                           "for: %(delta)s",
-                          {'tenant_id': tenant_id, 'delta': {resource: delta}})
+                          {'project_id': project_id,
+                           'delta': {resource: delta}})
                 if reservation:
                     reservations.append(reservation)
             except exceptions.QuotaResourceUnknown as e:
@@ -72,7 +86,7 @@ class QuotaEnforcementHook(hooks.PecanHook):
         if state.request.method == 'GET' and collection:
             # resync on list operations to preserve behavior of old API
             resource_registry.resync_resource(
-                neutron_context, resource, neutron_context.tenant_id)
+                neutron_context, resource, neutron_context.project_id)
         # Commit reservation(s)
         reservations = state.request.context.get('reservations') or []
         if not reservations and state.request.method != 'DELETE':

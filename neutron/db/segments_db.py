@@ -78,11 +78,31 @@ def update_network_segment(context, segment_id, segmentation_id):
 
 
 def get_network_segments(context, network_id, filter_dynamic=False):
+    """Get network segments for a single network.
+
+    :param context: neutron context
+    :param network_id: UUID of the network
+    :param filter_dynamic: Filter segments by is_dynamic flag:
+                          - False: return only static segments (default)
+                          - True: return only dynamic segments
+                          - None: return all segments (both static and dynamic)
+    :returns: list of segment dictionaries
+    """
     return get_networks_segments(
         context, [network_id], filter_dynamic)[network_id]
 
 
 def get_networks_segments(context, network_ids, filter_dynamic=False):
+    """Get network segments for multiple networks.
+
+    :param context: neutron context
+    :param network_ids: list of network UUIDs
+    :param filter_dynamic: Filter segments by is_dynamic flag:
+                          - False: return only static segments (default)
+                          - True: return only dynamic segments
+                          - None: return all segments (both static and dynamic)
+    :returns: dict mapping network_id to list of segment dictionaries
+    """
     if not network_ids:
         return {}
 
@@ -109,6 +129,10 @@ def get_segment_by_id(context, segment_id):
 def get_dynamic_segment(context, network_id, physical_network=None,
                         segmentation_id=None):
     """Return a dynamic segment for the filters provided if one exists."""
+    # Network segments have physical_network=None in tunnelled networks, unlike
+    # network segment ranges, that have an empty string in order to force the
+    # database constraint.
+    physical_network = physical_network or None
     with db_api.CONTEXT_READER.using(context):
         filters = {
             'network_id': network_id,
@@ -124,14 +148,13 @@ def get_dynamic_segment(context, network_id, physical_network=None,
 
         if objs:
             return _make_segment_dict(objs[0])
-        else:
-            LOG.debug("No dynamic segment found for "
-                      "Network:%(network_id)s, "
-                      "Physical network:%(physnet)s, "
-                      "segmentation_id:%(segmentation_id)s",
-                      {'network_id': network_id,
-                       'physnet': physical_network,
-                       'segmentation_id': segmentation_id})
+        LOG.debug("No dynamic segment found for "
+                  "Network:%(network_id)s, "
+                  "Physical network:%(physnet)s, "
+                  "segmentation_id:%(segmentation_id)s",
+                  {'network_id': network_id,
+                   'physnet': physical_network,
+                   'segmentation_id': segmentation_id})
 
 
 def delete_network_segment(context, segment_id):
@@ -143,20 +166,12 @@ def delete_network_segment(context, segment_id):
 def network_segments_exist_in_range(context, network_type, physical_network,
                                     segment_range=None):
     """Check whether one or more network segments exist in a range."""
-    with db_api.CONTEXT_READER.using(context):
-        filters = {
-            'network_type': network_type,
-            'physical_network': physical_network,
-        }
-        segment_objs = network_obj.NetworkSegment.get_objects(
-            context, **filters)
-        if segment_range:
-            minimum_id = segment_range['minimum']
-            maximum_id = segment_range['maximum']
-            segment_objs = [
-                segment for segment in segment_objs if
-                minimum_id <= segment.segmentation_id <= maximum_id]
-        return len(segment_objs) > 0
+    # Network segments have physical_network=None in tunnelled networks, unlike
+    # network segment ranges, that have an empty string in order to force the
+    # database constraint.
+    physical_network = physical_network or None
+    return bool(network_obj.NetworkSegment.count_segments(
+        context, network_type, physical_network, segment_range=segment_range))
 
 
 def min_max_actual_segments_in_range(context, network_type, physical_network,
@@ -164,6 +179,10 @@ def min_max_actual_segments_in_range(context, network_type, physical_network,
     """Return the minimum and maximum segmentation IDs used in a network
     segment range
     """
+    # Network segments have physical_network=None in tunnelled networks, unlike
+    # network segment ranges, that have an empty string in order to force the
+    # database constraint.
+    physical_network = physical_network or None
     with db_api.CONTEXT_READER.using(context):
         filters = {
             'network_type': network_type,
@@ -185,10 +204,9 @@ def min_max_actual_segments_in_range(context, network_type, physical_network,
         if segment_objs:
             return (segment_objs[0].segmentation_id,
                     segment_objs[-1].segmentation_id)
-        else:
-            LOG.debug("No existing segment found for "
-                      "Network type:%(network_type)s, "
-                      "Physical network:%(physical_network)s",
-                      {'network_type': network_type,
-                       'physical_network': physical_network})
-            return None, None
+        LOG.debug(
+            "No existing segment found for Network type:%(network_type)s, "
+            "Physical network:%(physical_network)s",
+            {'network_type': network_type,
+             'physical_network': physical_network})
+        return None, None

@@ -18,7 +18,6 @@ from neutron_lib import constants
 from oslo_utils import uuidutils
 
 from neutron.agent.linux import ip_lib
-from neutron.common import utils as common_utils
 from neutron.tests.fullstack.agents import dhcp_agent
 from neutron.tests.fullstack import base
 from neutron.tests.fullstack.resources import environment
@@ -30,21 +29,16 @@ load_tests = testlib_api.module_load_tests
 
 class BaseDhcpAgentTest(base.BaseFullStackTestCase):
 
-    scenarios = [
-        (constants.AGENT_TYPE_OVS,
-         {'l2_agent_type': constants.AGENT_TYPE_OVS}),
-        (constants.AGENT_TYPE_LINUXBRIDGE,
-         {'l2_agent_type': constants.AGENT_TYPE_LINUXBRIDGE})
-    ]
     boot_vm_for_test = True
     dhcp_scheduler_class = None
     api_workers = 1
+    number_of_hosts = 2
 
     def setUp(self):
         host_descriptions = [
             environment.HostDescription(
                 dhcp_agent=True,
-                l2_agent_type=self.l2_agent_type
+                l2_agent_type=constants.AGENT_TYPE_OVS
             ) for _ in range(self.number_of_hosts)]
 
         env = environment.Environment(
@@ -57,7 +51,7 @@ class BaseDhcpAgentTest(base.BaseFullStackTestCase):
             ),
             host_descriptions)
 
-        super(BaseDhcpAgentTest, self).setUp(env)
+        super().setUp(env)
         self.project_id = uuidutils.generate_uuid()
         if self.boot_vm_for_test:
             self._create_network_subnet_and_vm()
@@ -90,17 +84,8 @@ class BaseDhcpAgentTest(base.BaseFullStackTestCase):
 
 class TestDhcpAgentNoHA(BaseDhcpAgentTest):
 
-    number_of_hosts = 1
+    number_of_hosts = 1  # Force no HA
     agent_down_time = 60
-
-    def test_dhcp_assignment(self):
-        # First check if network was scheduled to one DHCP agent
-        dhcp_agents = self.client.list_dhcp_agent_hosting_networks(
-            self.network['id'])
-        self.assertEqual(1, len(dhcp_agents['agents']))
-
-        # And check if IP and gateway config is fine on FakeMachine
-        self.vm.block_until_dhcp_config_done()
 
     def test_mtu_update(self):
         # The test case needs access to devices in nested namespaces. ip_lib
@@ -127,12 +112,11 @@ class TestDhcpAgentNoHA(BaseDhcpAgentTest):
 
         mtu -= 1
         self.safe_client.update_network(self.network['id'], mtu=mtu)
-        common_utils.wait_until_true(lambda: dhcp_dev.link.mtu == mtu)
+        base.wait_until_true(lambda: dhcp_dev.link.mtu == mtu)
 
 
 class TestDhcpAgentHA(BaseDhcpAgentTest):
 
-    number_of_hosts = 2
     agent_down_time = 30
 
     def _wait_until_network_rescheduled(self, old_agent):
@@ -143,7 +127,7 @@ class TestDhcpAgentHA(BaseDhcpAgentTest):
                 return network_agents[0]['id'] != old_agent['id']
             return False
 
-        common_utils.wait_until_true(_agent_rescheduled, timeout=120)
+        base.wait_until_true(_agent_rescheduled, timeout=120)
 
     def _kill_dhcp_agent(self, agent):
         for host in self.environment.hosts:
@@ -204,14 +188,13 @@ class TestDhcpAgentHA(BaseDhcpAgentTest):
 class TestDhcpAgentHARaceCondition(BaseDhcpAgentTest):
 
     agent_down_time = 30
-    number_of_hosts = 2
     boot_vm_for_test = False
     api_workers = 2
     dhcp_scheduler_class = ('neutron.tests.fullstack.schedulers.dhcp.'
                             'AlwaysTheOtherAgentScheduler')
 
     def setUp(self):
-        super(TestDhcpAgentHARaceCondition, self).setUp()
+        super().setUp()
         self._create_network_with_multiple_subnets()
 
     def _create_network_with_multiple_subnets(self):
@@ -238,7 +221,6 @@ class TestDhcpAgentHARaceCondition(BaseDhcpAgentTest):
 
 class TestSubnetDeleteRace(BaseDhcpAgentTest):
     agent_down_time = 30
-    number_of_hosts = 2
     boot_vm_for_test = False
 
     def setUp(self):
@@ -246,14 +228,14 @@ class TestSubnetDeleteRace(BaseDhcpAgentTest):
             environment.HostDescription(
                 dhcp_agent=True, l2_agent_type=constants.AGENT_TYPE_OVS),
             environment.HostDescription(
-                dhcp_agent=False,
-                l2_agent_type=constants.AGENT_TYPE_LINUXBRIDGE)
+                dhcp_agent=False, l2_agent_type=constants.AGENT_TYPE_OVS,
+                segmented_physnet=True),
         ]
 
         env = environment.Environment(
             environment.EnvironmentDescription(
                 network_type='vlan',
-                mech_drivers='openvswitch,linuxbridge',
+                mech_drivers='openvswitch',
                 l2_pop=False,
                 arp_responder=False,
                 agent_down_time=self.agent_down_time,
@@ -269,26 +251,22 @@ class TestSubnetDeleteRace(BaseDhcpAgentTest):
             self._create_network_subnet_and_vm()
 
     def test_subnet_delete_race_condition(self):
-        ovs_physnet = ''
-        lb_physnet = ''
+        agents = self.client.list_agents(agent_type=constants.AGENT_TYPE_OVS)
+        agents = agents['agents']
+        self.assertEqual(2, len(agents))
 
-        agents = self.client.list_agents()
-        for agent in agents['agents']:
-            if agent['binary'] == 'neutron-openvswitch-agent':
-                ovs_physnet = list(
-                    agent['configurations']['bridge_mappings'].keys())[0]
-            if agent['binary'] == 'neutron-linuxbridge-agent':
-                lb_physnet = list(
-                    agent['configurations']['interface_mappings'].keys())[0]
+        def get_ovs_physnet(idx):
+            return list(
+                agents[idx]['configurations']['bridge_mappings'].keys())[0]
 
         self.network = self.safe_client.create_network(
             tenant_id=self.project_id, network_type='vlan',
-            segmentation_id=103, physical_network=lb_physnet)
+            segmentation_id=103, physical_network=get_ovs_physnet(0))
 
         self.segment2 = self.safe_client.create_segment(
             project_id=self.project_id, network=self.network['id'],
             network_type='vlan', name='segment_2', segmentation_id=103,
-            physical_network=ovs_physnet)
+            physical_network=get_ovs_physnet(1))
 
         subnet = self.safe_client.create_subnet(
             self.project_id,
@@ -323,6 +301,6 @@ class TestSubnetDeleteRace(BaseDhcpAgentTest):
                 return True
             return False
 
-        common_utils.wait_until_true(_is_subnet_deleted)
-        # Note(lajoskatona): Here cleanup do its job and the cleanup
-        # will fail if the segment or network deletion is inpossible
+        base.wait_until_true(_is_subnet_deleted)
+        # Note(lajoskatona): Here cleanup does its job and it will fail if the
+        # segment or network deletion is impossible

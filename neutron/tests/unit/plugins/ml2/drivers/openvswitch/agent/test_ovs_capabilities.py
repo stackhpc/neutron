@@ -14,25 +14,25 @@
 from unittest import mock
 
 from neutron_lib.callbacks import events
+from neutron_lib.callbacks import priority_group
 from neutron_lib import fixture
 
 from neutron.plugins.ml2.drivers.openvswitch.agent import ovs_capabilities
 from neutron.services.trunk.drivers.openvswitch.agent import driver
 from neutron.tests import base
-from neutron.tests import tools
 from neutron_lib import constants
 
 
 class CapabilitiesTest(base.BaseTestCase):
 
     def setUp(self):
-        super(CapabilitiesTest, self).setUp()
+        super().setUp()
         self._mgr = mock.Mock()
         self.useFixture(fixture.CallbackRegistryFixture(
             callback_manager=self._mgr))
 
     def test_register(self):
         ovs_capabilities.register()
-        args = tools.get_subscribe_args(
-            driver.init_handler, constants.AGENT_TYPE_OVS, events.AFTER_INIT)
-        self._mgr.subscribe.assert_called_with(*args)
+        self._mgr.subscribe.assert_called_with(
+            driver.init_handler, constants.AGENT_TYPE_OVS, events.AFTER_INIT,
+            priority_group.PRIORITY_DEFAULT, False)

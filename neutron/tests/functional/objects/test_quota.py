@@ -17,17 +17,18 @@ import datetime
 
 from neutron_lib import context
 from neutron_lib.db import api as db_api
+from oslo_utils import timeutils
 from oslo_utils import uuidutils
 
 from neutron.objects import quota
 from neutron.tests.unit import testlib_api
 
 
-class _ReservationSql(testlib_api.SqlTestCase):
-
+class TestReservationSql(testlib_api.SqlTestCase,
+                         testlib_api.MySQLTestCaseMixin):
     def setUp(self):
         super().setUp()
-        self.context = context.Context(user_id=None, tenant_id=None,
+        self.context = context.Context(user_id=None, project_id=None,
                                        is_admin=True, overwrite=False)
 
     def _create_test_reservation(self, exp):
@@ -58,17 +59,7 @@ class _ReservationSql(testlib_api.SqlTestCase):
         self.assertEqual(res_delta, res.resource_deltas[0])
         with db_api.CONTEXT_READER.using(self.context):
             res_map = quota.Reservation.get_total_reservations_map(
-                self.context, datetime.datetime.utcnow(), res.project_id,
-                resources, True)
+                self.context, timeutils.utcnow(),
+                res.project_id, resources, True)
         self.assertEqual({'port': 100}, res_map)
         self.assertIsInstance(res_map['port'], int)
-
-
-class TestReservationMySQL(testlib_api.MySQLTestCaseMixin,
-                           _ReservationSql):
-    pass
-
-
-class TestReservationPostgreSQL(testlib_api.PostgreSQLTestCaseMixin,
-                                _ReservationSql):
-    pass

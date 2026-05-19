@@ -16,10 +16,11 @@ from neutron.tests.unit.objects import test_base
 from neutron.tests.unit import testlib_api
 
 
-class _QosPolicyBindingMixinTestCase(object):
+class _QosPolicyBindingMixinTestCase:
 
     def test_get_bound_ids(self):
-        [obj.create() for obj in self.objs]
+        for obj in self.objs:
+            obj.create()
         for obj in self.objs:
             obj_ids = obj.get_bound_ids(self.context, obj.policy_id)
             self.assertEqual(1, len(obj_ids))
@@ -39,7 +40,7 @@ class QosPolicyPortBindingDbObjectTestCase(test_base.BaseDbObjectTestCase,
     _test_class = binding.QosPolicyPortBinding
 
     def setUp(self):
-        super(QosPolicyPortBindingDbObjectTestCase, self).setUp()
+        super().setUp()
         network_id = self._create_test_network_id()
         for db_obj in self.db_objs:
             self._create_test_qos_policy(id=db_obj['policy_id'])
@@ -59,7 +60,7 @@ class QosPolicyNetworkBindingDbObjectTestCase(test_base.BaseDbObjectTestCase,
     _test_class = binding.QosPolicyNetworkBinding
 
     def setUp(self):
-        super(QosPolicyNetworkBindingDbObjectTestCase, self).setUp()
+        super().setUp()
         for db_obj in self.db_objs:
             self._create_test_qos_policy(id=db_obj['policy_id'])
             self._create_test_network(network_id=db_obj['network_id'])
@@ -79,7 +80,7 @@ class QosPolicyFloatingIPBindingDbObjectTestCase(
     _test_class = binding.QosPolicyFloatingIPBinding
 
     def setUp(self):
-        super(QosPolicyFloatingIPBindingDbObjectTestCase, self).setUp()
+        super().setUp()
         for db_obj in self.db_objs:
             self._create_test_qos_policy(id=db_obj['policy_id'])
             self._create_test_fip_id(fip_id=db_obj['fip_id'])
@@ -99,7 +100,7 @@ class QosPolicyRouterGatewayIPBindingDbObjectTestCase(
     _test_class = binding.QosPolicyRouterGatewayIPBinding
 
     def setUp(self):
-        super(QosPolicyRouterGatewayIPBindingDbObjectTestCase, self).setUp()
+        super().setUp()
         for db_obj in self.db_objs:
             self._create_test_qos_policy(id=db_obj['policy_id'])
             self._create_test_router_id(router_id=db_obj['router_id'])

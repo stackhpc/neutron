@@ -25,7 +25,6 @@ from oslo_utils import uuidutils
 from neutron.api.rpc.callbacks.producer import registry as rpc_registry
 from neutron.objects import ports as ports_object
 from neutron.objects.qos import rule as rule_object
-from neutron.services.qos.drivers.linuxbridge import driver as lb_driver
 from neutron.services.qos.drivers import manager as driver_mgr
 from neutron.services.qos.drivers.openvswitch import driver as ovs_driver
 from neutron.services.qos.drivers.ovn import driver as ovn_driver
@@ -36,7 +35,7 @@ from neutron.tests.unit.services.qos import base
 class TestQosDriversManagerBase(base.BaseQosTestCase):
 
     def setUp(self):
-        super(TestQosDriversManagerBase, self).setUp()
+        super().setUp()
         self.config_parse()
         self.setup_coreplugin(load_plugins=False)
         self._loaded_qos_drivers = []
@@ -66,6 +65,7 @@ class TestQosDriversManagerBase(base.BaseQosTestCase):
 
 class TestQosDriversManagerMulti(TestQosDriversManagerBase):
     """Test calls happen to all drivers"""
+
     def test_driver_manager_empty_with_no_drivers(self):
         driver_manager = self._create_manager_with_drivers({})
         self.assertEqual(len(driver_manager._drivers), 0)
@@ -91,8 +91,8 @@ class TestQoSDriversRulesValidations(TestQosDriversManagerBase):
     """Test validation of rules for port"""
 
     def setUp(self):
-        super(TestQoSDriversRulesValidations, self).setUp()
-        self.ctxt = context.Context('fake_user', 'fake_tenant')
+        super().setUp()
+        self.ctxt = context.Context('fake_user', 'fake_project')
 
     def _get_port(self, vif_type, vnic_type):
         port_id = uuidutils.generate_uuid()
@@ -185,8 +185,7 @@ class TestQosDriversManagerRules(TestQosDriversManagerBase):
 
     @mock.patch.object(rpc_registry, 'provide')
     def test_available_rules(self, *args):
-        available_drivers = {'linuxbridge': lb_driver.SUPPORTED_RULES,
-                             'ovs': ovs_driver.SUPPORTED_RULES,
+        available_drivers = {'ovs': ovs_driver.SUPPORTED_RULES,
                              'ovn': ovn_driver.SUPPORTED_RULES,
                              'sriov': sriov_driver.SUPPORTED_RULES}
         for drivers in itertools.combinations(available_drivers, 2):
@@ -295,7 +294,7 @@ class TestQosDriversCalls(TestQosDriversManagerBase):
     """Test QoS driver calls"""
 
     def setUp(self):
-        super(TestQosDriversCalls, self).setUp()
+        super().setUp()
         self.driver_manager = self._create_manager_with_drivers(
             {'driver-A': {'is_loaded': True}})
 

@@ -10,11 +10,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from unittest import mock
-
 from neutron_lib import constants as n_const
 from neutron_lib import context
-from neutron_lib import exceptions
 from neutron_lib.services.logapi import constants as log_const
 
 from neutron.common.ovn import constants as ovn_const
@@ -27,14 +24,7 @@ class LogApiTestCaseBase(functional_base.TestOVNFunctionalBase):
     def setUp(self):
         super().setUp()
         self.log_driver = self.mech_driver.log_driver
-        self._check_is_supported()
-        self.ctxt = context.Context('admin', 'fake_tenant')
-
-    def _check_is_supported(self):
-        if not self.log_driver.network_logging_supported(self.nb_api):
-            self.skipTest("The current OVN version does not offer support "
-                          "for neutron network log functionality.")
-        self.assertIsNotNone(self.log_plugin)
+        self.ctxt = context.Context('admin', self._project_id)
 
     def _log_data(self, sg_id=None, port_id=None, enabled=True):
         log_data = {'project_id': self.ctxt.project_id,
@@ -61,16 +51,6 @@ class LogApiTestCaseSimple(LogApiTestCaseBase):
         log_objs_get = self.log_plugin.get_logs(self.ctxt)
         log_objs_ids = {x['id'] for x in log_objs_get}
         self.assertEqual({log_obj['id'], log_obj2['id']}, log_objs_ids)
-
-    def test_log_ovn_unsupported(self):
-        with mock.patch.object(self.log_driver, 'network_logging_supported',
-                        return_value=False) as supported_mock:
-            log_data = {'log': {'resource_type': 'security_group',
-                                'enabled': True}}
-            self.assertRaises(exceptions.DriverCallError,
-                              self.log_plugin.create_log,
-                              self.ctxt, log_data)
-            supported_mock.assert_called_once()
 
 
 class LogApiTestCaseComplex(LogApiTestCaseBase):
@@ -110,7 +90,6 @@ class LogApiTestCaseComplex(LogApiTestCaseBase):
 
     def _create_port(self, name, net_id, security_groups):
         data = {'port': {'name': name,
-                         'tenant_id': self.ctxt.project_id,
                          'network_id': net_id,
                          'security_groups': security_groups}}
         req = self.new_create_request('ports', data, self.fmt)
@@ -118,8 +97,7 @@ class LogApiTestCaseComplex(LogApiTestCaseBase):
         return self.deserialize(self.fmt, res)['port']['id']
 
     def _create_security_group(self, name):
-        data = {'security_group': {'name': name,
-                                   'tenant_id': self.ctxt.project_id}}
+        data = {'security_group': {'name': name}}
         req = self.new_create_request('security-groups', data, self.fmt)
         res = req.get_response(self.api)
         return self.deserialize(self.fmt, res)['security_group']['id']
@@ -130,8 +108,7 @@ class LogApiTestCaseComplex(LogApiTestCaseBase):
                                         'protocol': n_const.PROTO_NAME_TCP,
                                         'ethertype': n_const.IPv4,
                                         'port_range_min': tcp_port,
-                                        'port_range_max': tcp_port,
-                                        'tenant_id': self.ctxt.project_id}}
+                                        'port_range_max': tcp_port}}
         req = self.new_create_request('security-group-rules', data, self.fmt)
         res = req.get_response(self.api)
         return self.deserialize(self.fmt, res)['security_group_rule']['id']
@@ -151,6 +128,15 @@ class LogApiTestCaseComplex(LogApiTestCaseBase):
         acl = self._find_security_group_rule_row_by_id(sgr)
         self.assertIsNotNone(acl)
         self.assertEqual(is_enabled, acl.log)
+        # Here we compare if there is a name because the log can be
+        # disabled but disabling a log would not take out the properties
+        # attached to it.
+        if acl.name:
+            self.assertNotEqual(0, acl.label)
+            self.assertEqual("true", acl.options.get("log-related"))
+        else:
+            self.assertEqual(0, acl.label)
+            self.assertIsNone(acl.options.get("log-related"))
         return acl
 
     def _check_acl_log_drop(self, is_enabled=True):
@@ -308,9 +294,9 @@ class LogApiTestCaseComplex(LogApiTestCaseBase):
         log_data2['log']['event'] = event2
         log_obj2 = self.log_plugin.create_log(self.ctxt, log_data2)
         self._check_acl_log_drop(is_enabled=(event1 in drop_true_events or
-            event2 in drop_true_events))
+                                             event2 in drop_true_events))
         self._check_sgrs(sgrs=sgrs, is_enabled=(event1 in accept_true_events or
-            event2 in accept_true_events))
+                                                event2 in accept_true_events))
 
         # Delete second log object
         self.log_plugin.delete_log(self.ctxt, log_obj2['id'])
@@ -338,3 +324,95 @@ class LogApiTestCaseComplex(LogApiTestCaseBase):
         self._add_logs_then_remove(
             log_const.DROP_EVENT, log_const.ACCEPT_EVENT, sg=self.sg3,
             sgrs=self.sg3rs)
+
+    def test_disable_logs(self):
+        # This test ensures that acls are correctly disabled when having
+        # multiple log objects.
+
+        # Check there are no acls with their logging active
+        sgrs = self.sg1rs
+        self._check_sgrs(sgrs, is_enabled=False)
+        self._check_acl_log_drop(is_enabled=False)
+
+        # Add accept log object
+        log_data1 = self._log_data(sg_id=self.sg1)
+        event1 = log_const.ACCEPT_EVENT
+        log_data1['log']['event'] = event1
+        log_obj1 = self.log_plugin.create_log(self.ctxt, log_data1)
+        self._check_acl_log_drop(is_enabled=False)
+        self._check_sgrs(sgrs=sgrs, is_enabled=True)
+
+        # Add drop log object
+        log_data2 = self._log_data(sg_id=self.sg1)
+        event2 = log_const.DROP_EVENT
+        log_data2['log']['event'] = event2
+        log_obj2 = self.log_plugin.create_log(self.ctxt, log_data2)
+        self._check_acl_log_drop(is_enabled=True)
+        self._check_sgrs(sgrs=sgrs, is_enabled=True)
+
+        # Disable drop log object and check it worked correctly
+        log_data2['log']['enabled'] = False
+        self.log_plugin.update_log(self.ctxt, log_obj2['id'], log_data2)
+        self._check_acl_log_drop(is_enabled=False)
+        self._check_sgrs(sgrs=sgrs, is_enabled=True)
+
+        # Enable drop log and create all log object
+        log_data2['log']['enabled'] = True
+        self.log_plugin.update_log(self.ctxt, log_obj2['id'], log_data2)
+        self._check_acl_log_drop(is_enabled=True)
+        self._check_sgrs(sgrs=sgrs, is_enabled=True)
+
+        log_data3 = self._log_data(sg_id=self.sg1)
+        log_data3['log']['event'] = log_const.ALL_EVENT
+        log_obj3 = self.log_plugin.create_log(self.ctxt, log_data3)
+        self._check_sgrs(sgrs=sgrs, is_enabled=True)
+        self._check_acl_log_drop(is_enabled=True)
+
+        # Disable all log object and check all acls are still enabled (because
+        # of the other objects)
+        log_data3['log']['enabled'] = False
+        self.log_plugin.update_log(self.ctxt, log_obj3['id'], log_data3)
+        self._check_sgrs(sgrs=sgrs, is_enabled=True)
+        self._check_acl_log_drop(is_enabled=True)
+
+        # Disable accept log object and only drop traffic gets logged
+        log_data1['log']['enabled'] = False
+        self.log_plugin.update_log(self.ctxt, log_obj1['id'], log_data1)
+        self._check_sgrs(sgrs=sgrs, is_enabled=False)
+        self._check_acl_log_drop(is_enabled=True)
+
+    def test_add_rule_skips_already_configured_acls(self):
+        """Adding a SG rule must not re-update ACLs that already have logging.
+
+        When network logging is enabled and a new SG rule is created, only
+        the newly created ACL should be updated. Existing ACLs that already
+        have the correct logging configuration must be skipped. This is
+        verified by checking that labels on pre-existing ACLs remain
+        unchanged (labels are randomized on every _set_acls_log update).
+        """
+        log_obj = self.log_plugin.create_log(
+            self.ctxt, self._log_data(sg_id=self.sg3))
+
+        # Verify initial ACLs have logging enabled and record their labels.
+        initial_labels = {}
+        for sgr in self.sg3rs:
+            acl = self._check_acl_log(sgr, is_enabled=True)
+            self.assertEqual(utils.ovn_name(log_obj['id']), acl.name[0])
+            initial_labels[sgr] = acl.label
+
+        # Add a new rule to sg1; this triggers AFTER_CREATE → resource_update
+        # → _set_acls_log on ALL ACLs of the port group.
+        new_sgr = self._create_security_group_rule(self.sg3, 443)
+
+        # The new ACL must have logging configured.
+        new_acl = self._check_acl_log(new_sgr, is_enabled=True)
+        self.assertEqual(utils.ovn_name(log_obj['id']), new_acl.name[0])
+
+        # Pre-existing ACLs must NOT have been re-updated: their labels
+        # must remain identical to the ones recorded before the new rule
+        # was added.
+        for sgr in self.sg3rs:
+            acl = self._check_acl_log(sgr, is_enabled=True)
+            self.assertEqual(initial_labels[sgr], acl.label,
+                             'ACL for rule %s was unnecessarily re-updated'
+                             % sgr)

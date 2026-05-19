@@ -54,10 +54,9 @@ class Plugin(l3_conntrack_helper.ConntrackHelperPluginBase):
 
     __native_pagination_support = True
     __native_sorting_support = True
-    __filter_validation_support = True
 
     def __init__(self):
-        super(Plugin, self).__init__()
+        super().__init__()
         self.push_api = resources_rpc.ResourcesPushRpcApi()
         self.l3_plugin = directory.get_plugin(constants.L3)
         self.core_plugin = directory.get_plugin()

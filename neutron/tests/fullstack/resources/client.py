@@ -37,7 +37,7 @@ class ClientFixture(fixtures.Fixture):
     """Manage and cleanup neutron resources."""
 
     def __init__(self, client):
-        super(ClientFixture, self).__init__()
+        super().__init__()
         self.client = client
 
     def _create_resource(self, resource_type, spec):
@@ -76,7 +76,7 @@ class ClientFixture(fixtures.Fixture):
     def create_local_ip_association(self, local_ip_id, port_id, fixed_ip=None):
         delete = self.delete_local_ip_association
 
-        path = '/local_ips/{0}/port_associations'.format(local_ip_id)
+        path = f'/local_ips/{local_ip_id}/port_associations'
         body = {'port_association': {'fixed_port_id': port_id}}
         if fixed_ip:
             body['port_association']['fixed_ip'] = fixed_ip
@@ -86,11 +86,11 @@ class ClientFixture(fixtures.Fixture):
         return data
 
     def delete_local_ip(self, local_ip_id):
-        path = "/local-ips/{0}".format(local_ip_id)
+        path = f"/local-ips/{local_ip_id}"
         self.client.delete(path)
 
     def delete_local_ip_association(self, local_ip_id, port_id):
-        path = "/local_ips/{0}/port_associations/{1}".format(
+        path = "/local_ips/{}/port_associations/{}".format(
             local_ip_id, port_id)
         self.client.delete(path)
 
@@ -153,7 +153,7 @@ class ClientFixture(fixtures.Fixture):
                       cidr=None, gateway_ip=None, name=None, enable_dhcp=True,
                       ipv6_address_mode='slaac', ipv6_ra_mode='slaac',
                       subnetpool_id=None, ip_version=None,
-                      host_routes=None):
+                      host_routes=None, segment=None):
         resource_type = 'subnet'
 
         name = name or utils.get_rand_name(prefix=resource_type)
@@ -173,6 +173,8 @@ class ClientFixture(fixtures.Fixture):
             spec['cidr'] = cidr
         if host_routes:
             spec['host_routes'] = host_routes
+        if segment:
+            spec['segment_id'] = segment
 
         return self._create_resource(resource_type, spec)
 
@@ -264,9 +266,9 @@ class ClientFixture(fixtures.Fixture):
 
         return policy['policy']
 
-    def create_bandwidth_limit_rule(self, tenant_id, qos_policy_id, limit=None,
+    def create_bandwidth_limit_rule(self, qos_policy_id, limit=None,
                                     burst=None, direction=None):
-        rule = {'tenant_id': tenant_id}
+        rule = {}
         if limit:
             rule['max_kbps'] = limit
         if burst:
@@ -283,10 +285,9 @@ class ClientFixture(fixtures.Fixture):
 
         return rule['bandwidth_limit_rule']
 
-    def create_packet_rate_limit_rule(
-            self, project_id, qos_policy_id, limit=None,
-            burst=None, direction=None):
-        rule = {'project_id': project_id}
+    def create_packet_rate_limit_rule(self, qos_policy_id, limit=None,
+                                      burst=None, direction=None):
+        rule = {}
         if limit:
             rule['max_kpps'] = limit
         if burst:
@@ -304,10 +305,9 @@ class ClientFixture(fixtures.Fixture):
 
         return rule['packet_rate_limit_rule']
 
-    def create_minimum_bandwidth_rule(self, tenant_id, qos_policy_id,
-                                      min_bw, direction=None):
-        rule = {'tenant_id': tenant_id,
-                'min_kbps': min_bw}
+    def create_minimum_bandwidth_rule(self, qos_policy_id, min_bw,
+                                      direction=None):
+        rule = {'min_kbps': min_bw}
         if direction:
             rule['direction'] = direction
         rule = self.client.create_minimum_bandwidth_rule(
@@ -320,8 +320,8 @@ class ClientFixture(fixtures.Fixture):
 
         return rule['minimum_bandwidth_rule']
 
-    def create_dscp_marking_rule(self, tenant_id, qos_policy_id, dscp_mark=0):
-        rule = {'tenant_id': tenant_id}
+    def create_dscp_marking_rule(self, qos_policy_id, dscp_mark=0):
+        rule = {}
         if dscp_mark:
             rule['dscp_mark'] = dscp_mark
         rule = self.client.create_dscp_marking_rule(
@@ -442,3 +442,10 @@ class ClientFixture(fixtures.Fixture):
 
     def update_quota(self, project_id, tracked_resource, quota):
         self._update_resource('quota', project_id, {tracked_resource: quota})
+
+    def add_gateway_router(self, router_id, network_id):
+        self.client.add_gateway_router(
+            router_id,
+            {'network_id': network_id})
+        self.addCleanup(
+            self.client.remove_gateway_router, router_id)

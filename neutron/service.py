@@ -15,7 +15,7 @@
 
 import inspect
 import os
-import random
+import secrets
 
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
@@ -24,6 +24,7 @@ from neutron_lib import context
 from neutron_lib.db import api as session
 from neutron_lib.plugins import directory
 from neutron_lib import rpc as n_rpc
+from neutron_lib import worker as base_worker
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -34,11 +35,13 @@ from oslo_utils import excutils
 from oslo_utils import importutils
 import psutil
 
+from neutron._i18n import _
 from neutron.common import config
 from neutron.common import profiler
 from neutron.conf import service
+from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import worker as \
+    ovn_worker
 from neutron import worker as neutron_worker
-from neutron import wsgi
 
 
 service.register_service_opts(service.SERVICE_OPTS)
@@ -47,68 +50,22 @@ service.register_service_opts(service.RPC_EXTRA_OPTS)
 LOG = logging.getLogger(__name__)
 
 
-class WsgiService(object):
-    """Base class for WSGI based services.
-
-    For each api you define, you must also define these flags:
-    :<api>_listen: The address on which to listen
-    :<api>_listen_port: The port on which to listen
-
-    """
-
-    def __init__(self, app_name):
-        self.app_name = app_name
-        self.wsgi_app = None
-
-    def start(self):
-        self.wsgi_app = _run_wsgi(self.app_name)
-
-    def wait(self):
-        self.wsgi_app.wait()
-
-
-class NeutronApiService(WsgiService):
-    """Class for neutron-api service."""
-    def __init__(self, app_name):
-        profiler.setup('neutron-server', cfg.CONF.host)
-        super(NeutronApiService, self).__init__(app_name)
-
-    @classmethod
-    def create(cls, app_name='neutron'):
-        # Setup logging early
-        config.setup_logging()
-        service = cls(app_name)
-        return service
-
-
-def serve_wsgi(cls):
-
-    try:
-        service = cls.create()
-        service.start()
-    except Exception:
-        with excutils.save_and_reraise_exception():
-            LOG.exception('Unrecoverable error: please check log '
-                          'for details.')
-
-    registry.publish(resources.PROCESS, events.BEFORE_SPAWN, service)
-    return service
-
-
 class RpcWorker(neutron_worker.NeutronBaseWorker):
     """Wraps a worker to be handled by ProcessLauncher"""
     start_listeners_method = 'start_rpc_listeners'
+    desc = 'rpc worker'
 
     def __init__(self, plugins, worker_process_count=1):
-        super(RpcWorker, self).__init__(
-            worker_process_count=worker_process_count
+        super().__init__(
+            worker_process_count=worker_process_count,
+            desc=self.desc,
         )
 
         self._plugins = plugins
         self._servers = []
 
     def start(self):
-        super(RpcWorker, self).start(desc="rpc worker")
+        super().start(desc=self.desc)
         for plugin in self._plugins:
             if hasattr(plugin, self.start_listeners_method):
                 try:
@@ -148,6 +105,7 @@ class RpcWorker(neutron_worker.NeutronBaseWorker):
 
 class RpcReportsWorker(RpcWorker):
     start_listeners_method = 'start_rpc_state_reports_listener'
+    desc = 'rpc reports worker'
 
 
 def _get_worker_count():
@@ -158,8 +116,7 @@ def _get_worker_count():
     # a steady-state bloat of around 2GB.
     mem = psutil.virtual_memory()
     mem_workers = int(mem.total / (2 * 1024 * 1024 * 1024))
-    if mem_workers < num_workers:
-        num_workers = mem_workers
+    num_workers = min(num_workers, mem_workers)
 
     # And just in case, always at least one.
     if num_workers <= 0:
@@ -177,8 +134,7 @@ def _get_rpc_workers(plugin=None):
     if workers is None:
         # By default, half as many rpc workers as api workers
         workers = int(_get_api_workers() / 2)
-    if workers < 1:
-        workers = 1
+        workers = max(workers, 1)
 
     # If workers > 0 then start_rpc_listeners would be called in a
     # subprocess and we cannot simply catch the NotImplementedError.  It is
@@ -192,9 +148,15 @@ def _get_rpc_workers(plugin=None):
                       workers)
         raise NotImplementedError()
 
-    # passing service plugins only, because core plugin is among them
-    rpc_workers = [RpcWorker(service_plugins,
-                             worker_process_count=workers)]
+    rpc_workers = []
+
+    if workers > 0:
+        # passing service plugins only, because core plugin is among them
+        rpc_workers.append(
+            RpcWorker(service_plugins, worker_process_count=workers))
+    else:
+        LOG.warning('No rpc workers are launched. Make sure no agent is used '
+                    'in this deployment.')
 
     if (cfg.CONF.rpc_state_report_workers > 0 and
             plugin.rpc_state_report_workers_supported()):
@@ -221,17 +183,28 @@ def _get_plugins_workers():
     ]
 
 
+def _get_ovn_maintenance_worker():
+    for worker in _get_plugins_workers():
+        if isinstance(worker, ovn_worker.MaintenanceWorker):
+            return worker
+
+
 class AllServicesNeutronWorker(neutron_worker.NeutronBaseWorker):
     def __init__(self, services, worker_process_count=1):
-        super(AllServicesNeutronWorker, self).__init__(worker_process_count)
+        super().__init__(worker_process_count)
         self._services = services
+        for srv in self._services:
+            self._check_base_worker_service(srv)
         self._launcher = common_service.Launcher(cfg.CONF,
                                                  restart_method='mutate')
 
     def start(self):
         for srv in self._services:
+            # Unset the 'set_proctitle' flag to prevent each service to
+            # re-write the process title already defined and set by this class.
+            srv.set_proctitle = 'off'
             self._launcher.launch_service(srv)
-        super(AllServicesNeutronWorker, self).start(desc="services worker")
+        super().start(desc="services worker")
 
     def stop(self):
         self._launcher.stop()
@@ -241,6 +214,13 @@ class AllServicesNeutronWorker(neutron_worker.NeutronBaseWorker):
 
     def reset(self):
         self._launcher.restart()
+
+    @staticmethod
+    def _check_base_worker_service(srv):
+        if not isinstance(srv, base_worker.BaseWorker):
+            raise TypeError(
+                _('Service %(srv)s must an instance of %(base)s!)') %
+                {'srv': srv, 'base': base_worker.BaseWorker})
 
 
 def _start_workers(workers, neutron_api=None):
@@ -257,7 +237,7 @@ def _start_workers(workers, neutron_api=None):
                 worker_launcher = neutron_api.wsgi_app.process_launcher
             if worker_launcher is None:
                 worker_launcher = common_service.ProcessLauncher(
-                    cfg.CONF, wait_interval=1.0, restart_method='mutate'
+                    cfg.CONF, restart_method='mutate',
                 )
 
             # add extra process worker and spawn there all workers with
@@ -290,17 +270,20 @@ def _start_workers(workers, neutron_api=None):
                           'details.')
 
 
-def start_all_workers(neutron_api=None):
-    workers = _get_rpc_workers() + _get_plugins_workers()
-    launcher = _start_workers(workers, neutron_api)
+def start_rpc_workers():
+    rpc_workers = _get_rpc_workers()
+    LOG.debug('Using launcher for rpc, workers=%s (configured rpc_workers=%s)',
+              len(rpc_workers), cfg.CONF.rpc_workers)
+    launcher = _start_workers(rpc_workers)
     registry.publish(resources.PROCESS, events.AFTER_SPAWN, None)
     return launcher
 
 
-def start_rpc_workers():
-    rpc_workers = _get_rpc_workers()
-    LOG.debug('using launcher for rpc, workers=%s', cfg.CONF.rpc_workers)
-    launcher = _start_workers(rpc_workers)
+def start_periodic_workers():
+    periodic_workers = _get_plugins_workers()
+    thread_workers = [worker for worker in periodic_workers
+                      if worker.worker_process_count < 1]
+    launcher = _start_workers(thread_workers)
     registry.publish(resources.PROCESS, events.AFTER_SPAWN, None)
     return launcher
 
@@ -310,28 +293,19 @@ def start_plugins_workers():
     return _start_workers(plugins_workers)
 
 
+def start_ovn_maintenance_worker():
+    ovn_maintenance_worker = _get_ovn_maintenance_worker()
+    if not ovn_maintenance_worker:
+        return
+
+    return _start_workers([ovn_maintenance_worker])
+
+
 def _get_api_workers():
     workers = cfg.CONF.api_workers
     if workers is None:
         workers = _get_worker_count()
     return workers
-
-
-def _run_wsgi(app_name):
-    app = config.load_paste_app(app_name)
-    if not app:
-        LOG.error('No known API applications configured.')
-        return
-    return run_wsgi_app(app)
-
-
-def run_wsgi_app(app):
-    server = wsgi.Server("Neutron")
-    server.start(app, cfg.CONF.bind_port, cfg.CONF.bind_host,
-                 workers=_get_api_workers(), desc="api worker")
-    LOG.info("Neutron service started, listening on %(host)s:%(port)s",
-             {'host': cfg.CONF.bind_host, 'port': cfg.CONF.bind_port})
-    return server
 
 
 class Service(n_rpc.Service):
@@ -341,9 +315,9 @@ class Service(n_rpc.Service):
     on topic. It also periodically runs tasks on the manager.
     """
 
-    def __init__(self, host, binary, topic, manager, report_interval=None,
-                 periodic_interval=None, periodic_fuzzy_delay=None,
-                 *args, **kwargs):
+    def __init__(self, host, binary, topic, manager, *args,
+                 report_interval=None, periodic_interval=None,
+                 periodic_fuzzy_delay=None, **kwargs):
 
         self.binary = binary
         self.manager_class_name = manager
@@ -355,25 +329,26 @@ class Service(n_rpc.Service):
         self.saved_args, self.saved_kwargs = args, kwargs
         self.timers = []
         profiler.setup(binary, host)
-        super(Service, self).__init__(host, topic, manager=self.manager)
+        super().__init__(host, topic, manager=self.manager)
 
     def start(self):
         self.manager.init_host()
-        super(Service, self).start()
+        super().start()
         if self.report_interval:
-            pulse = loopingcall.FixedIntervalLoopingCall(self.report_state)
+            pulse = loopingcall.FixedIntervalLoopingCall(f=self.report_state)
             pulse.start(interval=self.report_interval,
                         initial_delay=self.report_interval)
             self.timers.append(pulse)
 
         if self.periodic_interval:
             if self.periodic_fuzzy_delay:
-                initial_delay = random.randint(0, self.periodic_fuzzy_delay)
+                initial_delay = secrets.SystemRandom().randint(
+                    0, self.periodic_fuzzy_delay)
             else:
                 initial_delay = None
 
             periodic = loopingcall.FixedIntervalLoopingCall(
-                self.periodic_tasks)
+                f=self.periodic_tasks)
             periodic.start(interval=self.periodic_interval,
                            initial_delay=initial_delay)
             self.timers.append(periodic)
@@ -425,7 +400,7 @@ class Service(n_rpc.Service):
         self.stop()
 
     def stop(self):
-        super(Service, self).stop()
+        super().stop()
         for x in self.timers:
             try:
                 x.stop()
@@ -435,7 +410,7 @@ class Service(n_rpc.Service):
         self.manager.stop()
 
     def wait(self):
-        super(Service, self).wait()
+        super().wait()
         for x in self.timers:
             try:
                 x.wait()

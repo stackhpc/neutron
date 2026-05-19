@@ -28,6 +28,7 @@ def get_iptables_driver_instance():
     class HybridIptablesHelper(
             iptables_firewall.OVSHybridIptablesFirewallDriver):
         """Don't remove conntrack when removing iptables rules."""
+
         def _remove_conntrack_entries_from_port_deleted(self, port):
             pass
 
@@ -40,7 +41,7 @@ def is_bridge_cleaned(bridge):
     return other_config.get(Helper.CLEANED_METADATA, '').lower() == 'true'
 
 
-class Helper(object):
+class Helper:
     """Helper to avoid loading firewall driver.
 
     The main purpose is to avoid loading iptables driver for cases where no

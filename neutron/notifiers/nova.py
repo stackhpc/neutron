@@ -14,8 +14,8 @@
 #    under the License.
 
 import contextlib
+import threading
 
-from eventlet.green import threading
 from keystoneauth1 import exceptions as ks_exceptions
 from keystoneauth1 import loading as ks_loading
 from neutron_lib.callbacks import events
@@ -57,7 +57,7 @@ _notifier_store = threading.local()
 
 
 @registry.has_registry_receivers
-class Notifier(object):
+class Notifier:
 
     _instance = None
 
@@ -180,8 +180,7 @@ class Notifier(object):
         if port and self._is_compute_port(port):
             if action == 'delete_port':
                 return self._get_port_delete_event(port)
-            else:
-                return self._get_network_changed_event(port)
+            return self._get_network_changed_event(port)
 
     def _can_notify(self, port):
         if getattr(_notifier_store, 'enable', None) is None:
@@ -281,6 +280,9 @@ class Notifier(object):
         try:
             response = novaclient.server_external_events.create(
                 batched_events)
+        except ks_exceptions.EndpointNotFound:
+            LOG.exception("Nova endpoint not found, invalidating the session")
+            self.session.invalidate()
         except nova_exceptions.NotFound:
             LOG.debug("Nova returned NotFound for event: %s",
                       batched_events)
@@ -304,7 +306,7 @@ class Notifier(object):
                     response_error = True
                     continue
                 if hasattr(response, 'request_ids'):
-                    msg = "Nova event matching {}".format(response.request_ids)
+                    msg = f"Nova event matching {response.request_ids}"
                 else:
                     msg = "Nova event"
                 if code != 200:

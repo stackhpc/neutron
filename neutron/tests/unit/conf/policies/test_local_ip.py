@@ -22,7 +22,7 @@ from neutron.tests.unit.conf.policies import test_base as base
 class LocalIPAPITestCase(base.PolicyBaseTestCase):
 
     def setUp(self):
-        super(LocalIPAPITestCase, self).setUp()
+        super().setUp()
         self.target = {
             'project_id': self.project_id,
             'local_ip_address': '172.24.4.228'}
@@ -34,7 +34,7 @@ class LocalIPAPITestCase(base.PolicyBaseTestCase):
 class SystemAdminTests(LocalIPAPITestCase):
 
     def setUp(self):
-        super(SystemAdminTests, self).setUp()
+        super().setUp()
         self.context = self.system_admin_ctx
 
     def test_create_local_ip(self):
@@ -61,28 +61,57 @@ class SystemAdminTests(LocalIPAPITestCase):
 class SystemMemberTests(SystemAdminTests):
 
     def setUp(self):
-        super(SystemMemberTests, self).setUp()
+        super().setUp()
         self.context = self.system_member_ctx
 
 
 class SystemReaderTests(SystemMemberTests):
 
     def setUp(self):
-        super(SystemReaderTests, self).setUp()
+        super().setUp()
         self.context = self.system_reader_ctx
 
 
 class AdminTests(LocalIPAPITestCase):
 
     def setUp(self):
-        super(AdminTests, self).setUp()
+        super().setUp()
         self.context = self.project_admin_ctx
 
     def test_create_local_ip(self):
         self.assertTrue(
             policy.enforce(self.context, "create_local_ip", self.target))
+        self.assertTrue(
+            policy.enforce(self.context, "create_local_ip", self.alt_target))
 
-    def test_create_local_ip_other_project(self):
+    def test_get_local_ip(self):
+        self.assertTrue(
+            policy.enforce(self.context, "get_local_ip", self.target))
+        self.assertTrue(
+            policy.enforce(self.context, "get_local_ip", self.alt_target))
+
+    def test_update_local_ip(self):
+        self.assertTrue(
+            policy.enforce(self.context, "update_local_ip", self.target))
+        self.assertTrue(
+            policy.enforce(self.context, "update_local_ip", self.alt_target))
+
+    def test_delete_local_ip(self):
+        self.assertTrue(
+            policy.enforce(self.context, "delete_local_ip", self.target))
+        self.assertTrue(
+            policy.enforce(self.context, "delete_local_ip", self.alt_target))
+
+
+class ProjectManagerTests(AdminTests):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.project_manager_ctx
+
+    def test_create_local_ip(self):
+        self.assertTrue(
+            policy.enforce(self.context, "create_local_ip", self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, "create_local_ip", self.alt_target)
@@ -90,8 +119,6 @@ class AdminTests(LocalIPAPITestCase):
     def test_get_local_ip(self):
         self.assertTrue(
             policy.enforce(self.context, "get_local_ip", self.target))
-
-    def test_get_local_ip_other_project(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, "get_local_ip", self.alt_target)
@@ -99,8 +126,6 @@ class AdminTests(LocalIPAPITestCase):
     def test_update_local_ip(self):
         self.assertTrue(
             policy.enforce(self.context, "update_local_ip", self.target))
-
-    def test_update_local_ip_other_project(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, "update_local_ip", self.alt_target)
@@ -108,24 +133,22 @@ class AdminTests(LocalIPAPITestCase):
     def test_delete_local_ip(self):
         self.assertTrue(
             policy.enforce(self.context, "delete_local_ip", self.target))
-
-    def test_delete_local_ip_other_project(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, "delete_local_ip", self.alt_target)
 
 
-class ProjectMemberTests(AdminTests):
+class ProjectMemberTests(ProjectManagerTests):
 
     def setUp(self):
-        super(ProjectMemberTests, self).setUp()
+        super().setUp()
         self.context = self.project_member_ctx
 
 
 class ProjectReaderTests(LocalIPAPITestCase):
 
     def setUp(self):
-        super(ProjectReaderTests, self).setUp()
+        super().setUp()
         self.context = self.project_reader_ctx
 
     def test_create_localip(self):
@@ -166,3 +189,30 @@ class ProjectReaderTests(LocalIPAPITestCase):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, "delete_local_ip", self.alt_target)
+
+
+class ServiceRoleTests(LocalIPAPITestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.service_ctx
+
+    def test_create_local_ip(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, "create_local_ip", self.target)
+
+    def test_get_local_ip(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, "get_local_ip", self.target)
+
+    def test_update_local_ip(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, "update_local_ip", self.target)
+
+    def test_delete_local_ip(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, "delete_local_ip", self.target)

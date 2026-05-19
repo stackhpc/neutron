@@ -14,9 +14,10 @@
 #    under the License.
 
 import queue
+import threading
+import time
 from unittest import mock
 
-import eventlet
 from keystoneauth1 import exceptions as ks_exc
 from neutron_lib import constants as n_const
 from neutron_lib import context as n_ctx
@@ -29,6 +30,7 @@ from oslo_config import cfg
 from oslo_utils import uuidutils
 from sqlalchemy.orm import attributes as sql_attr
 
+from neutron.notifiers import batch_notifier
 from neutron.notifiers import nova
 from neutron.objects import ports as port_obj
 from neutron.tests import base
@@ -39,11 +41,11 @@ DEVICE_OWNER_BAREMETAL = n_const.DEVICE_OWNER_BAREMETAL_PREFIX + 'fake'
 
 class TestNovaNotify(base.BaseTestCase):
     def setUp(self, plugin=None):
-        super(TestNovaNotify, self).setUp()
+        super().setUp()
         self.ctx = n_ctx.get_admin_context()
         self.port_uuid = uuidutils.generate_uuid()
 
-        class FakePlugin(object):
+        class FakePlugin:
             def get_port(self, context, port_id):
                 device_id = '32102d7b-1cf4-404d-b50a-97aae1f55f87'
                 return {'device_id': device_id,
@@ -56,16 +58,16 @@ class TestNovaNotify(base.BaseTestCase):
     def test_notify_port_status_all_values(self):
         states = [n_const.PORT_STATUS_ACTIVE, n_const.PORT_STATUS_DOWN,
                   n_const.PORT_STATUS_ERROR, n_const.PORT_STATUS_BUILD,
-                  sql_attr.NO_VALUE]
+                  None]
         device_id = '32102d7b-1cf4-404d-b50a-97aae1f55f87'
         # test all combinations
         for previous_port_status in states:
             for current_port_status in states:
-
-                port = port_obj.Port(self.ctx, id=self.port_uuid,
-                                     device_id=device_id,
-                                     device_owner=DEVICE_OWNER_COMPUTE,
-                                     status=current_port_status)
+                params = {'id': self.port_uuid, 'device_id': device_id,
+                          'device_owner': DEVICE_OWNER_COMPUTE}
+                if current_port_status:
+                    params['status'] = current_port_status
+                port = port_obj.Port(self.ctx, **params)
                 self._record_port_status_changed_helper(current_port_status,
                                                         previous_port_status,
                                                         port)
@@ -186,7 +188,8 @@ class TestNovaNotify(base.BaseTestCase):
 
     def test_delete_floatingip_deleted_port_no_notify(self):
         port_id = 'bee50827-bcee-4cc8-91c1-a27b0ce54222'
-        with mock.patch.object(directory.get_plugin(), 'get_port',
+        with mock.patch.object(
+                directory.get_plugin(), 'get_port',
                 side_effect=n_exc.PortNotFound(port_id=port_id)):
             returned_obj = {'floatingip':
                             {'port_id': port_id}}
@@ -236,6 +239,16 @@ class TestNovaNotify(base.BaseTestCase):
             self.nova_notifier.send_network_change('update_floatingip',
                                                    {}, {})
             self.assertFalse(send_events.called)
+
+    @mock.patch('novaclient.client.Client')
+    def test_nova_send_events_noendpoint_invalidate_session(self, mock_client):
+        create = mock_client().server_external_events.create
+        create.side_effect = ks_exc.EndpointNotFound
+        with mock.patch.object(self.nova_notifier.session,
+                               'invalidate', return_value=True) as mock_sess:
+            self.nova_notifier.send_events([])
+            create.assert_called()
+            mock_sess.assert_called()
 
     @mock.patch('novaclient.client.Client')
     def test_nova_send_events_returns_bad_list(self, mock_client):
@@ -306,7 +319,9 @@ class TestNovaNotify(base.BaseTestCase):
             {'name': 'network-changed', 'server_uuid': device_id}])
         create.assert_called()
 
-    def test_reassociate_floatingip_without_disassociate_event(self):
+    @mock.patch.object(batch_notifier.BatchNotifier, '_notify')
+    def test_reassociate_floatingip_without_disassociate_event(
+            self, mock_notify):
         returned_obj = {'floatingip':
                         {'port_id': 'f5348a16-609a-4971-b0f0-4b8def5235fb'}}
         original_obj = {'port_id': '5a39def4-3d3f-473d-9ff4-8e90064b9cc1'}
@@ -376,7 +391,8 @@ class TestNovaNotify(base.BaseTestCase):
             extensions=mock.ANY,
             global_request_id=mock.ANY)
 
-    def test_notify_port_active_direct(self):
+    @mock.patch.object(batch_notifier.BatchNotifier, '_notify')
+    def test_notify_port_active_direct(self, mock_notify):
         device_id = '32102d7b-1cf4-404d-b50a-97aae1f55f87'
         port_id = 'bee50827-bcee-4cc8-91c1-a27b0ce54222'
         port = port_obj.Port(self.ctx, id=port_id, device_id=device_id,
@@ -394,31 +410,39 @@ class TestNovaNotify(base.BaseTestCase):
             self.nova_notifier.batch_notifier._pending_events.get())
 
     def test_notify_concurrent_enable_flag_update(self):
-        # This test assumes Neutron server uses eventlet.
+        # This test assumes Neutron server can use eventlet or not.
         # NOTE(ralonsoh): the exceptions raise inside a thread won't stop the
         # test. The checks are stored in "_queue" and tested at the end of the
         # test execution.
-        _queue = eventlet.queue.Queue()
+        # NOTE(ralonsoh): once the eventlet deprecation is finished, the
+        # ``time.sleep()`` calls can be removed; the kernel threads are
+        # preemptive and it is not needed to manually yield the GIL.
+        _queue = queue.Queue()
 
         def _local_executor(thread_idx):
             # This thread has not yet initialized the local "enable" flag.
             _queue.put(getattr(nova._notifier_store, 'enable', None) is None)
-            eventlet.sleep(0)  # Next thread execution.
+            time.sleep(0)  # Next thread execution.
             new_enable = bool(thread_idx % 2)
             with self.nova_notifier.context_enabled(new_enable):
                 # At this point, the Nova Notifier should have updated the
                 # "enable" flag.
                 _queue.put(new_enable == nova._notifier_store.enable)
-                eventlet.sleep(0)  # Next thread execution.
+                time.sleep(0)  # Next thread execution.
                 _queue.put(new_enable == nova._notifier_store.enable)
             _queue.put(nova.NOTIFIER_ENABLE_DEFAULT ==
                        nova._notifier_store.enable)
 
         num_threads = 20
-        pool = eventlet.GreenPool(num_threads)
+        threads = []
         for idx in range(num_threads):
-            pool.spawn(_local_executor, idx)
-        pool.waitall()
+            t = threading.Thread(target=_local_executor, args=(idx,))
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join()
+
         try:
             while True:
                 self.assertTrue(_queue.get(block=False))

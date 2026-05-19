@@ -24,18 +24,23 @@ SERVICE_OPTS = [
                default=40,
                help=_('Seconds between running periodic tasks.')),
     cfg.IntOpt('api_workers',
+               min=1,
                help=_('Number of separate API worker processes for service. '
                       'If not specified, the default is equal to the number '
                       'of CPUs available for best performance, capped by '
                       'potential RAM usage.')),
     cfg.IntOpt('rpc_workers',
+               min=0,
                help=_('Number of RPC worker processes for service. '
                       'If not specified, the default is equal to half the '
-                      'number of API workers.')),
+                      'number of API workers. If set to 0, no RPC worker '
+                      'is launched.')),
     cfg.IntOpt('rpc_state_report_workers',
                default=1,
-               help=_('Number of RPC worker processes dedicated to state '
-                      'reports queue.')),
+               min=0,
+               help=_('Number of RPC worker processes dedicated to the state '
+                      'reports queue. If set to 0, no dedicated RPC worker '
+                      'for state reports queue is launched.')),
     cfg.IntOpt('periodic_fuzzy_delay',
                default=5,
                help=_('Range of seconds to randomly delay when starting the '
@@ -53,3 +58,12 @@ RPC_EXTRA_OPTS = [
 
 def register_service_opts(opts, conf=cfg.CONF):
     conf.register_opts(opts)
+
+
+def get_rpc_workers(conf=cfg.CONF):
+    """Retrieve the conf knob rpc_workers, register option first if needed"""
+    try:
+        return conf.rpc_workers
+    except cfg.NoSuchOptError:
+        register_service_opts(SERVICE_OPTS, conf=conf)
+        return conf.rpc_workers

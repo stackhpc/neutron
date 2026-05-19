@@ -1,8 +1,43 @@
 # The format of this file isn't really documented; just use --generate-rcfile
-[MASTER]
-# Add <file or directory> to the black list. It should be a base name, not a
-# path. You may set this option multiple times.
-ignore=.git,tests
+[MAIN]
+# Files or directories to be skipped. They should be base names, not paths.
+ignore=.git
+
+# Add files or directories matching the regex patterns to the ignore-list. The
+# regex matches against paths and can be in Posix or Windows format.
+ignore-paths=
+ neutron/tests/base.py,
+ neutron/tests/common/helpers.py,
+ neutron/tests/fullstack/.*,
+ neutron/tests/functional/agent/linux/test_iptables.py,
+ neutron/tests/functional/agent/linux/test_utils.py,
+ neutron/tests/functional/agent/l3/test_keepalived_state_change.py,
+ neutron/tests/functional/agent/l3/test_legacy_router.py,
+ neutron/tests/functional/common/ovn/test_utils.py,
+ neutron/tests/functional/resources/process.py,
+ neutron/tests/functional/plugins/ml2/drivers/ovn/mech_driver/ovsdb/test_ovsdb_monitor.py,
+ neutron/tests/unit/agent/common/test_resource_processing_queue.py,
+ neutron/tests/unit/agent/linux/test_external_process.py,
+ neutron/tests/unit/agent/linux/test_dhcp.py,
+ neutron/tests/unit/agent/linux/test_utils.py,
+ neutron/tests/unit/extensions/test_external_net.py,
+ neutron/tests/unit/extensions/test_l3.py,
+ neutron/tests/unit/ipam/fake_driver.py,
+ neutron/tests/unit/objects/.*.py,
+ neutron/tests/unit/plugins/ml2/test_security_group.py,
+ neutron/tests/unit/plugins/ml2/drivers/test_type_vlan.py,
+ neutron/tests/unit/plugins/ml2/drivers/openvswitch/agent/test_ovs_tunnel.py,
+ neutron/tests/unit/privileged/agent/linux/test_ip_lib.py,
+ neutron/tests/unit/services/qos/drivers/test_manager.py,
+ neutron/tests/unit/services/logapi/drivers/test_manager.py
+
+# List of plugins (as comma separated values of python module names) to load,
+# usually to register additional checkers.
+load-plugins=pylint.extensions.no_self_use
+
+# When enabled, pylint would attempt to guess common misconfiguration and emit
+# user-friendly hints instead of false-positive error messages.
+suggestion-mode=yes
 
 [MESSAGES CONTROL]
 # NOTE(gus): This is a long list.  A number of these are important and
@@ -12,68 +47,52 @@ disable=
 # "F" Fatal errors that prevent further processing
  import-error,
 # "I" Informational noise
- c-extension-no-member,
- locally-disabled,
 # "E" Error for important programming issues (likely bugs)
  access-member-before-definition,
  no-member,
  no-method-argument,
  no-self-argument,
  not-an-iterable,
+ possibly-used-before-assignment,
 # "W" Warnings for stylistic problems or minor programming issues
  abstract-method,
  arguments-differ,
  attribute-defined-outside-init,
- bad-builtin,
- bad-indentation,
  broad-except,
- dangerous-default-value,
- deprecated-lambda,
- expression-not-assigned,
  fixme,
  global-statement,
- keyword-arg-before-vararg,
- literal-comparison,
- no-init,
- non-parent-init-called,
  not-callable,
  protected-access,
  redefined-builtin,
  redefined-outer-name,
  signature-differs,
- star-args,
  super-init-not-called,
- super-on-old-class,
  unpacking-non-sequence,
  unused-argument,
  unused-import,
  unused-variable,
- useless-super-delegation,
-# TODO(dougwig) - disable nonstandard-exception while we have neutron_lib shims
- nonstandard-exception,
+ unnecessary-pass,
+ raise-missing-from,
+ arguments-renamed,
+ broad-exception-raised,
+ unspecified-encoding,
+ unused-private-member,
 # "C" Coding convention violations
- bad-continuation,
  consider-iterating-dictionary,
  consider-using-enumerate,
  invalid-name,
- len-as-condition,
  missing-docstring,
  singleton-comparison,
  superfluous-parens,
  ungrouped-imports,
  wrong-import-order,
+ consider-using-f-string,
+ consider-using-dict-items,
 # "R" Refactor recommendations
- abstract-class-little-used,
- abstract-class-not-used,
- consider-merging-isinstance,
- consider-using-ternary,
  duplicate-code,
  inconsistent-return-statements,
- interface-not-implemented,
- no-else-return,
  no-self-use,
  redefined-argument-from-local,
- simplifiable-if-statement,
  too-few-public-methods,
  too-many-ancestors,
  too-many-arguments,
@@ -82,13 +101,11 @@ disable=
  too-many-lines,
  too-many-locals,
  too-many-nested-blocks,
+ too-many-positional-arguments,
  too-many-public-methods,
  too-many-return-statements,
  too-many-statements,
-# new for python3 version of pylint
- consider-using-set-comprehension,
- unnecessary-pass,
- useless-object-inheritance
+ use-dict-literal
 
 [BASIC]
 # Variable names can be 1 to 31 characters long, with lowercase and underscores
@@ -118,8 +135,11 @@ max-line-length=79
 additional-builtins=_
 
 [CLASSES]
-# List of interface methods to ignore, separated by a comma.
-ignore-iface-methods=
+# List of valid names for the first argument in a class method.
+valid-classmethod-first-arg=cls
+
+# List of valid names for the first argument in a metaclass class method.
+valid-metaclass-classmethod-first-arg=cls
 
 [IMPORTS]
 # Deprecated modules which should not be used, separated by a comma
@@ -131,6 +151,10 @@ deprecated-modules=
 [TYPECHECK]
 # List of module names for which member attributes should not be checked
 ignored-modules=_MovedItems
+# List of decorators that change the signature of a decorated function
+signature-mutators=
+ unittest.mock.patch,
+ unittest.mock._patch_object
 
 [REPORTS]
 # Tells whether to display a full report or only the messages

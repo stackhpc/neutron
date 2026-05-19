@@ -123,11 +123,11 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
 
         old_route_list = self._get_route_by_subnet(context, id)
 
-        new_route_set = set([_combine(route)
-                             for route in s['host_routes']])
+        new_route_set = {_combine(route)
+                         for route in s['host_routes']}
 
-        old_route_set = set([_combine(route)
-                             for route in old_route_list])
+        old_route_set = {_combine(route)
+                         for route in old_route_list}
 
         for route_str in old_route_set - new_route_set:
             for route in old_route_list:
@@ -196,7 +196,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
         return updated_types
 
     def update_db_subnet(self, context, subnet_id, s, oldpools,
-            subnet_obj=None):
+                         subnet_obj=None):
         changes = {}
         if "dns_nameservers" in s:
             changes['dns_nameservers'] = (
@@ -243,8 +243,8 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                     str(subnet['cidr']) != const.PROVISIONAL_IPV6_PD_PREFIX):
                 # don't give out details of the overlapping subnet
                 err_msg = (_("Requested subnet with cidr: %(cidr)s for "
-                           "network: %(network_id)s overlaps with another "
-                           "subnet") %
+                             "network: %(network_id)s overlaps with another "
+                             "subnet") %
                            {'cidr': new_subnet_cidr,
                             'network_id': network.id})
                 LOG.info("Validation for CIDR: %(new_cidr)s failed - "
@@ -346,9 +346,12 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                 if ip_sets[l_cursor] & ip_sets[r_cursor]:
                     l_range = ip_ranges[l_cursor]
                     r_range = ip_ranges[r_cursor]
+                    # TODO(mtomaska): Remove the explicit IPRange object to
+                    # string cast here once neutron depends on
+                    # oslo.serialization > 5.9.1. See LP#2142242
                     LOG.info("Found overlapping ranges: %(l_range)s and "
-                             "%(r_range)s",
-                             {'l_range': l_range, 'r_range': r_range})
+                             "%(r_range)s", {'l_range': str(l_range),
+                                             'r_range': str(r_range)})
                     raise exc.OverlappingAllocationPools(
                         pool_1=l_range,
                         pool_2=r_range,
@@ -369,9 +372,9 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
             to_create_subnet_id = None
 
         segments = subnet_obj.Subnet.get_subnet_segment_ids(
-                    context, network_id,
-                    ignored_service_type=const.DEVICE_OWNER_ROUTED,
-                    subnet_id=to_create_subnet_id)
+            context, network_id,
+            ignored_service_type=const.DEVICE_OWNER_ROUTED,
+            subnet_id=to_create_subnet_id)
 
         associated_segments = set(segments)
         if None in associated_segments and len(associated_segments) > 1:
@@ -427,9 +430,9 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                 raise exc.InvalidInput(error_message=msg)
             # Ensure that the IP is valid on the subnet
             if ('ip_address' in fixed and
-                not ipam_utils.check_subnet_ip(subnet['cidr'],
-                                               fixed['ip_address'],
-                                               fixed['device_owner'])):
+                    not ipam_utils.check_subnet_ip(subnet['cidr'],
+                                                   fixed['ip_address'],
+                                                   fixed['device_owner'])):
                 raise exc.InvalidIpForSubnet(ip_address=fixed['ip_address'])
             return subnet
 
@@ -481,8 +484,8 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
                                   new_ips, device_owner):
         """Calculate changes in IPs for the port."""
         # Collect auto addressed subnet ids that has to be removed on update
-        delete_subnet_ids = set(ip['subnet_id'] for ip in new_ips
-                                if ip.get('delete_subnet'))
+        delete_subnet_ids = {ip['subnet_id'] for ip in new_ips
+                             if ip.get('delete_subnet')}
         ips = [ip for ip in new_ips
                if ip.get('subnet_id') not in delete_subnet_ids]
 
@@ -683,7 +686,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
             msg = ('This subnet is being modified by another concurrent '
                    'operation')
             for subnet in subnets:
-                subnet.lock_register(
+                subnet.read_lock_register(
                     context, exc.SubnetInUse(subnet_id=subnet.id, reason=msg),
                     id=subnet.id)
             subnet_dicts = [self._make_subnet_dict(subnet, context=context)
@@ -701,7 +704,7 @@ class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
             network_id=network_id, service_type=service_type)
 
     def _make_subnet_args(self, detail, subnet, subnetpool_id):
-        args = super(IpamBackendMixin, self)._make_subnet_args(
+        args = super()._make_subnet_args(
             detail, subnet, subnetpool_id)
         if validators.is_attr_set(subnet.get(segment.SEGMENT_ID)):
             args['segment_id'] = subnet[segment.SEGMENT_ID]

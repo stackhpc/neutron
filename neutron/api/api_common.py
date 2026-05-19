@@ -28,7 +28,7 @@ from webob import exc
 
 from neutron._i18n import _
 from neutron.api import extensions
-from neutron import wsgi
+from neutron.api import wsgi
 
 
 LOG = logging.getLogger(__name__)
@@ -126,8 +126,8 @@ def get_previous_link(request, items, id_key):
         marker = items[0][id_key]
         params['marker'] = marker
     params['page_reverse'] = True
-    return "%s?%s" % (prepare_url(get_path_url(request)),
-                      urllib.parse.urlencode(params))
+    return "{}?{}".format(prepare_url(get_path_url(request)),
+                          urllib.parse.urlencode(params))
 
 
 def get_next_link(request, items, id_key):
@@ -137,8 +137,8 @@ def get_next_link(request, items, id_key):
         marker = items[-1][id_key]
         params['marker'] = marker
     params.pop('page_reverse', None)
-    return "%s?%s" % (prepare_url(get_path_url(request)),
-                      urllib.parse.urlencode(params))
+    return "{}?{}".format(prepare_url(get_path_url(request)),
+                          urllib.parse.urlencode(params))
 
 
 def prepare_url(orig_url):
@@ -165,8 +165,7 @@ def get_path_url(request):
             parsed.path, parsed.params,
             parsed.query, parsed.fragment)
         return urllib.parse.urlunparse(new_parsed)
-    else:
-        return request.path_url
+    return request.path_url
 
 
 def get_limit_and_marker(request):
@@ -233,8 +232,8 @@ def get_sorts(request, attr_info):
         msg = _("The number of sort_keys and sort_dirs must be same")
         raise exc.HTTPBadRequest(explanation=msg)
     valid_dirs = [constants.SORT_DIRECTION_ASC, constants.SORT_DIRECTION_DESC]
-    valid_sort_keys = set(attr for attr, schema in attr_info.items()
-                          if schema.get('is_sort_key', False))
+    valid_sort_keys = {attr for attr, schema in attr_info.items()
+                       if schema.get('is_sort_key', False)}
     absent_keys = [x for x in sort_keys if x not in valid_sort_keys]
     if absent_keys:
         msg = _("%s is invalid attribute for sort_keys") % absent_keys
@@ -286,12 +285,23 @@ def is_native_sorting_supported(plugin):
 
 
 def is_filter_validation_supported(plugin):
-    filter_validation_attr_name = ("_%s__filter_validation_support"
-                                   % plugin.__class__.__name__)
-    return getattr(plugin, filter_validation_attr_name, False)
+    if plugin is None:
+        return False
+    try:
+        return plugin.filter_validation_support
+    except AttributeError:
+        klass = plugin.__class__
+        LOG.warning(
+            'The plugin class %s should inherit from ``ServicePluginBase`` or '
+            '``NeutronDbPluginV2``. This class needs to be refactored. Please '
+            'report a Launchpad bug in https://bugs.launchpad.net/neutron.',
+            klass.__module__ + '.' + klass.__name__)
+        filter_validation_attr_name = ("_%s__filter_validation_support"
+                                       % klass.__name__)
+        return getattr(plugin, filter_validation_attr_name, False)
 
 
-class PaginationHelper(object):
+class PaginationHelper:
 
     def __init__(self, request, primary_key='id'):
         self.request = request
@@ -313,7 +323,7 @@ class PaginationHelper(object):
 class PaginationEmulatedHelper(PaginationHelper):
 
     def __init__(self, request, primary_key='id'):
-        super(PaginationEmulatedHelper, self).__init__(request, primary_key)
+        super().__init__(request, primary_key)
         self.limit, self.marker = get_limit_and_marker(request)
         self.page_reverse = get_page_reverse(request)
 
@@ -347,11 +357,10 @@ class PaginationEmulatedHelper(PaginationHelper):
         if self.page_reverse:
             # don't wrap
             return items[max(i - self.limit, 0):i]
-        else:
-            if self.marker:
-                # skip the matched marker
-                i += 1
-            return items[i:i + self.limit]
+        if self.marker:
+            # skip the matched marker
+            i += 1
+        return items[i:i + self.limit]
 
     def get_links(self, items):
         return get_pagination_links(
@@ -375,7 +384,7 @@ class NoPaginationHelper(PaginationHelper):
     pass
 
 
-class SortingHelper(object):
+class SortingHelper:
 
     def __init__(self, request, attr_info):
         pass
@@ -393,7 +402,7 @@ class SortingHelper(object):
 class SortingEmulatedHelper(SortingHelper):
 
     def __init__(self, request, attr_info):
-        super(SortingEmulatedHelper, self).__init__(request, attr_info)
+        super().__init__(request, attr_info)
         self.sort_dict = get_sorts(request, attr_info)
 
     def update_fields(self, original_fields, fields_to_add):
@@ -450,26 +459,25 @@ def convert_exception_to_http_exc(e, faults, language):
                 # all error codes are the same so we can maintain the code
                 # and just concatenate the bodies
                 joined_msg = "\n".join(
-                    (jsonutils.loads(c.body)['NeutronError']['message']
-                     for c in converted_exceptions))
+                    jsonutils.loads(c.body)['NeutronError']['message']
+                    for c in converted_exceptions)
                 new_body = jsonutils.loads(converted_exceptions[0].body)
                 new_body['NeutronError']['message'] = joined_msg
                 converted_exceptions[0].body = serializer.serialize(new_body)
                 return converted_exceptions[0]
-            else:
-                # multiple error types so we turn it into a Conflict with the
-                # inner codes and bodies packed in
-                new_exception = exceptions.Conflict()
-                inner_error_strings = []
-                for c in converted_exceptions:
-                    c_body = jsonutils.loads(c.body)
-                    err = ('HTTP %s %s: %s' % (
-                           c.code, c_body['NeutronError']['type'],
-                           c_body['NeutronError']['message']))
-                    inner_error_strings.append(err)
-                new_exception.msg = "\n".join(inner_error_strings)
-                return convert_exception_to_http_exc(
-                    new_exception, faults, language)
+            # multiple error types so we turn it into a Conflict with the
+            # inner codes and bodies packed in
+            new_exception = exceptions.Conflict()
+            inner_error_strings = []
+            for c in converted_exceptions:
+                c_body = jsonutils.loads(c.body)
+                err = 'HTTP {} {}: {}'.format(
+                    c.code, c_body['NeutronError']['type'],
+                    c_body['NeutronError']['message'])
+                inner_error_strings.append(err)
+            new_exception.msg = "\n".join(inner_error_strings)
+            return convert_exception_to_http_exc(new_exception, faults,
+                                                 language)
 
     e = translate(e, language)
     body = serializer.serialize(

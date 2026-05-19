@@ -124,7 +124,7 @@ TEST_ROUTERS_WITH_NEW_LABEL = [
 
 class IptablesDriverTestCase(base.BaseTestCase):
     def setUp(self):
-        super(IptablesDriverTestCase, self).setUp()
+        super().setUp()
         self.utils_exec_p = mock.patch(
             'neutron.agent.linux.utils.execute')
         self.utils_exec = self.utils_exec_p.start()
@@ -818,7 +818,6 @@ class IptablesDriverTestCase(base.BaseTestCase):
         try:
             self.metering.granular_traffic_data = False
             counters = self.metering.get_traffic_counters(None, TEST_ROUTERS)
-            print("%s" % counters)
             self.assertEqual(expected_total_number_of_data_granularity,
                              len(counters))
             self.assertEqual(expected_response, counters)

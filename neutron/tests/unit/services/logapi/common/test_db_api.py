@@ -13,11 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 from unittest import mock
 
 from neutron_lib import constants as const
 from neutron_lib import context
 from neutron_lib.db import api as n_db_api
+from neutron_lib.plugins import directory
 from neutron_lib.services.logapi import constants as log_const
 from neutron_lib.utils import net as net_utils
 from oslo_utils import uuidutils
@@ -52,27 +54,27 @@ def _create_log(context, project_id, resource_id=None,
 class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
 
     def setUp(self):
-        super(LoggingDBApiTestCase, self).setUp()
+        super().setUp()
         self.context = context.get_admin_context()
-        self.sg_id, self.port_id, self._tenant_id = self._create_sg_and_port()
-        self.context.tenant_id = self._tenant_id
+        self.sg_id, self.port_id, self._project_id = self._create_sg_and_port()
+        self.context.project_id = self._project_id
 
     def _create_sg_and_port(self):
         with self.network() as network, \
                 self.subnet(network), \
                 self.security_group() as sg:
             sg_id = sg['security_group']['id']
-            tenant_id = sg['security_group']['tenant_id']
+            project_id = sg['security_group']['project_id']
 
             res = self._create_port(
                 self.fmt, network['network']['id'],
                 security_groups=[sg_id])
             ports_rest = self.deserialize(self.fmt, res)
             port_id = ports_rest['port']['id']
-        return sg_id, port_id, tenant_id
+        return sg_id, port_id, project_id
 
     def test_get_logs_bound_port(self):
-        log = _create_log(self.context, self._tenant_id,
+        log = _create_log(self.context, self._project_id,
                           target_id=self.port_id)
         with mock.patch.object(log_object.Log, 'get_objects',
                                return_value=[log]):
@@ -80,14 +82,14 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
                 [log], db_api.get_logs_bound_port(self.context, self.port_id))
 
             # Test get log objects with required resource type
-            calls = [mock.call(self.context, project_id=self._tenant_id,
+            calls = [mock.call(self.context, project_id=self._project_id,
                                resource_type=log_const.SECURITY_GROUP,
                                enabled=True)]
             log_object.Log.get_objects.assert_has_calls(calls)
 
     def test_get_logs_not_bound_port(self):
         fake_sg_id = uuidutils.generate_uuid()
-        log = _create_log(self.context, self._tenant_id,
+        log = _create_log(self.context, self._project_id,
                           resource_id=fake_sg_id)
         with mock.patch.object(log_object.Log, 'get_objects',
                                return_value=[log]):
@@ -95,7 +97,7 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
                 [], db_api.get_logs_bound_port(self.context, self.port_id))
 
             # Test get log objects with required resource type
-            calls = [mock.call(self.context, project_id=self._tenant_id,
+            calls = [mock.call(self.context, project_id=self._project_id,
                                resource_type=log_const.SECURITY_GROUP,
                                enabled=True)]
             log_object.Log.get_objects.assert_has_calls(calls)
@@ -106,31 +108,31 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
                 self.port(subnet=subnet) as p1, \
                 self.port(subnet=subnet, security_groups=[self.sg_id]) as p2:
 
-            log = _create_log(self.context, self._tenant_id)
-            log_sg = _create_log(self.context, self._tenant_id,
+            log = _create_log(self.context, self._project_id)
+            log_sg = _create_log(self.context, self._project_id,
                                  resource_id=self.sg_id)
-            log_port_no_sg = _create_log(self.context, self._tenant_id,
+            log_port_no_sg = _create_log(self.context, self._project_id,
                                          target_id=p1['port']['id'])
-            log_port_sg = _create_log(self.context, self._tenant_id,
+            log_port_sg = _create_log(self.context, self._project_id,
                                       target_id=p2['port']['id'])
             self.assertEqual(
                 [log, log_sg, log_port_sg],
                 db_api.get_logs_bound_sg(self.context, sg_id=self.sg_id,
-                                         project_id=self._tenant_id))
+                                         project_id=self._project_id))
             self.assertEqual(
                 [log_sg, log_port_sg],
                 db_api.get_logs_bound_sg(self.context, sg_id=self.sg_id,
-                                         project_id=self._tenant_id,
+                                         project_id=self._project_id,
                                          exclusive=True))
             self.assertEqual(
                 [log_port_no_sg],
                 db_api.get_logs_bound_sg(
-                    self.context, project_id=self._tenant_id,
+                    self.context, project_id=self._project_id,
                     port_id=p1['port']['id']))
             self.assertEqual(
                 [log_port_sg],
                 db_api.get_logs_bound_sg(
-                    self.context, project_id=self._tenant_id,
+                    self.context, project_id=self._project_id,
                     port_id=p2['port']['id']))
 
     def test_get_logs_not_bound_sg(self):
@@ -142,28 +144,28 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
                 self.fmt, network['network']['id'],
                 security_groups=[sg2_id])
             port2_id = self.deserialize(self.fmt, res)['port']['id']
-            log = _create_log(self.context, self._tenant_id,
+            log = _create_log(self.context, self._project_id,
                               target_id=port2_id)
             with mock.patch.object(log_object.Log, 'get_objects',
                                    return_value=[log]):
                 self.assertEqual(
                     [], db_api.get_logs_bound_sg(
-                        self.context, self.sg_id, project_id=self._tenant_id))
+                        self.context, self.sg_id, project_id=self._project_id))
 
                 # Test get log objects with required resource type
-                calls = [mock.call(self.context, project_id=self._tenant_id,
+                calls = [mock.call(self.context, project_id=self._project_id,
                                    resource_type=log_const.SECURITY_GROUP,
                                    enabled=True)]
                 log_object.Log.get_objects.assert_has_calls(calls)
 
     def test__get_ports_being_logged(self):
-        log1 = _create_log(self.context, self._tenant_id,
+        log1 = _create_log(self.context, self._project_id,
                            target_id=self.port_id)
-        log2 = _create_log(self.context, self._tenant_id,
+        log2 = _create_log(self.context, self._project_id,
                            resource_id=self.sg_id)
-        log3 = _create_log(self.context, self._tenant_id,
+        log3 = _create_log(self.context, self._project_id,
                            target_id=self.port_id, resource_id=self.sg_id)
-        log4 = _create_log(self.context, self._tenant_id)
+        log4 = _create_log(self.context, self._project_id)
         with mock.patch.object(
                 validators, 'validate_log_type_for_port', return_value=True):
             ports_log1 = db_api._get_ports_being_logged(self.context, log1)
@@ -177,7 +179,7 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
             self.assertEqual([self.port_id], ports_log4)
 
     def test__get_ports_being_logged_not_supported_log_type(self):
-        log = _create_log(self.context, self._tenant_id)
+        log = _create_log(self.context, self._project_id)
         with mock.patch.object(
                 validators, 'validate_log_type_for_port', return_value=False):
             ports_log = db_api._get_ports_being_logged(self.context, log)
@@ -187,7 +189,12 @@ class LoggingDBApiTestCase(test_sg.SecurityGroupDBTestCase):
 class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
 
     def setUp(self):
-        super(LoggingRpcCallbackTestCase, self).setUp()
+        super().setUp()
+        plugin = directory.get_plugin()
+        mock.patch.object(
+            plugin, 'get_default_security_group_rules',
+            return_value=copy.deepcopy(
+                test_sg.RULES_TEMPLATE_FOR_CUSTOM_SG)).start()
         self.context = context.get_admin_context()
         self.rpc_callback = server_rpc.LoggingApiSkeleton()
 
@@ -196,7 +203,7 @@ class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
                 self.subnet(network), \
                 self.security_group() as sg:
             sg_id = sg['security_group']['id']
-            tenant_id = sg['security_group']['tenant_id']
+            project_id = sg['security_group']['project_id']
             rule1 = self._build_security_group_rule(
                 sg_id,
                 'ingress', const.PROTO_NAME_TCP, '22', '22',
@@ -215,7 +222,8 @@ class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
                 security_groups=[sg_id])
             ports_rest = self.deserialize(self.fmt, res)
             port_id = ports_rest['port']['id']
-            log = _create_log(self.context, self._tenant_id, resource_id=sg_id)
+            log = _create_log(self.context, self._project_id,
+                              resource_id=sg_id)
             with mock.patch.object(
                     server_rpc,
                     'get_rpc_method',
@@ -256,7 +264,7 @@ class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
                                          '10.0.0.1/32'),
                                  'security_group_id': sg_id}]
                         }],
-                        'project_id': tenant_id
+                        'project_id': project_id
                     }]
                     self.assertEqual(expected, ports_log)
                 self._delete('ports', port_id)
@@ -266,7 +274,7 @@ class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
                 self.subnet(network), \
                 self.security_group() as sg:
             sg_id = sg['security_group']['id']
-            tenant_id = sg['security_group']['tenant_id']
+            project_id = sg['security_group']['project_id']
             rule1 = self._build_security_group_rule(
                 sg_id,
                 'ingress', const.PROTO_NAME_TCP, '11', '13',
@@ -283,11 +291,11 @@ class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
             res = self._create_port(
                 self.fmt, network['network']['id'],
                 security_groups=[sg_id],
-                tenant_id=tenant_id
+                project_id=project_id
             )
             ports_rest = self.deserialize(self.fmt, res)
             port_id = ports_rest['port']['id']
-            log = _create_log(self.context, tenant_id)
+            log = _create_log(self.context, project_id)
             with mock.patch.object(
                     log_object.Log, 'get_objects', return_value=[log]):
                 with mock.patch.object(
@@ -331,7 +339,7 @@ class LoggingRpcCallbackTestCase(test_sg.SecurityGroupDBTestCase):
                                      'protocol': 'icmp',
                                      'security_group_id': sg_id}]
                             }],
-                            'project_id': tenant_id
+                            'project_id': project_id
                         }]
 
                         self.assertEqual(expected, ports_log)

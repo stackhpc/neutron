@@ -16,19 +16,12 @@ from alembic import context
 from neutron_lib.db import model_base
 from oslo_config import cfg
 import sqlalchemy as sa
-from sqlalchemy import event  # noqa
+from sqlalchemy import event  # noqa: N346
 
 from neutron.db.migration.alembic_migrations import external
 from neutron.db.migration import autogen
 from neutron.db.migration.connection import DBConnection
-from neutron.db.migration.models import head  # noqa
-
-try:
-    # NOTE(mriedem): This is to register the DB2 alembic code which
-    # is an optional runtime dependency.
-    from ibm_db_alembic.ibm_db import IbmDbImpl  # noqa # pylint: disable=unused-import
-except ImportError:
-    pass
+from neutron.db.migration.models import head  # noqa: F401
 
 
 MYSQL_ENGINE = None
@@ -36,7 +29,7 @@ MYSQL_ENGINE = None
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-neutron_config = config.neutron_config
+neutron_config = config.neutron_config  # type:ignore[attr-defined]
 
 # set the target for 'autogenerate' support
 target_metadata = model_base.BASEV2.metadata
@@ -56,12 +49,11 @@ def set_mysql_engine():
 def include_object(object_, name, type_, reflected, compare_to):
     if type_ == 'table' and name in external.TABLES:
         return False
-    elif type_ == 'index' and reflected and name.startswith("idx_autoinc_"):
+    if type_ == 'index' and reflected and name.startswith("idx_autoinc_"):
         # skip indexes created by SQLAlchemy autoincrement=True
         # on composite PK integer columns
         return False
-    else:
-        return True
+    return True
 
 
 def run_migrations_offline():

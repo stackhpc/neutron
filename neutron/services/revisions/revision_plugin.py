@@ -34,10 +34,8 @@ class RevisionPlugin(service_base.ServicePluginBase):
     supported_extension_aliases = ['standard-attr-revisions',
                                    revisionifmatch.ALIAS]
 
-    __filter_validation_support = True
-
     def __init__(self):
-        super(RevisionPlugin, self).__init__()
+        super().__init__()
         # background on these event hooks:
         # https://docs.sqlalchemy.org/en/latest/orm/session_events.html
         db_api.sqla_listen(se.Session, 'before_flush', self.bump_revisions)
@@ -78,14 +76,14 @@ class RevisionPlugin(service_base.ServicePluginBase):
     def bump_revisions(self, session, context, instances):
         self._enforce_if_match_constraints(session)
         # bump revision number for updated objects in the session
+        modified_objs = {o for o in session.dirty if session.is_modified(o)}
         self._bump_obj_revisions(
-            session,
-            self._get_objects_to_bump_revision(session.dirty))
+            session, self._get_objects_to_bump_revision(modified_objs))
 
         # see if any created/updated/deleted objects bump the revision
         # of another object
         objects_with_related_revisions = [
-            o for o in session.deleted | session.dirty | session.new
+            o for o in modified_objs | set(session.deleted) | set(session.new)
             if getattr(o, 'revises_on_change', ())
         ]
         collected = session.info.setdefault('_related_bumped', set())
@@ -209,7 +207,7 @@ class RevisionPlugin(service_base.ServicePluginBase):
                 # well.
                 standard_attr.StandardAttribute.revision_number:
                 standard_attr.StandardAttribute.revision_number + 1},
-                synchronize_session=False)
+                     synchronize_session=False)
 
             # run a SELECT to get back the new values we just generated.
             # if MySQL supported RETURNING, we could get these numbers
@@ -328,4 +326,4 @@ class RevisionNumberConstraintFailed(webob.exc.HTTPPreconditionFailed):
     def __init__(self, expected, current):
         detail = (_("Constrained to %(exp)s, but current revision is %(cur)s")
                   % {'exp': expected, 'cur': current})
-        super(RevisionNumberConstraintFailed, self).__init__(detail=detail)
+        super().__init__(detail=detail)

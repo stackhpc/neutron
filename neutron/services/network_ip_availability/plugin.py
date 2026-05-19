@@ -14,21 +14,25 @@
 #  limitations under the License.
 
 from neutron_lib.api.definitions import network_ip_availability
+from neutron_lib.api.definitions import network_ip_availability_details
 from neutron_lib.db import utils as db_utils
 from neutron_lib import exceptions
+from neutron_lib.services import base as service_base
 
-import neutron.db.db_base_plugin_v2 as db_base_plugin_v2
-import neutron.db.network_ip_availability_db as ip_availability_db
+from neutron.db import network_ip_availability_db as ip_availability_db
+from neutron.db \
+    import network_ip_availability_details_db as ip_availability_details_db
 
 
-class NetworkIPAvailabilityPlugin(ip_availability_db.IpAvailabilityMixin,
-                                  db_base_plugin_v2.NeutronDbPluginV2):
+class NetworkIPAvailabilityPlugin(
+        ip_availability_details_db.IpAvailabilityDetailsDbMixin,
+        ip_availability_db.IpAvailabilityMixin,
+        service_base.ServicePluginBase):
     """This plugin exposes IP availability data for networks and subnets."""
     _instance = None
 
-    supported_extension_aliases = [network_ip_availability.ALIAS]
-
-    __filter_validation_support = True
+    supported_extension_aliases = [network_ip_availability.ALIAS,
+                                   network_ip_availability_details.ALIAS]
 
     @classmethod
     def get_instance(cls):
@@ -46,9 +50,8 @@ class NetworkIPAvailabilityPlugin(ip_availability_db.IpAvailabilityMixin,
     def get_network_ip_availabilities(self, context, filters=None,
                                       fields=None):
         """Returns ip availability data for a collection of networks."""
-        net_ip_availabilities = super(
-            NetworkIPAvailabilityPlugin, self
-        ).get_network_ip_availabilities(context, filters)
+        net_ip_availabilities = super().get_network_ip_availabilities(
+            context, filters)
         return [db_utils.resource_fields(net_ip_availability, fields)
                 for net_ip_availability in net_ip_availabilities]
 
@@ -56,7 +59,6 @@ class NetworkIPAvailabilityPlugin(ip_availability_db.IpAvailabilityMixin,
         """Return ip availability data for a specific network id."""
         filters = {'network_id': [id]}
         result = self.get_network_ip_availabilities(context, filters)
-        if result:
-            return db_utils.resource_fields(result[0], fields)
-        else:
+        if not result:
             raise exceptions.NetworkNotFound(net_id=id)
+        return db_utils.resource_fields(result[0], fields)

@@ -1,0 +1,7 @@
+---
+deprecations:
+  - |
+    The ``tenant_network_types`` option of the ML2 configuration has been
+    deprecated and replaced with the ``project_network_types`` option.
+    The old option name will continue to work as it does today, but will
+    be removed in the ``2027.1`` release.

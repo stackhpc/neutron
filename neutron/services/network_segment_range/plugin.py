@@ -25,6 +25,7 @@ from oslo_log import helpers as log_helpers
 from oslo_log import log
 
 from neutron._i18n import _
+from neutron.common import wsgi_utils
 from neutron.db import segments_db
 from neutron.extensions import network_segment_range as ext_range
 from neutron.objects import base as base_obj
@@ -61,12 +62,13 @@ class NetworkSegmentRangePlugin(ext_range.NetworkSegmentRangePluginBase):
 
     __native_pagination_support = True
     __native_sorting_support = True
-    __filter_validation_support = True
 
     def __init__(self):
-        super(NetworkSegmentRangePlugin, self).__init__()
+        super().__init__()
+        self._start_time = wsgi_utils.get_start_time(current_time=True)
         self.type_manager = directory.get_plugin().type_manager
-        self.type_manager.initialize_network_segment_range_support()
+        self.type_manager.initialize_network_segment_range_support(
+            self._start_time)
 
     def _get_network_segment_range(self, context, id):
         obj = obj_network_segment_range.NetworkSegmentRange.get_object(
@@ -162,7 +164,7 @@ class NetworkSegmentRangePlugin(ext_range.NetworkSegmentRangePluginBase):
                         network_type=range_data['network_type'],
                         physical_network=(range_data['physical_network']
                                           if range_data['network_type'] ==
-                                          const.TYPE_VLAN else None),
+                                          const.TYPE_VLAN else ''),
                         minimum=range_data['minimum'],
                         maximum=range_data['maximum'])
                 )

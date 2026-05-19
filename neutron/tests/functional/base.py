@@ -13,27 +13,29 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 from datetime import datetime
 import errno
 import os
 import shutil
 from unittest import mock
 import warnings
+import weakref
 
 import fixtures
-from neutron_lib import fixture
+from neutron_lib.ovn import constants as ovn_const
 from neutron_lib.plugins import constants
 from neutron_lib.plugins import directory
-from oslo_concurrency import lockutils
 from oslo_config import cfg
-from oslo_db import exception as os_db_exc
-from oslo_db.sqlalchemy import provision
 from oslo_log import log
+from oslo_utils import fileutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
+from sqlalchemy.dialects.mysql import dialect as mysql_dialect
 
 from neutron.agent.linux import utils
 from neutron.api import extensions as exts
+from neutron.api import wsgi
 from neutron.common import utils as n_utils
 from neutron.conf.agent import common as config
 from neutron.conf.agent import ovs_conf
@@ -49,19 +51,70 @@ from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions import \
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import worker
 from neutron.plugins.ml2.drivers import type_geneve  # noqa
 from neutron import service  # noqa
+from neutron.services.logapi.drivers.ovn import driver as log_driver
 from neutron.tests import base
 from neutron.tests.common import base as common_base
 from neutron.tests.common import helpers
 from neutron.tests.functional.resources import process
+from neutron.tests.unit.extensions import test_securitygroup
 from neutron.tests.unit.plugins.ml2 import test_plugin
-import neutron.wsgi
+from neutron.tests.unit import testlib_api
 
 LOG = log.getLogger(__name__)
 
 # This is the directory from which infra fetches log files for functional tests
 DEFAULT_LOG_DIR = os.path.join(helpers.get_test_log_path(),
                                'dsvm-functional-logs')
-SQL_FIXTURE_LOCK = 'sql_fixture_lock'
+
+
+class LogCollector(fixtures.Fixture):
+    # Store it to the class in case we want to remove the global variable
+    DEFAULT_LOG_DIR = DEFAULT_LOG_DIR
+
+    NORTHBOUND_DATABASE_NAME = "ovnnb_db"
+    SOUTHBOUND_DATABASE_NAME = "ovnsb_db"
+    LOCAL_OVS_DATABASE_NAME = "db"
+
+    DBS_TO_COPY = [
+        NORTHBOUND_DATABASE_NAME,
+        SOUTHBOUND_DATABASE_NAME,
+        LOCAL_OVS_DATABASE_NAME,
+    ]
+
+    def __init__(self, source_dir, test_id):
+        self.source_dir = source_dir
+        self.destination_dir = os.path.join(
+            self.DEFAULT_LOG_DIR, test_id)
+
+    def _setUp(self):
+        self.addCleanup(self._collect_ovn_process_logs)
+
+    def _copy_file(self, src_filename, dst_filename):
+        """Copy a single file from ``source_dir`` to ``destination_dir``."""
+        filepath = os.path.join(self.source_dir, src_filename)
+        try:
+            shutil.copyfile(
+                filepath, os.path.join(self.destination_dir, dst_filename))
+        except FileNotFoundError:
+            LOG.info("File %s not found", filepath)
+
+    def _collect_ovn_process_logs(self):
+        fileutils.ensure_tree(self.destination_dir, mode=0o755)
+        timestamp = datetime.now().strftime('%y-%m-%d_%H-%M-%S')
+        # A list of tuples (src_filename, dst_filename) to copy.
+        files_to_copy = []
+        # local OVS database file is called "db"
+        for database in self.DBS_TO_COPY:
+            for file_suffix in ("log", "db"):
+                src_filename = f"{database}.{file_suffix}"
+                dst_filename = f"{database}-{timestamp}.{file_suffix}"
+                files_to_copy.append((src_filename, dst_filename))
+
+        files_to_copy.append(
+            ("ovn_northd.log", f"ovn_northd-{timestamp}.log"))
+
+        for src_filename, dst_filename in files_to_copy:
+            self._copy_file(src_filename, dst_filename)
 
 
 def config_decorator(method_to_decorate, config_tuples):
@@ -105,7 +158,7 @@ class BaseSudoTestCase(BaseLoggingTestCase):
     """
 
     def setUp(self):
-        super(BaseSudoTestCase, self).setUp()
+        super().setUp()
         if not base.bool_from_env('OS_SUDO_TESTING'):
             self.skipTest('Testing with sudo is not enabled')
         self.setup_rootwrap()
@@ -134,28 +187,8 @@ class BaseSudoTestCase(BaseLoggingTestCase):
                           new=ovs_agent_decorator).start()
 
 
-class OVNSqlFixture(fixture.StaticSqlFixture):
-
-    @classmethod
-    @lockutils.synchronized(SQL_FIXTURE_LOCK)
-    def _init_resources(cls):
-        cls.schema_resource = provision.SchemaResource(
-            provision.DatabaseResource("sqlite"),
-            cls._generate_schema, teardown=False)
-        dependency_resources = {}
-        for name, resource in cls.schema_resource.resources:
-            dependency_resources[name] = resource.getResource()
-        cls.schema_resource.make(dependency_resources)
-        cls.engine = dependency_resources['database'].engine
-
-    def _delete_from_schema(self, engine):
-        try:
-            super(OVNSqlFixture, self)._delete_from_schema(engine)
-        except os_db_exc.DBNonExistentTable:
-            pass
-
-
-class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
+class TestOVNFunctionalBase(testlib_api.MySQLTestCaseMixin,
+                            test_plugin.Ml2PluginV2TestCase,
                             BaseLoggingTestCase):
 
     OVS_DISTRIBUTION = 'openvswitch'
@@ -163,7 +196,7 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
     OVN_SCHEMA_FILES = ['ovn-nb.ovsschema', 'ovn-sb.ovsschema']
 
     _mechanism_drivers = ['logger', 'ovn']
-    _extension_drivers = ['port_security']
+    _extension_drivers = ['port_security', 'external-gateway-multihoming']
     _counter = 0
     l3_plugin = 'neutron.services.ovn_l3.plugin.OVNL3RouterPlugin'
 
@@ -173,14 +206,14 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
 
     def setUp(self, maintenance_worker=False, service_plugins=None):
         ml2_config.cfg.CONF.set_override('extension_drivers',
-                                     self._extension_drivers,
-                                     group='ml2')
-        ml2_config.cfg.CONF.set_override('tenant_network_types',
-                                     ['geneve'],
-                                     group='ml2')
+                                         self._extension_drivers,
+                                         group='ml2')
+        ml2_config.cfg.CONF.set_override('project_network_types',
+                                         ['geneve'],
+                                         group='ml2')
         ml2_config.cfg.CONF.set_override('vni_ranges',
-                                     ['1:65536'],
-                                     group='ml2_type_geneve')
+                                         ['1:500'],
+                                         group='ml2_type_geneve')
         # ensure viable minimum is set for OVN's Geneve
         ml2_config.cfg.CONF.set_override('max_header_size', 38,
                                          group='ml2_type_geneve')
@@ -193,10 +226,10 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
         self.addCleanup(exts.PluginAwareExtensionManager.clear_instance)
         self.ovsdb_server_mgr = None
         self._service_plugins = service_plugins
-        super(TestOVNFunctionalBase, self).setUp()
-        self.test_log_dir = os.path.join(DEFAULT_LOG_DIR, self.id())
-        base.setup_test_logging(
-            cfg.CONF, self.test_log_dir, "testrun.txt")
+        log_driver.DRIVER = None
+        super().setUp()
+        self.assertEqual(mysql_dialect.name, self.db.engine.dialect.name)
+        self.useFixture(LogCollector(self.temp_dir, self.id()))
 
         mm = directory.get_plugin().mechanism_manager
         self.mech_driver = mm.mech_drivers['ovn'].obj
@@ -215,6 +248,11 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
                 self.mech_driver.log_driver)
         self.mech_driver.log_driver.plugin_driver = self.mech_driver
         self.mech_driver.log_driver._log_plugin_property = None
+        for driver in self.log_plugin.driver_manager.drivers:
+            if driver.name == "ovn":
+                self.ovn_log_driver = driver
+        if not hasattr(self, 'ovn_log_driver'):
+            self.ovn_log_driver = log_driver.OVNDriver()
         self.ovn_northd_mgr = None
         self.maintenance_worker = maintenance_worker
         mock.patch(
@@ -227,9 +265,15 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
         self._start_ovn_northd()
         self.addCleanup(self._reset_agent_cache_singleton)
         self.addCleanup(self._reset_ovn_client_placement_extension)
+        plugin = directory.get_plugin()
+        mock.patch.object(
+            plugin, 'get_default_security_group_rules',
+            return_value=copy.deepcopy(
+                test_securitygroup.RULES_TEMPLATE_FOR_DEFAULT_SG)).start()
 
     def _reset_agent_cache_singleton(self):
-        neutron_agent.AgentCache._instance = None
+        neutron_agent.AgentCache._singleton_instances = (
+            weakref.WeakValueDictionary())
 
     def _reset_ovn_client_placement_extension(self):
         ovn_client_placement.OVNClientPlacementExtension._instance = None
@@ -251,18 +295,8 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
         raise FileNotFoundError(
                     errno.ENOENT, os.strerror(errno.ENOENT), msg)
 
-    # FIXME(lucasagomes): Workaround for
-    # https://bugs.launchpad.net/networking-ovn/+bug/1808146. We should
-    # investigate and properly fix the problem. This method is just a
-    # workaround to alleviate the gate for now and should not be considered
-    # a proper fix.
-    def _setup_database_fixtures(self):
-        fixture = OVNSqlFixture()
-        self.useFixture(fixture)
-        self.engine = fixture.engine
-
     def get_additional_service_plugins(self):
-        p = super(TestOVNFunctionalBase, self).get_additional_service_plugins()
+        p = super().get_additional_service_plugins()
         p.update({'revision_plugin_name': 'revisions',
                   'segments': 'neutron.services.segments.plugin.Plugin'})
         if self._service_plugins:
@@ -327,11 +361,10 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
         LOG.debug("OVSDB server manager instantiated: %r",
                   self.ovsdb_server_mgr)
         set_cfg = cfg.CONF.set_override
-        set_cfg('ovn_nb_connection',
-                self.ovsdb_server_mgr.get_ovsdb_connection_path(), 'ovn')
-        set_cfg('ovn_sb_connection',
-                self.ovsdb_server_mgr.get_ovsdb_connection_path(
-                    db_type='sb'), 'ovn')
+        ovn_nb_db = self.ovsdb_server_mgr.get_ovsdb_connection_path('nb')
+        set_cfg('ovn_nb_connection', [ovn_nb_db], 'ovn')
+        ovn_sb_db = self.ovsdb_server_mgr.get_ovsdb_connection_path('sb')
+        set_cfg('ovn_sb_connection', [ovn_sb_db], 'ovn')
         set_cfg('ovn_nb_private_key', self.ovsdb_server_mgr.private_key, 'ovn')
         set_cfg('ovn_nb_certificate', self.ovsdb_server_mgr.certificate, 'ovn')
         set_cfg('ovn_nb_ca_cert', self.ovsdb_server_mgr.ca_cert, 'ovn')
@@ -345,7 +378,6 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
         cfg.CONF.set_override(
             'ovsdb_connection_timeout', 30,
             'ovn')
-        self.addCleanup(self._collect_processes_logs)
 
     def _start_idls(self):
         class TriggerCls(mock.MagicMock):
@@ -355,14 +387,16 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
         trigger_cls = TriggerCls()
         if self.maintenance_worker:
             trigger_cls.trigger.__self__.__class__ = worker.MaintenanceWorker
-            cfg.CONF.set_override('neutron_sync_mode', 'off', 'ovn')
+            cfg.CONF.set_override(
+                'neutron_sync_mode', ovn_const.OVN_DB_SYNC_MODE_OFF, 'ovn')
         else:
-            trigger_cls.trigger.__self__.__class__ = neutron.wsgi.WorkerService
+            trigger_cls.trigger.__self__.__class__ = wsgi.WorkerService
 
         self.addCleanup(self.stop)
         # NOTE(ralonsoh): do not access to the DB at exit when the SQL
         # connection is already closed, to avoid useless exception messages.
-        mock.patch.object(self.mech_driver, '_clean_hash_ring').start()
+        mock.patch.object(
+            self.mech_driver, '_remove_node_from_hash_ring').start()
         self.mech_driver.pre_fork_initialize(
             mock.ANY, mock.ANY, trigger_cls.trigger)
 
@@ -373,43 +407,18 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
         self.nb_api = self.mech_driver.nb_ovn
         self.sb_api = self.mech_driver.sb_ovn
 
-    def _collect_processes_logs(self):
-        timestamp = datetime.now().strftime('%y-%m-%d_%H-%M-%S')
-        for database in ("nb", "sb"):
-            for file_suffix in ("log", "db"):
-                src_filename = "ovn_%(db)s.%(suffix)s" % {
-                    'db': database,
-                    'suffix': file_suffix
-                }
-                dst_filename = "ovn_%(db)s-%(timestamp)s.%(suffix)s" % {
-                    'db': database,
-                    'suffix': file_suffix,
-                    'timestamp': timestamp,
-                }
-                self._copy_log_file(src_filename, dst_filename)
-
-        # Copy northd logs
-        northd_log = "ovn_northd"
-        dst_northd = "%(northd)s-%(timestamp)s.log" % {
-            "northd": northd_log,
-            "timestamp": timestamp,
-        }
-        self._copy_log_file("%s.log" % northd_log, dst_northd)
-
-    def _copy_log_file(self, src_filename, dst_filename):
-        """Copy log file from temporary dict to the test directory."""
-        filepath = os.path.join(self.temp_dir, src_filename)
-        shutil.copyfile(
-            filepath, os.path.join(self.test_log_dir, dst_filename))
-
     def stop(self):
         if self.maintenance_worker:
             self.mech_driver.nb_synchronizer.stop()
             self.mech_driver.sb_synchronizer.stop()
-        self.mech_driver.nb_ovn.ovsdb_connection.stop()
-        self.mech_driver.sb_ovn.ovsdb_connection.stop()
+        for ovn_conn in (self.mech_driver.nb_ovn.ovsdb_connection,
+                         self.mech_driver.sb_ovn.ovsdb_connection):
+            try:
+                ovn_conn.stop(timeout=10)
+            except Exception:  # pylint:disable=bare-except
+                pass
 
-    def restart(self):
+    def restart(self, delete_dbs=True):
         self.stop()
 
         if self.ovsdb_server_mgr:
@@ -417,14 +426,15 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
         if self.ovn_northd_mgr:
             self.ovn_northd_mgr.stop()
 
-        self.ovsdb_server_mgr.delete_dbs()
+        if delete_dbs:
+            self.ovsdb_server_mgr.delete_dbs()
         self._start_ovsdb_server()
         self._start_idls()
         self._start_ovn_northd()
 
     def add_fake_chassis(self, host, physical_nets=None, external_ids=None,
                          name=None, azs=None, enable_chassis_as_gw=False,
-                         other_config=None):
+                         enable_chassis_as_extport=False, other_config=None):
         def append_cms_options(ext_ids, value):
             if 'ovn-cms-options' not in ext_ids:
                 ext_ids['ovn-cms-options'] = value
@@ -441,8 +451,10 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
             other_config['ovn-cms-options'] += ':'.join(azs)
         if enable_chassis_as_gw:
             append_cms_options(other_config, 'enable-chassis-as-gw')
+        if enable_chassis_as_extport:
+            append_cms_options(other_config, 'enable-chassis-as-extport-host')
 
-        bridge_mapping = ",".join(["%s:br-provider%s" % (phys_net, i)
+        bridge_mapping = ",".join([f"{phys_net}:br-provider{i}"
                                   for i, phys_net in enumerate(physical_nets)])
         if name is None:
             name = uuidutils.generate_uuid()
@@ -459,17 +471,13 @@ class TestOVNFunctionalBase(test_plugin.Ml2PluginV2TestCase,
             name, ['geneve'], '172.24.4.%d' % self._counter,
             external_ids=external_ids, hostname=host,
             other_config=other_config).execute(check_error=True)
-        if self.sb_api.is_table_present('Chassis_Private'):
-            nb_cfg_timestamp = timeutils.utcnow_ts() * 1000
-            self.sb_api.db_create(
-                'Chassis_Private', name=name, external_ids=external_ids,
-                chassis=chassis.uuid, nb_cfg_timestamp=nb_cfg_timestamp
-            ).execute(check_error=True)
+        nb_cfg_timestamp = timeutils.utcnow_ts() * 1000
+        self.sb_api.db_create(
+            'Chassis_Private', name=name, external_ids=external_ids,
+            chassis=chassis.uuid, nb_cfg_timestamp=nb_cfg_timestamp
+        ).execute(check_error=True)
         return name
 
     def del_fake_chassis(self, chassis, if_exists=True):
         self.sb_api.chassis_del(
             chassis, if_exists=if_exists).execute(check_error=True)
-        if self.sb_api.is_table_present('Chassis_Private'):
-            self.sb_api.db_destroy(
-                'Chassis_Private', chassis).execute(check_error=True)

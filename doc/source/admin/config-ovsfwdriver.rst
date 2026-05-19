@@ -1,7 +1,7 @@
 .. _config-ovsfwdriver:
 
 ===================================
-Native Open vSwitch firewall driver
+Open vSwitch Native Firewall Driver
 ===================================
 
 Historically, Open vSwitch (OVS) could not interact directly with *iptables*
@@ -34,6 +34,13 @@ Open vSwitch. All cases require Open vSwitch version 2.5 or newer.
 * Kernel version 4.3 or newer includes *conntrack* support.
 * Kernel version 3.3, but less than 4.3, does not include *conntrack*
   support and requires building the OVS modules.
+
+It also requires the conntrack kernel module(s) to be loaded, which
+varies depending on the kernel version.
+
+* Kernel version 4.19 or newer requires the *nf_conntrack* module.
+* Kernel versions 4.18 or older require the *nf_conntrack_ipv4* and
+  *nf_conntrack_ipv6* modules.
 
 Enable the native OVS firewall driver
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -75,18 +82,19 @@ Both OVS and iptables firewall drivers should always behave in the same way if
 the same rules are configured for the security group. But in some cases that is
 not true and there may be slight differences between those drivers.
 
-+----------------------------------------+-----------------------+-----------------------+
-| Case                                   | OVS                   | iptables              |
-+========================================+=======================+=======================+
-| Traffic marked as INVALID by conntrack | Blocked               | Allowed because it    |
-| but matching some of the SG rules      |                       | first matches SG rule,|
-| (please check [1]_  and [2]_           |                       | never reaches rule to |
-| for details)                           |                       | drop invalid packets  |
-+----------------------------------------+-----------------------+-----------------------+
-| Multicast traffic sent in the group    | Allowed always        | Blocked,              |
-| 224.0.0.X                              |                       | Can be enabled by SG  |
-| (please check [3]_ for details)        |                       | rule.                 |
-+----------------------------------------+-----------------------+-----------------------+
++-------------------------------------+----------------+----------------------+
+| Case                                | OVS            | iptables             |
++=====================================+================+======================+
+| Traffic marked as INVALID by        | Blocked        | Allowed because it   |
+| conntrack but matching some of the  |                | first matches SG     |
+| SG rules (please check [1]_ and     |                | rule, never reaches  |
+| [2]_ for details)                   |                | rule to drop invalid |
+|                                     |                | packets              |
++-------------------------------------+----------------+----------------------+
+| Multicast traffic sent in the group | Allowed always | Blocked,             |
+| 224.0.0.X                           |                | Can be enabled by SG |
+| (please check [3]_ for details)     |                | rule.                |
++-------------------------------------+----------------+----------------------+
 
 Open Flow rules processing considerations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -168,6 +176,16 @@ the default ``_constants.AGENT_RES_PROCESSING_STEP``:
     # (6) Check the OVS agent restart time, checking the "iteration" time and
     #     number.
 
+Permitted ethertypes
+~~~~~~~~~~~~~~~~~~~~
+
+The OVS Firewall blocks traffic that does not have either the IPv4 or IPv6
+ethertypes at present. This is a behavior change compared to the
+"iptables_hybrid" firewall, which only operates on IP packets and thus does
+not address other ethertypes. With the configuration option
+``permitted_ethertypes`` it is possible to define a set of allowed ethertypes.
+Any traffic with these allowed ethertypes with destination to a local port or
+generated from a local port and MAC address, will be allowed.
 
 References
 ~~~~~~~~~~

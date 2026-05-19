@@ -10,6 +10,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -27,7 +28,7 @@ RESOURCE_PATH = '/log/logs/{id}'
 rules = [
     policy.DocumentedRuleDefault(
         name='get_loggable_resource',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Get loggable resources',
         operations=[
@@ -38,13 +39,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='get_loggable_resource',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='create_log',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Create a network log',
         operations=[
@@ -55,13 +56,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='create_log',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='get_log',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Get a network log',
         operations=[
@@ -76,13 +77,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='get_log',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='update_log',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Update a network log',
         operations=[
@@ -93,13 +94,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='update_log',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='delete_log',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Delete a network log',
         operations=[
@@ -110,7 +111,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='delete_log',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),

@@ -19,7 +19,6 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
-from neutron_lib import constants as neutron_const
 from neutron_lib.plugins import directory
 from neutron_lib.services.trunk import constants
 import testtools
@@ -49,7 +48,7 @@ def register_mock_callback(resource, event):
 class TrunkPluginTestCase(test_plugin.Ml2PluginV2TestCase):
 
     def setUp(self):
-        super(TrunkPluginTestCase, self).setUp()
+        super().setUp()
         self.drivers_patch = mock.patch.object(drivers, 'register').start()
         self.compat_patch = mock.patch.object(
             trunk_plugin.TrunkPlugin, 'check_compatibility').start()
@@ -108,8 +107,8 @@ class TrunkPluginTestCase(test_plugin.Ml2PluginV2TestCase):
             if not trunk_port_validator.can_be_trunked_or_untrunked(
                     self.context):
                 self.assertRaises(trunk_exc.TrunkInUse,
-                              self.trunk_plugin.delete_trunk,
-                              self.context, trunk['id'])
+                                  self.trunk_plugin.delete_trunk,
+                                  self.context, trunk['id'])
 
     def _test_trunk_create_notify(self, event):
         with self.port() as parent_port:
@@ -260,8 +259,8 @@ class TrunkPluginTestCase(test_plugin.Ml2PluginV2TestCase):
             trunk_obj.update()
             s = create_subport_dict(subport['port']['id'])
             self.assertRaises(trunk_exc.TrunkInErrorState,
-                self.trunk_plugin.add_subports,
-                self.context, trunk['id'], {'sub_ports': [s]})
+                              self.trunk_plugin.add_subports,
+                              self.context, trunk['id'], {'sub_ports': [s]})
 
     def test_add_subports_trunk_goes_to_down(self):
         with self.port() as port, self.port() as subport:
@@ -285,32 +284,6 @@ class TrunkPluginTestCase(test_plugin.Ml2PluginV2TestCase):
                 self.context, trunk['id'],
                 {'sub_ports': [{'port_id': subport['port']['id']}]})
             self.assertEqual(constants.TRUNK_DOWN_STATUS, trunk['status'])
-
-    def test__trigger_trunk_status_change_parent_port_status_down(self):
-        callback = register_mock_callback(resources.TRUNK, events.AFTER_UPDATE)
-        with self.port() as parent:
-            parent['status'] = neutron_const.PORT_STATUS_DOWN
-            original_port = {'status': neutron_const.PORT_STATUS_DOWN}
-            _, _ = (
-                self._test__trigger_trunk_status_change(
-                    parent, original_port,
-                    constants.TRUNK_DOWN_STATUS,
-                    constants.TRUNK_DOWN_STATUS))
-        callback.assert_not_called()
-
-    def test__trigger_trunk_status_change_parent_port_status_up(self):
-        callback = register_mock_callback(resources.TRUNK, events.AFTER_UPDATE)
-        with self.port() as parent:
-            parent['status'] = neutron_const.PORT_STATUS_ACTIVE
-            original_port = {'status': neutron_const.PORT_STATUS_DOWN}
-            _, _ = (
-                self._test__trigger_trunk_status_change(
-                    parent, original_port,
-                    constants.TRUNK_DOWN_STATUS,
-                    constants.TRUNK_ACTIVE_STATUS))
-        callback.assert_called_once_with(
-            resources.TRUNK, events.AFTER_UPDATE,
-            self.trunk_plugin, payload=mock.ANY)
 
     def test__trigger_trunk_status_change_vif_type_changed_unbound(self):
         callback = register_mock_callback(resources.TRUNK, events.AFTER_UPDATE)
@@ -367,11 +340,36 @@ class TrunkPluginTestCase(test_plugin.Ml2PluginV2TestCase):
         self.assertEqual(final_trunk_status, current_trunk.status)
         return trunk, current_trunk
 
+    def test_get_trunk_subport(self):
+
+        with self.port() as parent_port, self.port() as child_port:
+            trunk = self._create_test_trunk(parent_port)
+            subport = create_subport_dict(child_port['port']['id'])
+            self.trunk_plugin.add_subports(
+                self.context, trunk['id'], {'sub_ports': [subport]})
+
+            portid = parent_port['port']['id']
+            pl = directory.get_plugin()
+            res = pl.get_ports(self.context, filters={'id': [portid]})
+
+            expected_trunk_details = {
+                'trunk_id': trunk['id'],
+                'sub_ports': [
+                    {
+                        'segmentation_id': subport['segmentation_id'],
+                        'port_id': subport['port_id'],
+                        'segmentation_type': subport['segmentation_type'],
+                        'mac_address': child_port['port']['mac_address'],
+                    }
+                ]
+            }
+            self.assertEqual(expected_trunk_details, res[0]['trunk_details'])
+
 
 class TrunkPluginCompatDriversTestCase(test_plugin.Ml2PluginV2TestCase):
 
     def setUp(self):
-        super(TrunkPluginCompatDriversTestCase, self).setUp()
+        super().setUp()
         mock.patch.object(drivers, 'register').start()
 
     def test_plugin_fails_to_start_no_loaded_drivers(self):
@@ -400,6 +398,6 @@ class TrunkPluginCompatDriversTestCase(test_plugin.Ml2PluginV2TestCase):
             fake_driver = fakes.FakeDriver.create()
             plugin = trunk_plugin.TrunkPlugin()
             self.assertTrue(fake_driver.is_loaded)
-            self.assertEqual(set([]), plugin.supported_agent_types)
-            self.assertEqual(set(['foo_intfs']), plugin.supported_interfaces)
+            self.assertEqual(set(), plugin.supported_agent_types)
+            self.assertEqual({'foo_intfs'}, plugin.supported_interfaces)
             self.assertEqual([fake_driver], plugin.registered_drivers)

@@ -12,7 +12,6 @@
 
 import netaddr
 from neutron_lib.objects import common_types
-from oslo_utils import versionutils
 from oslo_versionedobjects import fields as obj_fields
 
 from neutron.db.models import address_group as models
@@ -54,15 +53,6 @@ class AddressGroup(rbac_db.NeutronRbacObject):
     }
     synthetic_fields = ['addresses']
 
-    def obj_make_compatible(self, primitive, target_version):
-        _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 1):
-            standard_fields = ['revision_number', 'created_at', 'updated_at']
-            for f in standard_fields:
-                primitive.pop(f, None)
-        if _target_version < (1, 2):
-            primitive.pop('shared', None)
-
     @classmethod
     def get_bound_project_ids(cls, context, obj_id):
         ag_objs = securitygroup.SecurityGroupRule.get_objects(
@@ -86,14 +76,14 @@ class AddressAssociation(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(AddressAssociation, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'address' in result:
             result['address'] = cls.filter_to_str(result['address'])
         return result
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        fields = super(AddressAssociation, cls).modify_fields_from_db(db_obj)
+        fields = super().modify_fields_from_db(db_obj)
         if 'address' in fields:
             fields['address'] = netaddr.IPNetwork(fields['address'])
         return fields

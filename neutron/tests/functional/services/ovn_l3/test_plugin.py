@@ -14,6 +14,7 @@
 
 from unittest import mock
 
+import ddt
 from neutron_lib.api.definitions import external_net
 from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.api.definitions import portbindings
@@ -21,36 +22,57 @@ from neutron_lib.api.definitions import provider_net as pnet
 from neutron_lib import constants as n_consts
 from neutron_lib.plugins import directory
 from oslo_db import exception as db_exc
+from oslo_utils import uuidutils
 from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils as ovn_utils
 from neutron.common import utils as n_utils
+from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.scheduler import l3_ovn_scheduler as l3_sched
 from neutron.tests.functional import base
 from neutron.tests.functional.resources.ovsdb import events
 
 
+@ddt.ddt
 class TestRouter(base.TestOVNFunctionalBase):
-    def setUp(self):
-        super(TestRouter, self).setUp()
+    def setUp(self, **kwargs):
+        super().setUp(**kwargs)
         self.chassis1 = self.add_fake_chassis(
-            'ovs-host1', physical_nets=['physnet1', 'physnet3'])
+            'ovs-host1', physical_nets=['physnet1', 'physnet3'],
+            enable_chassis_as_gw=True, azs=[])
         self.chassis2 = self.add_fake_chassis(
-            'ovs-host2', physical_nets=['physnet2', 'physnet3'])
+            'ovs-host2', physical_nets=['physnet2', 'physnet3'],
+            enable_chassis_as_gw=True, azs=[])
+        self.physnet_used = ['physnet1', 'physnet2', 'physnet3']
         self.cr_lrp_pb_event = events.WaitForCrLrpPortBindingEvent()
         self.sb_api.idl.notify_handler.watch_event(self.cr_lrp_pb_event)
 
-    def _create_router(self, name, gw_info=None, az_hints=None):
+    def _create_router(self, name, gw_info=None, az_hints=None,
+                       enable_ecmp=None, enable_bfd=None):
         router = {'router':
                   {'name': name,
                    'admin_state_up': True,
-                   'tenant_id': self._tenant_id}}
+                   'project_id': self._project_id}}
         if az_hints:
             router['router']['availability_zone_hints'] = az_hints
         if gw_info:
             router['router']['external_gateway_info'] = gw_info
+        if enable_bfd:
+            router['router']['enable_default_route_bfd'] = enable_bfd
+        if enable_ecmp:
+            router['router']['enable_default_route_ecmp'] = enable_ecmp
         return self.l3_plugin.create_router(self.context, router)
+
+    def _add_external_gateways(self, router_id, external_gateways):
+        router = {'router': {'external_gateways': external_gateways}}
+        return self.l3_plugin.add_external_gateways(
+            self.context, router_id, body=router)
+
+    def _remove_external_gateways(self, router_id, external_gateways):
+        router = {'router': {'external_gateways': external_gateways}}
+        return self.l3_plugin.remove_external_gateways(
+            self.context, router_id, body=router)
 
     def _create_ext_network(self, name, net_type, physnet, seg,
                             gateway, cidr):
@@ -63,80 +85,149 @@ class TestRouter(base.TestOVNFunctionalBase):
         if physnet:
             arg_list = arg_list + (pnet.PHYSICAL_NETWORK,)
             net_arg[pnet.PHYSICAL_NETWORK] = physnet
-        network = self._make_network(self.fmt, name, True,
+        network = self._make_network(self.fmt, name, True, as_admin=True,
                                      arg_list=arg_list, **net_arg)
         if cidr:
             self._make_subnet(self.fmt, network, gateway, cidr,
                               ip_version=n_consts.IP_VERSION_4)
         return network
 
-    def _set_redirect_chassis_to_invalid_chassis(self, ovn_client):
+    def _unset_lrp_gw_chassis(self, ovn_client):
         with ovn_client._nb_idl.transaction(check_error=True) as txn:
-            for lrp in self.nb_api.tables[
-                    'Logical_Router_Port'].rows.values():
+            for lrp in self.nb_api.tables['Logical_Router_Port'].rows.values():
                 txn.add(ovn_client._nb_idl.update_lrouter_port(
-                    lrp.name,
-                    gateway_chassis=[ovn_const.OVN_GATEWAY_INVALID_CHASSIS]))
+                    lrp.name, ha_chassis_group=[]))
 
-    def test_gateway_chassis_on_router_gateway_port(self):
+    def _get_gwc_dict(self):
+        sched_info = {}
+        for row in self.nb_api.db_list_rows("Logical_Router_Port").execute(
+                check_error=True):
+            if row.ha_chassis_group:
+                for hc in row.ha_chassis_group[0].ha_chassis:
+                    chassis = sched_info.setdefault(hc.chassis_name, {})
+                    chassis[hc.priority] = chassis.get(hc.priority, 0) + 1
+        return sched_info
+
+    def _create_routers_wait_pb(self, begin, n, gw_info=None,
+                                bind_chassis=None):
+        routers = []
+        for i in range(begin, n + begin):
+            try:
+                router = self._create_router('router%d' % i, gw_info=gw_info)
+                routers.append(router)
+            except db_exc.DBReferenceError:
+                # NOTE(ralonsoh): this is a workaround for LP#1956344. There
+                # seems to be a bug in SQLite3. The "port" DB object is not
+                # persistently stored in the DB and raises a "DBReferenceError"
+                # exception occasionally.
+                continue
+
+            if bind_chassis:
+                gw_port_id = router.get('gw_port_id')
+                logical_port = 'cr-lrp-%s' % gw_port_id
+                self.assertTrue(self.cr_lrp_pb_event.wait(logical_port),
+                                msg='lrp %s failed to bind' % logical_port)
+                self.sb_api.lsp_bind(logical_port, bind_chassis,
+                                     may_exist=True).execute(check_error=True)
+        return routers
+
+    def _add_chassis(self, begin, n, physical_nets):
+        chassis_added = []
+        for i in range(begin, begin + n):
+            chassis_added.append(
+                self.add_fake_chassis(
+                    'ovs-host%s' % i,
+                    name=f'chassis-{i:02d}',
+                    physical_nets=physical_nets,
+                    other_config={
+                        'ovn-cms-options': 'enable-chassis-as-gw'}))
+        return chassis_added
+
+    @ddt.data([], ['az1'])
+    def test_gateway_chassis_on_router_gateway_port(self, az_hints):
+        ch_name_list = [
+            self.add_fake_chassis(
+                'ovs-host1', physical_nets=['physnet50'],
+                enable_chassis_as_gw=True, azs=az_hints),
+            self.add_fake_chassis(
+                'ovs-host2', physical_nets=['physnet50'],
+                enable_chassis_as_gw=True, azs=az_hints),
+        ]
         ext2 = self._create_ext_network(
-            'ext2', 'flat', 'physnet3', None, "20.0.0.1", "20.0.0.0/24")
+            'ext2', 'flat', 'physnet50', None, "20.0.0.1", "20.0.0.0/24")
         gw_info = {'network_id': ext2['network']['id']}
-        self._create_router('router1', gw_info=gw_info)
-        expected = [row.name for row in
-                    self.sb_api.tables['Chassis'].rows.values()]
+        router = self._create_router('router1', gw_info=gw_info,
+                                     az_hints=az_hints)
         for row in self.nb_api.tables[
                 'Logical_Router_Port'].rows.values():
-            if self._l3_ha_supported():
-                chassis = [gwc.chassis_name for gwc in row.gateway_chassis]
-                self.assertCountEqual(expected, chassis)
-            else:
-                rc = row.options.get(ovn_const.OVN_GATEWAY_CHASSIS_KEY)
-                self.assertIn(rc, expected)
+            chassis = [hc.chassis_name for hc in
+                       row.ha_chassis_group[0].ha_chassis]
+            self.assertCountEqual(ch_name_list, chassis)
+        hcg = self.l3_plugin._ovn_client._nb_idl.lookup(
+            'HA_Chassis_Group', ovn_utils.ovn_name(router['id']))
+        self.assertEqual(
+            router['id'],
+            hcg.external_ids[ovn_const.OVN_ROUTER_ID_EXT_ID_KEY]
+        )
+        self.assertEqual(
+            ','.join(az_hints),
+            hcg.external_ids[ovn_const.OVN_AZ_HINTS_EXT_ID_KEY]
+        )
 
     def _check_gateway_chassis_candidates(self, candidates,
-                                          router_az_hints=None):
+                                          router_az_hints=None,
+                                          physnet='physnet1'):
         # In this test, fake_select() is called once from _create_router()
         # and later from schedule_unhosted_gateways()
         ovn_client = self.l3_plugin._ovn_client
+        net_type = 'vlan' if physnet else 'geneve'
         ext1 = self._create_ext_network(
-            'ext1', 'vlan', 'physnet1', 1, "10.0.0.1", "10.0.0.0/24")
+            'ext1', net_type, physnet, 1, "10.0.0.1", "10.0.0.0/24")
         # mock select function and check if it is called with expected
         # candidates.
 
         def fake_select(*args, **kwargs):
             self.assertCountEqual(candidates, kwargs['candidates'])
             # We are not interested in further processing, let us return
-            # INVALID_CHASSIS to avoid errors
-            return [ovn_const.OVN_GATEWAY_INVALID_CHASSIS]
+            # a random chassis name to avoid errors. If there are no
+            # candidates, this method returns None.
+            return ['a-random-chassis'] if candidates else None
 
-        with mock.patch.object(ovn_client._ovn_scheduler, 'select',
-                               side_effect=fake_select) as client_select,\
-            mock.patch.object(self.l3_plugin.scheduler, 'select',
-                              side_effect=fake_select) as plugin_select:
+        def check_ha_chassis_group(router_id, az_hints):
+            lr_name = ovn_utils.ovn_name(router_id)
+            hcg = ovn_client._nb_idl.lookup('HA_Chassis_Group', lr_name)
+            self.assertEqual(
+                router_id,
+                hcg.external_ids[ovn_const.OVN_ROUTER_ID_EXT_ID_KEY])
+            self.assertEqual(
+                ','.join(az_hints or []),
+                hcg.external_ids[ovn_const.OVN_AZ_HINTS_EXT_ID_KEY])
+
+        with mock.patch.object(self.l3_plugin.scheduler, 'select',
+                               side_effect=fake_select) as plugin_select:
             gw_info = {'network_id': ext1['network']['id']}
-            self._create_router('router1', gw_info=gw_info,
-                                az_hints=router_az_hints)
-            self.assertFalse(plugin_select.called)
-            self.assertTrue(client_select.called)
-            client_select.reset_mock()
+            router = self._create_router('router1', gw_info=gw_info,
+                                         az_hints=router_az_hints)
+            # If the network is tunnelled, the scheduler is not called.
+            check = self.assertTrue if physnet else self.assertFalse
+            check(plugin_select.called)
             plugin_select.reset_mock()
 
-            # set redirect-chassis to neutron-ovn-invalid-chassis, so
-            # that schedule_unhosted_gateways will try to schedule it
-            self._set_redirect_chassis_to_invalid_chassis(ovn_client)
+            # Unset the redirect-chassis so that schedule_unhosted_gateways
+            # will try to schedule it.
+            self._unset_lrp_gw_chassis(ovn_client)
             self.l3_plugin.schedule_unhosted_gateways()
-            self.assertFalse(client_select.called)
-            self.assertTrue(plugin_select.called)
+            check_ha_chassis_group(router['id'], router_az_hints)
+            check = self.assertTrue if candidates else self.assertFalse
+            check(plugin_select.called)
 
     def test_gateway_chassis_with_cms_and_bridge_mappings(self):
         # Both chassis1 and chassis3 are having proper bridge mappings,
-        # but only chassis3 is having enable-chassis-as-gw.
-        # Test if chassis3 is selected as candidate or not.
+        # but only chassis1 is having enable-chassis-as-gw.
+        # Test if chassis1 is selected as candidate or not.
         self.chassis3 = self.add_fake_chassis(
-            'ovs-host3', physical_nets=['physnet1'],
-            other_config={'ovn-cms-options': 'enable-chassis-as-gw'})
-        self._check_gateway_chassis_candidates([self.chassis3])
+            'ovs-host3', physical_nets=['physnet1'], azs=[])
+        self._check_gateway_chassis_candidates([self.chassis1])
 
     def test_gateway_chassis_with_cms_and_no_bridge_mappings(self):
         # chassis1 is having proper bridge mappings.
@@ -149,11 +240,9 @@ class TestRouter(base.TestOVNFunctionalBase):
             'ext1', 'vlan', 'physnet1', 1, "10.0.0.1", "10.0.0.0/24")
         # As we have 'gateways' in the system, but without required
         # chassis we should not schedule gw in that case at all.
-        self._set_redirect_chassis_to_invalid_chassis(ovn_client)
-        with mock.patch.object(ovn_client._ovn_scheduler, 'select',
-                              return_value=[self.chassis1]), \
-            mock.patch.object(self.l3_plugin.scheduler, 'select',
-                              side_effect=[self.chassis1]):
+        self._unset_lrp_gw_chassis(ovn_client)
+        with mock.patch.object(self.l3_plugin.scheduler, 'select',
+                               side_effect=[self.chassis1]):
             gw_info = {'network_id': ext1['network']['id']}
             self._create_router('router1', gw_info=gw_info)
 
@@ -170,12 +259,10 @@ class TestRouter(base.TestOVNFunctionalBase):
         # Test if chassis3 is selected as candidate or not.
         self.chassis3 = self.add_fake_chassis(
             'ovs-host3', physical_nets=['physnet1'],
-            other_config={'ovn-cms-options': 'enable-chassis-as-gw'},
-            azs=['ovn'])
+            azs=['ovn'], enable_chassis_as_gw=True)
         self.chassis4 = self.add_fake_chassis(
             'ovs-host4', physical_nets=['physnet1'],
-            other_config={'ovn-cms-options': 'enable-chassis-as-gw'},
-            azs=['ovn2'])
+            azs=['ovn2'], enable_chassis_as_gw=True)
         self._check_gateway_chassis_candidates([self.chassis3],
                                                router_az_hints=['ovn'])
 
@@ -185,22 +272,18 @@ class TestRouter(base.TestOVNFunctionalBase):
         # AvailabilityZoneNotFound. after create will delete if.
         # add chassis4 is having azs [ovn2], not match routers az_hints [ovn]
         self.chassis3 = self.add_fake_chassis(
-            'ovs-host3', physical_nets=['physnet1'],
-            other_config={'ovn-cms-options': 'enable-chassis-as-gw'})
+            'ovs-host3', physical_nets=['physnet1'], enable_chassis_as_gw=True)
         self.chassis4 = self.add_fake_chassis(
-            'ovs-host4', physical_nets=['physnet1'],
-            other_config={'ovn-cms-options': 'enable-chassis-as-gw'},
+            'ovs-host4', physical_nets=['physnet1'], enable_chassis_as_gw=True,
             azs=['ovn2'])
         ovn_client = self.l3_plugin._ovn_client
         ext1 = self._create_ext_network(
             'ext1', 'vlan', 'physnet1', 1, "10.0.0.1", "10.0.0.0/24")
         # As we have 'gateways' in the system, but without required
         # chassis we should not schedule gw in that case at all.
-        self._set_redirect_chassis_to_invalid_chassis(ovn_client)
-        with mock.patch.object(ovn_client._ovn_scheduler, 'select',
-                              return_value=[self.chassis1]), \
-            mock.patch.object(self.l3_plugin.scheduler, 'select',
-                              side_effect=[self.chassis1]):
+        self._unset_lrp_gw_chassis(ovn_client)
+        with mock.patch.object(self.l3_plugin.scheduler, 'select',
+                               side_effect=[self.chassis1]):
             gw_info = {'network_id': ext1['network']['id']}
             self._create_router('router1', gw_info=gw_info, az_hints=['ovn'])
         self.del_fake_chassis(self.chassis3)
@@ -217,10 +300,10 @@ class TestRouter(base.TestOVNFunctionalBase):
         # Test if chassis1 is selected as candidate or not.
         self._check_gateway_chassis_candidates([self.chassis1])
 
-    def _l3_ha_supported(self):
-        # If the Gateway_Chassis table exists in SB database, then it
-        # means that L3 HA is supported.
-        return self.nb_api.tables.get('Gateway_Chassis')
+    def test_gateway_chassis_no_physnet_tunnelled_network(self):
+        # The GW network is tunnelled, no physnet defined --> no possible
+        # candidates.
+        self._check_gateway_chassis_candidates(None, physnet=None)
 
     def test_gateway_chassis_least_loaded_scheduler(self):
         # This test will create 4 routers each with its own gateway.
@@ -241,27 +324,159 @@ class TestRouter(base.TestOVNFunctionalBase):
         # At this point we expect two gateways to be present in chassis1
         # and two in chassis2. If schema supports L3 HA, we expect each
         # chassis to host 2 priority 2 gateways and 2 priority 1 ones.
-        if self._l3_ha_supported():
-            # Each chassis contains a dict of (priority, # of ports hosted).
-            # {1: 2, 2: 2} means that this chassis hosts 2 ports of prio 1
-            # and two ports of prio 2.
-            expected = {self.chassis1: {1: 2, 2: 2},
-                        self.chassis2: {1: 2, 2: 2}}
-        else:
-            # For non L3 HA, each chassis should contain two gateway ports.
-            expected = {self.chassis1: 2,
-                        self.chassis2: 2}
+        # Each chassis contains a dict of (priority, # of ports hosted).
+        # {1: 2, 2: 2} means that this chassis hosts 2 ports of prio 1
+        # and two ports of prio 2.
+        expected = {self.chassis1: {1: 2, 2: 2},
+                    self.chassis2: {1: 2, 2: 2}}
         sched_info = {}
         for row in self.nb_api.tables[
                 'Logical_Router_Port'].rows.values():
-            if self._l3_ha_supported():
-                for gwc in row.gateway_chassis:
-                    chassis = sched_info.setdefault(gwc.chassis_name, {})
-                    chassis[gwc.priority] = chassis.get(gwc.priority, 0) + 1
-            else:
-                rc = row.options.get(ovn_const.OVN_GATEWAY_CHASSIS_KEY)
-                sched_info[rc] = sched_info.get(rc, 0) + 1
+            for hc in row.ha_chassis_group[0].ha_chassis:
+                chassis = sched_info.setdefault(hc.chassis_name, {})
+                chassis[hc.priority] = chassis.get(hc.priority, 0) + 1
         self.assertEqual(expected, sched_info)
+
+    def test_gateway_chassis_balanced_multiple_gw_networks_3_6(self):
+        self._test_gateway_chassis_balanced_multiple_gw_networks(3, 6)
+
+    def test_gateway_chassis_balanced_multiple_gw_networks_4_8(self):
+        self._test_gateway_chassis_balanced_multiple_gw_networks(4, 8)
+
+    def test_gateway_chassis_balanced_multiple_gw_networks_5_10(self):
+        self._test_gateway_chassis_balanced_multiple_gw_networks(5, 10)
+
+    def _test_gateway_chassis_balanced_multiple_gw_networks(
+            self, num_chassis, num_networks):
+        """Test that gateway_chassis registers are balanced across GW chassis.
+
+        This test creates ``num_chassis`` GW chassis and a router with
+        ``num_networks`` GW networks. The gateway_chassis registers
+        (``num_chassis`` * ``num_networks``) should be balanced across all
+        GW chassis.
+        NOTE: to make a balanced distribution, the relation
+        ``num_networks`` / ``num_chassis`` must be an integer.
+        """
+        ovn_client = self.l3_plugin._ovn_client
+        ovn_client._ovn_scheduler = l3_sched.OVNGatewayLeastLoadedScheduler()
+
+        ch_list = [self.chassis1, self.chassis2]
+        for idx in range(3, num_chassis + 1):
+            ch_list.append(self.add_fake_chassis(
+                f'ovs-host{idx}', physical_nets=['physnet3'],
+                enable_chassis_as_gw=True, azs=[]))
+
+        # Create external network.
+        ext_net = self._create_ext_network(
+            uuidutils.generate_uuid(), 'vlan', 'physnet3',
+            None, '30.0.0.1', '30.0.0.0/24')
+
+        # Create router with 6 gateway networks.
+        router = self._create_router('router-multi-gw')
+        self._add_external_gateways(
+            router['id'],
+            [{'network_id': ext_net['network']['id']}
+             for _ in range(num_networks)])
+
+        # Verify the HA_Chassis_Group registers are balanced.
+        # All LRPs of the same router share a single HA_Chassis_Group,
+        # so each chassis has one priority counted num_networks times.
+        sched_info = self._get_gwc_dict()
+        self.assertEqual(set(ch_list), set(sched_info.keys()))
+        all_prios = set()
+        for ch in ch_list:
+            self.assertEqual(1, len(sched_info[ch]))
+            prio, count = next(iter(sched_info[ch].items()))
+            self.assertEqual(num_networks, count)
+            all_prios.add(prio)
+        self.assertEqual(set(range(1, num_chassis + 1)), all_prios)
+
+    def test_gateway_chassis_least_loaded_scheduler_anti_affinity(self):
+        ovn_client = self.l3_plugin._ovn_client
+        ovn_client._ovn_scheduler = l3_sched.OVNGatewayLeastLoadedScheduler()
+        ext1 = self._create_ext_network(
+            'ext1', 'flat', 'physnet5', None, "10.10.50.1", "10.10.50.0/24")
+        gw_info = {'network_id': ext1['network']['id']}
+
+        chassis_list = []
+        # first fill a few chassis with normal routers
+        chassis_list.extend(
+            self._add_chassis(0, ovn_const.MAX_GW_CHASSIS * 2, ['physnet5']))
+        for i in range(0, (ovn_const.MAX_GW_CHASSIS * 4)):
+            self._create_router('router%d' % i, gw_info=gw_info)
+
+        # add more chassis and create a set of routers with multiple gateway
+        # ports
+        #
+        # This will stage a situation where a few chassis have higher load
+        # which we can use to confirm that the anti-affinity algorithm works as
+        # expected.
+        #
+        # Each router created below will have three LRPs, which should fit
+        # in ovn_const.MAX_GW_CHASSIS * 3 chassis without duplicates when
+        # using the anti affinity scheduler.
+        num_of_gws = 3
+        chassis_list.extend(
+            self._add_chassis(
+                len(chassis_list), ovn_const.MAX_GW_CHASSIS, ['physnet5']))
+        # All LRPs of the same router share a single HA_Chassis_Group.
+        # Verify each router's HCG has MAX_GW_CHASSIS entries with
+        # unique chassis and priorities covering [1, MAX_GW_CHASSIS].
+        router_hcgs = {}
+        for i in range(4):
+            router = self._create_router('router-multi-gw%d' % i)
+            self._add_external_gateways(
+                router['id'],
+                [{'network_id': ext1['network']['id']}
+                 for _ in range(num_of_gws)])
+            for row in self.nb_api.tables[
+                    'Logical_Router_Port'].rows.values():
+                if (ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY
+                        not in row.external_ids):
+                    continue
+                ext_ids_rtr_name = row.external_ids[
+                    ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY]
+                if ext_ids_rtr_name == ovn_utils.ovn_name(router['id']):
+                    chassis = {hc.priority: hc.chassis_name
+                               for hc in row.ha_chassis_group[0].ha_chassis}
+                    router_hcgs[router['id']] = chassis
+                    break
+
+        for router_id, chassis_by_prio in router_hcgs.items():
+            self.assertEqual(ovn_const.MAX_GW_CHASSIS, len(chassis_by_prio))
+            self.assertEqual(
+                set(range(1, ovn_const.MAX_GW_CHASSIS + 1)),
+                set(chassis_by_prio.keys()))
+
+    def test_gateway_chassis_least_loaded_scheduler_anti_affinity_count(self):
+        ovn_client = self.l3_plugin._ovn_client
+        ovn_client._ovn_scheduler = l3_sched.OVNGatewayLeastLoadedScheduler()
+        ext1 = self._create_ext_network(
+            'ext1', 'flat', 'physnet5', None, "10.10.50.1", "10.10.50.0/24")
+        gw_info = {'network_id': ext1['network']['id']}
+
+        chassis_list = []
+        # first fill a few chassis with normal routers
+        chassis_list.extend(
+            self._add_chassis(0, ovn_const.MAX_GW_CHASSIS * 2, ['physnet5']))
+        for i in range(1, (ovn_const.MAX_GW_CHASSIS * 4) + 1):
+            router = self._create_router('router%d' % i, gw_info=gw_info)
+
+        # now that we have a few chassis with router ports associated,
+        # we can test how many calls to the northbound idl we are using in
+        # in order to create the new routers
+        with mock.patch.object(ovn_client._nb_idl, 'get_lrouter_port',
+                wraps=ovn_client._nb_idl.get_lrouter_port) as nb_glrp:
+            router = self._create_router('router-multi-gw%d' % i)
+            self._add_external_gateways(
+                router['id'],
+                [
+                    {'network_id': ext1['network']['id']},
+                    {'network_id': ext1['network']['id']},
+                    {'network_id': ext1['network']['id']},
+                ])
+            # Ideally we count all calls to nb_idl
+            self.assertLess(nb_glrp.call_count, ovn_const.MAX_GW_CHASSIS)
 
     def _get_gw_port(self, router_id):
         router = self.l3_plugin._get_router(self.context, router_id)
@@ -276,13 +491,8 @@ class TestRouter(base.TestOVNFunctionalBase):
         Test cases when subnets are added to an external network after router
         has been configured to use that network via "set --external-gateway"
         """
-
-        ovn_client = self.l3_plugin._ovn_client
-
-        with mock.patch.object(
-                ovn_client._ovn_scheduler, 'select',
-                return_value=[ovn_const.OVN_GATEWAY_INVALID_CHASSIS]) as \
-                client_select:
+        with mock.patch.object(self.l3_plugin.scheduler, 'select',
+                               return_value=[self.chassis1]) as plugin_select:
             router1 = self._create_router('router1', gw_info=None)
             router_id = router1['id']
             self.assertIsNone(self._get_gw_port(router_id),
@@ -320,7 +530,7 @@ class TestRouter(base.TestOVNFunctionalBase):
             self.assertIsNotNone(self._get_gw_port(router_id),
                                  "router logical port must exist after v6 add")
 
-            self.assertGreaterEqual(client_select.call_count, 3)
+            self.assertGreaterEqual(plugin_select.call_count, 3)
 
             # Verify that ports have had the subnets created
             kwargs = {'device_owner': n_consts.DEVICE_OWNER_ROUTER_GW}
@@ -396,20 +606,18 @@ class TestRouter(base.TestOVNFunctionalBase):
         def fake_select(*args, **kwargs):
             self.assertCountEqual(self.candidates, kwargs['candidates'])
             # We are not interested in further processing, let us return
-            # INVALID_CHASSIS to avoid errors
-            return [ovn_const.OVN_GATEWAY_INVALID_CHASSIS]
+            # a random chassis name to avoid errors.
+            return ['a-random-chassis']
 
-        with mock.patch.object(ovn_client._ovn_scheduler, 'select',
-                               side_effect=fake_select) as client_select,\
-            mock.patch.object(self.l3_plugin.scheduler, 'select',
-                              side_effect=fake_select) as plugin_select:
+        with mock.patch.object(self.l3_plugin.scheduler, 'select',
+                               side_effect=fake_select) as plugin_select:
             self.candidates = [self.chassis1]
             gw_info = {'network_id': ext1['network']['id']}
             router1 = self._create_router('router1', gw_info=gw_info)
 
-            # set redirect-chassis to neutron-ovn-invalid-chassis, so
-            # that schedule_unhosted_gateways will try to schedule it
-            self._set_redirect_chassis_to_invalid_chassis(ovn_client)
+            # Unset the redirect-chassis so that schedule_unhosted_gateways
+            # will try to schedule it.
+            self._unset_lrp_gw_chassis(ovn_client)
             self.l3_plugin.schedule_unhosted_gateways()
 
             self.candidates = [self.chassis1, self.chassis2]
@@ -417,7 +625,7 @@ class TestRouter(base.TestOVNFunctionalBase):
             self.l3_plugin.update_router(
                 self.context, router1['id'],
                 {'router': {l3_apidef.EXTERNAL_GW_INFO: gw_info}})
-            self._set_redirect_chassis_to_invalid_chassis(ovn_client)
+            self._unset_lrp_gw_chassis(ovn_client)
             self.l3_plugin.schedule_unhosted_gateways()
 
             self.candidates = []
@@ -425,19 +633,23 @@ class TestRouter(base.TestOVNFunctionalBase):
             self.l3_plugin.update_router(
                 self.context, router1['id'],
                 {'router': {l3_apidef.EXTERNAL_GW_INFO: gw_info}})
-            self._set_redirect_chassis_to_invalid_chassis(ovn_client)
+            self._unset_lrp_gw_chassis(ovn_client)
             self.l3_plugin.schedule_unhosted_gateways()
 
             # We can't test call_count for these mocks, as we have disabled
             # maintenance_worker which will trigger chassis events
             # and eventually calling schedule_unhosted_gateways.
-            # However, we know for sure that these mocks must have been
-            # called at least 3 times because that is the number of times
-            # this test invokes them: 1x create_router + 2x update_router
-            # for client_select mock; and 3x schedule_unhosted_gateways for
-            # plugin_select mock.
-            self.assertGreaterEqual(client_select.call_count, 3)
-            self.assertGreaterEqual(plugin_select.call_count, 3)
+            # The router is created with a gateway port and updated twice.
+            # However, the "plugin_select" is called only twice because the
+            # third gateway network used is type "geneve" and the LRP are not
+            # hosted in any chassis.
+            self.assertGreaterEqual(plugin_select.call_count, 2)
+
+    def _find_port_binding(self, port_id):
+        cmd = self.sb_api.db_find_rows('Port_Binding',
+                                       ('logical_port', '=', port_id))
+        rows = cmd.execute(check_error=True)
+        return rows[0] if rows else None
 
     def test_router_gateway_port_binding_host_id(self):
         # Test setting chassis on chassisredirect port in Port_Binding table,
@@ -461,13 +673,29 @@ class TestRouter(base.TestOVNFunctionalBase):
                              may_exist=True).execute(check_error=True)
 
         def check_port_binding_host_id(port_id):
+            # Get port from Neutron DB
             port = core_plugin.get_ports(
                 self.context, filters={'id': [port_id]})[0]
-            return port[portbindings.HOST_ID] == host_id
+            # Get port from OVN DB
+            bp = self._find_port_binding(port_id)
+            ovn_host_id = bp.external_ids.get(ovn_const.OVN_HOST_ID_EXT_ID_KEY)
+            return port[portbindings.HOST_ID] == host_id == ovn_host_id
 
         # Test if router gateway port updated with this chassis
         n_utils.wait_until_true(lambda: check_port_binding_host_id(
             gw_port_id))
+
+        # Simulate failover to another chassis and check host_id in Neutron DB
+        # and external_ids:neutron:host_id in OVN DB are updated
+        chassis = idlutils.row_by_value(
+            self.sb_api.idl, "Chassis", "name", self.chassis2
+        )
+        host_id = chassis.hostname
+        self.sb_api.lsp_unbind(logical_port).execute(check_error=True)
+        self.sb_api.lsp_bind(logical_port, self.chassis2).execute(
+            check_error=True
+        )
+        n_utils.wait_until_true(lambda: check_port_binding_host_id(gw_port_id))
 
     def _validate_router_ipv6_ra_configs(self, lrp_name, expected_ra_confs):
         lrp = idlutils.row_by_value(self.nb_api.idl,
@@ -521,18 +749,151 @@ class TestRouter(base.TestOVNFunctionalBase):
         self._test_router_port_ipv6_ra_configs_helper(
             ip_version=4)
 
-    def test_gateway_chassis_rebalance(self):
-        def _get_result_dict():
-            sched_info = {}
-            for row in self.nb_api.tables[
-                    'Logical_Router_Port'].rows.values():
-                for gwc in row.gateway_chassis:
-                    chassis = sched_info.setdefault(gwc.chassis_name, {})
-                    chassis[gwc.priority] = chassis.get(gwc.priority, 0) + 1
-            return sched_info
+    def test_create_delete_router_multiple_gw_ports(self):
+        ext4 = self._create_ext_network(
+            'ext4', 'flat', self.physnet_used[0], None, '40.0.0.1',
+            '40.0.0.0/24')
+        router = self._create_router('router4')
+        gws = self._add_external_gateways(
+            router['id'],
+            [
+                {'network_id': ext4['network']['id']},
+                {'network_id': ext4['network']['id']},
+            ]
+        )
+        lr = self.nb_api.lookup('Logical_Router',
+                                ovn_utils.ovn_name(router['id']))
+        self.assertEqual(
+            len(lr.ports),
+            len(gws['router']['external_gateways']))
 
-        if not self._l3_ha_supported():
-            self.skipTest('L3 HA not supported')
+        self.assertEqual(
+            len(lr.static_routes),
+            1)
+
+        self.l3_plugin.delete_router(self.context, id=router['id'])
+        self.assertRaises(idlutils.RowNotFound, self.nb_api.lookup,
+                          'Logical_Router', ovn_utils.ovn_name(router['id']))
+
+    def test_create_router_multiple_gw_ports_ecmp(self):
+        ext5 = self._create_ext_network(
+            'ext5', 'flat', self.physnet_used[1], None, '10.0.50.1',
+            '10.0.50.0/24')
+        router = self._create_router('router5', enable_ecmp=True)
+        gws = self._add_external_gateways(
+            router['id'],
+            [
+                {'network_id': ext5['network']['id']},
+                {'network_id': ext5['network']['id']},
+            ]
+        )
+        lr = self.nb_api.lookup('Logical_Router',
+                                ovn_utils.ovn_name(router['id']))
+        # Check that the expected number of ports are created
+        self.assertEqual(
+            len(lr.ports),
+            len(gws['router']['external_gateways']))
+        # Check that the expected number of static routes are created
+        self.assertEqual(
+            len(lr.static_routes),
+            len(gws['router']['external_gateways']))
+
+    def test_create_delete_router_multiple_gw_ports_ecmp_and_bfd(self):
+        default_gw = "10.0.60.1"
+        ext6 = self._create_ext_network(
+            'ext6', 'flat', 'physnet6', None, default_gw, "10.0.60.0/24")
+        router = self._create_router('router6', gw_info=None,
+                                     enable_bfd=True, enable_ecmp=True)
+        gws = self._add_external_gateways(
+            router['id'],
+            [
+                {'network_id': ext6['network']['id']},
+                {'network_id': ext6['network']['id']},
+            ])
+        lr = self.nb_api.lookup('Logical_Router',
+                                ovn_utils.ovn_name(router['id']))
+
+        # Check that the expected number of ports are created
+        self.assertEqual(
+            len(lr.ports),
+            len(gws['router']['external_gateways']))
+        # Check that the expected number of static routes are created
+        self.assertEqual(
+            len(lr.static_routes),
+            len(gws['router']['external_gateways']))
+        # Check that static_route bfd and output_port attributes is set to the
+        # expected values
+        for static_route in lr.static_routes:
+            self.assertNotEqual(
+                [],
+                static_route.bfd)
+            self.assertNotEqual(
+                [],
+                static_route.output_port)
+            self.assertIn(static_route.output_port[0],
+                          [lrp.name
+                           for lrp in lr.ports])
+            self.assertIn(static_route.bfd[0].logical_port,
+                          [lrp.name
+                           for lrp in lr.ports])
+            self.assertEqual(static_route.bfd[0].logical_port,
+                             static_route.output_port[0])
+
+        router_ips = set()
+        for ext_gws in gws['router']['external_gateways']:
+            for ext_fip in ext_gws['external_fixed_ips']:
+                router_ips.add(ext_fip['ip_address'])
+
+        lrps = set()
+        for lrp in lr.ports:
+            for network in lrp.networks:
+                self.assertIn(
+                    network.split('/')[0],
+                    router_ips)
+            lrps.add(lrp.name)
+            bfd_rows = self.nb_api.bfd_find(
+                    lrp.name, default_gw).execute(check_error=True)
+            if not bfd_rows:
+                raise AssertionError('None of the expected BFD rows found.')
+            for bfd_row in bfd_rows:
+                self.assertEqual(
+                    bfd_row.logical_port,
+                    lrp.name)
+                self.assertEqual(
+                    bfd_row.dst_ip,
+                    default_gw)
+
+        self.l3_plugin.delete_router(self.context, id=router['id'])
+        self.assertRaises(idlutils.RowNotFound, self.nb_api.lookup,
+                          'Logical_Router', ovn_utils.ovn_name(router['id']))
+        for lrp_name in lrps:
+            if self.nb_api.bfd_find(
+                    lrp_name, default_gw).execute(check_error=True):
+                raise AssertionError('Unexpectedly found BFD rows.')
+
+    def test_update_router_single_gw_bfd(self):
+        ext1 = self._create_ext_network(
+            'ext7', 'flat', 'physnet1', None, "10.0.70.1", "10.0.70.0/24")
+        gw_info = {'network_id': ext1['network']['id']}
+        router = self._create_router('router7', gw_info=gw_info)
+        self.assertFalse(router['enable_default_route_bfd'])
+        lr = self.nb_api.lr_get(ovn_utils.ovn_name(router['id'])).execute()
+        for route in ovn_utils.get_lrouter_ext_gw_static_route(lr):
+            self.assertEqual(
+                [],
+                route.bfd)
+
+        router = self.l3_plugin.update_router(
+            self.context, router['id'],
+            {'router': {'enable_default_route_bfd': True}})
+        self.assertTrue(router['enable_default_route_bfd'])
+        lr = self.nb_api.lr_get(ovn_utils.ovn_name(router['id'])).execute()
+        for route in ovn_utils.get_lrouter_ext_gw_static_route(lr):
+            self.assertNotEqual(
+                [],
+                route.bfd)
+
+    def test_gateway_chassis_rebalance(self):
         ovn_client = self.l3_plugin._ovn_client
         chassis4 = self.add_fake_chassis(
             'ovs-host4', physical_nets=['physnet4'], other_config={
@@ -541,29 +902,13 @@ class TestRouter(base.TestOVNFunctionalBase):
         ext1 = self._create_ext_network(
             'ext1', 'flat', 'physnet4', None, "30.0.0.1", "30.0.0.0/24")
         gw_info = {'network_id': ext1['network']['id']}
-        # Tries to create 20 routers with a gateway. Since we're using
+        # Tries to create 5 routers with a gateway. Since we're using
         # physnet4, the chassis candidates will be chassis4 initially.
-        num_routers = 20
-        for i in range(num_routers):
-            try:
-                router = self._create_router('router%d' % i, gw_info=gw_info)
-            except db_exc.DBReferenceError:
-                # NOTE(ralonsoh): this is a workaround for LP#1956344. There
-                # seems to be a bug in SQLite3. The "port" DB object is not
-                # persistently stored in the DB and raises a "DBReferenceError"
-                # exception occasionally.
-                num_routers -= 1
-                continue
-
-            gw_port_id = router.get('gw_port_id')
-            logical_port = 'cr-lrp-%s' % gw_port_id
-            self.assertTrue(self.cr_lrp_pb_event.wait(logical_port),
-                            msg='lrp %s failed to bind' % logical_port)
-            self.sb_api.lsp_bind(logical_port, chassis4,
-                                 may_exist=True).execute(check_error=True)
+        num_routers = len(self._create_routers_wait_pb(
+            1, 5, gw_info=gw_info, bind_chassis=chassis4))
         self.l3_plugin.schedule_unhosted_gateways()
         expected = {chassis4: {1: num_routers}}
-        self.assertEqual(expected, _get_result_dict())
+        self.assertEqual(expected, self._get_gwc_dict())
 
         # Add another chassis as a gateway chassis
         chassis5 = self.add_fake_chassis(
@@ -577,9 +922,9 @@ class TestRouter(base.TestOVNFunctionalBase):
 
         # Chassis4 should have all ports at Priority 2
         self.l3_plugin.schedule_unhosted_gateways()
-        self.assertEqual({2: num_routers}, _get_result_dict()[chassis4])
+        self.assertEqual({2: num_routers}, self._get_gwc_dict()[chassis4])
         # Chassis5 should have all ports at Priority 1
-        self.assertEqual({1: num_routers}, _get_result_dict()[chassis5])
+        self.assertEqual({1: num_routers}, self._get_gwc_dict()[chassis5])
 
         # delete chassis that hosts all the gateways
         self.del_fake_chassis(chassis4)
@@ -588,7 +933,7 @@ class TestRouter(base.TestOVNFunctionalBase):
         # As Chassis4 has been removed so all gateways that were
         # hosted there are now primaries on chassis5 and have
         # priority 1.
-        self.assertEqual({1: num_routers}, _get_result_dict()[chassis5])
+        self.assertEqual({1: num_routers}, self._get_gwc_dict()[chassis5])
 
     def test_gateway_chassis_rebalance_max_chassis(self):
         chassis_list = []
@@ -613,5 +958,161 @@ class TestRouter(base.TestOVNFunctionalBase):
         self.l3_plugin.schedule_unhosted_gateways()
         for row in self.nb_api.tables[
                 'Logical_Router_Port'].rows.values():
+            hcg = getattr(row, 'ha_chassis_group', None)
+            self.assertEqual(1, len(hcg))
             self.assertEqual(ovn_const.MAX_GW_CHASSIS,
-                             len(row.gateway_chassis))
+                             len(hcg[0].ha_chassis))
+
+    def test_set_router_mac_age_limit(self):
+        name = "macage_router1"
+        router = self._create_router(name)
+        lr_name = ovn_utils.ovn_name(router['id'])
+        options = self.nb_api.db_get(
+            "Logical_Router", lr_name, "options").execute(check_error=True)
+        self.assertEqual(ovn_conf.get_ovn_mac_binding_age_threshold(),
+                         options[ovn_const.LR_OPTIONS_MAC_AGE_LIMIT])
+
+    def test_schedule_unhosted_gateways_single_transaction(self):
+        ext1 = self._create_ext_network(
+            'ext1', 'flat', 'physnet6', None, "10.0.60.1", "10.0.60.0/24")
+        gw_info = {'network_id': ext1['network']['id']}
+
+        # Attempt to add 4 routers, since there are no chassis, none of them
+        # will be scheduled on any chassis.
+        num_routers = len(self._create_routers_wait_pb(1, 4, gw_info=gw_info))
+        self.assertEqual({}, self._get_gwc_dict())
+
+        # Add 2 chassis and rebalance gateways.
+        #
+        # The ovsdb_monitor.ChassisEvent handler will attempt to schedule
+        # unhosted gateways as chassis are added.
+        #
+        # Temporarily mock it out while adding the chassis so that we can get a
+        # predictable result for the purpose of this test.
+        chassis_list = []
+        with mock.patch.object(
+                self.l3_plugin, 'schedule_unhosted_gateways'):
+            chassis_list.extend(self._add_chassis(1, 2, ['physnet6']))
+        self.assertEqual({}, self._get_gwc_dict())
+
+        # Wrap `self.l3_plugin._nb_ovn.transaction` so that we can assert on
+        # number of calls.
+        with mock.patch.object(
+                self.l3_plugin._nb_ovn, 'transaction',
+                wraps=self.l3_plugin._nb_ovn.transaction) as wrap_txn:
+            self.l3_plugin.schedule_unhosted_gateways()
+            # The server is alive and we can't control the exact number of
+            # calls made to `_nb_ovn.transaction`. We can however check that
+            # the number of calls is less than number of unhosted gateways.
+            self.assertLess(len(wrap_txn.mock_calls), num_routers)
+
+        # Ensure the added gateways are spread evenly on the added chassis.
+        self.assertEqual(
+            {'chassis-01': {1: 2, 2: 2},
+             'chassis-02': {1: 2, 2: 2}},
+            self._get_gwc_dict())
+
+    def test_update_subnet_gateway_ipv6(self):
+        """Test updating IPv6 subnet gateway updates OVN routes correctly.
+
+        Bug #2100294: When updating an IPv6 subnet's gateway, the default
+        route in OVN should be updated with the correct IPv6 prefix (::/0)
+        instead of IPv4 prefix (0.0.0.0/0).
+        """
+        # Create external network with IPv6 subnet
+        net_arg = {pnet.NETWORK_TYPE: 'flat',
+                   external_net.EXTERNAL: True,
+                   pnet.PHYSICAL_NETWORK: 'physnet1'}
+        network = self._make_network(
+            self.fmt, 'ext_net', True, as_admin=True,
+            arg_list=(pnet.NETWORK_TYPE, external_net.EXTERNAL,
+                      pnet.PHYSICAL_NETWORK),
+            **net_arg)
+
+        # Create IPv6 subnet with initial gateway
+        subnet = self._make_subnet(
+            self.fmt, network, gateway='fd00::1', cidr='fd00::/64',
+            allocation_pools=[{'start': 'fd00::10', 'end': 'fd00::100'}],
+            ip_version=n_consts.IP_VERSION_6,
+            ipv6_ra_mode=n_consts.IPV6_SLAAC,
+            ipv6_address_mode=n_consts.IPV6_SLAAC)['subnet']
+
+        # Create router with external gateway
+        gw_info = {'network_id': network['network']['id']}
+        router = self._create_router('test_router', gw_info=gw_info)
+
+        # Get the logical router from OVN
+        lr = self.nb_api.lr_get(ovn_utils.ovn_name(router['id'])).execute()
+
+        # Verify initial default route exists with correct IPv6 prefix
+        routes = ovn_utils.get_lrouter_ext_gw_static_route(lr)
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0].ip_prefix, n_consts.IPv6_ANY)
+        self.assertEqual(routes[0].nexthop, 'fd00::1')
+
+        # Update subnet gateway
+        new_gateway = 'fd00::2'
+        data = {'subnet': {'gateway_ip': new_gateway}}
+        req = self.new_update_request('subnets', data, subnet['id'])
+        res = self.deserialize(self.fmt, req.get_response(self.api))
+        self.assertEqual(new_gateway, res['subnet']['gateway_ip'])
+
+        # Refresh logical router
+        lr = self.nb_api.lr_get(ovn_utils.ovn_name(router['id'])).execute()
+
+        # Verify the default route was updated with new gateway
+        routes = ovn_utils.get_lrouter_ext_gw_static_route(lr)
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0].ip_prefix, n_consts.IPv6_ANY)
+        self.assertEqual(routes[0].nexthop, 'fd00::2')
+
+    def test_update_subnet_gateway_ipv4(self):
+        """Test updating IPv4 subnet gateway updates OVN routes correctly.
+
+        This test ensures IPv4 gateway updates continue to work correctly
+        with the fix for bug #2100294.
+        """
+        # Create external network with IPv4 subnet
+        net_arg = {pnet.NETWORK_TYPE: 'flat',
+                   external_net.EXTERNAL: True,
+                   pnet.PHYSICAL_NETWORK: 'physnet1'}
+        network = self._make_network(
+            self.fmt, 'ext_net', True, as_admin=True,
+            arg_list=(pnet.NETWORK_TYPE, external_net.EXTERNAL,
+                      pnet.PHYSICAL_NETWORK),
+            **net_arg)
+
+        # Create IPv4 subnet with initial gateway
+        subnet = self._make_subnet(
+            self.fmt, network, gateway='120.0.0.1', cidr='120.0.0.0/24',
+            allocation_pools=[{'start': '120.0.0.11', 'end': '120.0.0.20'}],
+            ip_version=n_consts.IP_VERSION_4)['subnet']
+
+        # Create router with external gateway
+        gw_info = {'network_id': network['network']['id']}
+        router = self._create_router('test_router', gw_info=gw_info)
+
+        # Get the logical router from OVN
+        lr = self.nb_api.lr_get(ovn_utils.ovn_name(router['id'])).execute()
+
+        # Verify initial default route exists with correct IPv4 prefix
+        routes = ovn_utils.get_lrouter_ext_gw_static_route(lr)
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0].ip_prefix, n_consts.IPv4_ANY)
+        self.assertEqual(routes[0].nexthop, '120.0.0.1')
+
+        # Update subnet gateway
+        new_gateway = '120.0.0.2'
+        data = {'subnet': {'gateway_ip': new_gateway}}
+        req = self.new_update_request('subnets', data, subnet['id'])
+        res = self.deserialize(self.fmt, req.get_response(self.api))
+        self.assertEqual(new_gateway, res['subnet']['gateway_ip'])
+
+        # Refresh logical router
+        lr = self.nb_api.lr_get(ovn_utils.ovn_name(router['id'])).execute()
+
+        # Verify the default route was updated with new gateway
+        routes = ovn_utils.get_lrouter_ext_gw_static_route(lr)
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0].ip_prefix, n_consts.IPv4_ANY)
+        self.assertEqual(routes[0].nexthop, '120.0.0.2')

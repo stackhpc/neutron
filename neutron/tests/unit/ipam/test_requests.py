@@ -32,53 +32,53 @@ FAKE_IPAM_CLASS = 'neutron.tests.unit.ipam.fake_driver.FakeDriver'
 class IpamSubnetRequestTestCase(base.BaseTestCase):
 
     def setUp(self):
-        super(IpamSubnetRequestTestCase, self).setUp()
-        self.tenant_id = uuidutils.generate_uuid()
+        super().setUp()
+        self.project_id = uuidutils.generate_uuid()
         self.subnet_id = uuidutils.generate_uuid()
 
 
 class TestIpamSubnetRequests(IpamSubnetRequestTestCase):
 
     def test_subnet_request(self):
-        pool = ipam_req.SubnetRequest(self.tenant_id,
-                                  self.subnet_id)
-        self.assertEqual(self.tenant_id, pool.tenant_id)
+        pool = ipam_req.SubnetRequest(self.project_id,
+                                      self.subnet_id)
+        self.assertEqual(self.project_id, pool.project_id)
         self.assertEqual(self.subnet_id, pool.subnet_id)
         self.assertIsNone(pool.gateway_ip)
         self.assertIsNone(pool.allocation_pools)
 
     def test_subnet_request_gateway(self):
-        request = ipam_req.SubnetRequest(self.tenant_id,
-                                     self.subnet_id,
-                                     gateway_ip='1.2.3.1')
+        request = ipam_req.SubnetRequest(self.project_id,
+                                         self.subnet_id,
+                                         gateway_ip='1.2.3.1')
         self.assertEqual('1.2.3.1', str(request.gateway_ip))
 
     def test_subnet_request_bad_gateway(self):
         self.assertRaises(netaddr.core.AddrFormatError,
                           ipam_req.SubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           gateway_ip='1.2.3.')
 
     def test_subnet_request_with_range(self):
         allocation_pools = [netaddr.IPRange('1.2.3.4', '1.2.3.5'),
                             netaddr.IPRange('1.2.3.7', '1.2.3.9')]
-        request = ipam_req.SubnetRequest(self.tenant_id,
-                                     self.subnet_id,
-                                     allocation_pools=allocation_pools)
+        request = ipam_req.SubnetRequest(self.project_id,
+                                         self.subnet_id,
+                                         allocation_pools=allocation_pools)
         self.assertEqual(allocation_pools, request.allocation_pools)
 
     def test_subnet_request_range_not_list(self):
         self.assertRaises(TypeError,
                           ipam_req.SubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           allocation_pools=1)
 
     def test_subnet_request_bad_range(self):
         self.assertRaises(TypeError,
                           ipam_req.SubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           allocation_pools=['1.2.3.4'])
 
@@ -87,7 +87,7 @@ class TestIpamSubnetRequests(IpamSubnetRequestTestCase):
                  netaddr.IPRange('::1', '::2')]
         self.assertRaises(ValueError,
                           ipam_req.SubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           allocation_pools=pools)
 
@@ -96,7 +96,7 @@ class TestIpamSubnetRequests(IpamSubnetRequestTestCase):
                  netaddr.IPRange('0.0.0.8', '0.0.0.10')]
         self.assertRaises(ValueError,
                           ipam_req.SubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           allocation_pools=pools)
 
@@ -104,17 +104,17 @@ class TestIpamSubnetRequests(IpamSubnetRequestTestCase):
 class TestIpamAnySubnetRequest(IpamSubnetRequestTestCase):
 
     def test_subnet_request(self):
-        request = ipam_req.AnySubnetRequest(self.tenant_id,
-                                        self.subnet_id,
-                                        constants.IPv4,
-                                        24,
-                                        gateway_ip='0.0.0.1')
+        request = ipam_req.AnySubnetRequest(self.project_id,
+                                            self.subnet_id,
+                                            constants.IPv4,
+                                            24,
+                                            gateway_ip='0.0.0.1')
         self.assertEqual(24, request.prefixlen)
 
     def test_subnet_request_bad_prefix_type(self):
         self.assertRaises(netaddr.core.AddrFormatError,
                           ipam_req.AnySubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           constants.IPv4,
                           'A')
@@ -122,19 +122,19 @@ class TestIpamAnySubnetRequest(IpamSubnetRequestTestCase):
     def test_subnet_request_bad_prefix(self):
         self.assertRaises(netaddr.core.AddrFormatError,
                           ipam_req.AnySubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           constants.IPv4,
                           33)
         self.assertRaises(netaddr.core.AddrFormatError,
                           ipam_req.AnySubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           constants.IPv6,
                           129)
 
     def test_subnet_request_gateway(self):
-        request = ipam_req.AnySubnetRequest(self.tenant_id,
+        request = ipam_req.AnySubnetRequest(self.project_id,
                                             self.subnet_id,
                                             constants.IPv6,
                                             64,
@@ -145,7 +145,7 @@ class TestIpamAnySubnetRequest(IpamSubnetRequestTestCase):
         pools = [netaddr.IPRange('0.0.0.4', '0.0.0.5')]
         self.assertRaises(ipam_exc.IpamValueInvalid,
                           ipam_req.AnySubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           constants.IPv6,
                           64,
@@ -155,7 +155,7 @@ class TestIpamAnySubnetRequest(IpamSubnetRequestTestCase):
         pools = [netaddr.IPRange('0.0.0.64', '0.0.0.128')]
         self.assertRaises(ipam_exc.IpamValueInvalid,
                           ipam_req.AnySubnetRequest,
-                          self.tenant_id,
+                          self.project_id,
                           self.subnet_id,
                           constants.IPv4,
                           25,
@@ -165,16 +165,16 @@ class TestIpamAnySubnetRequest(IpamSubnetRequestTestCase):
 class TestIpamSpecificSubnetRequest(IpamSubnetRequestTestCase):
 
     def test_subnet_request(self):
-        request = ipam_req.SpecificSubnetRequest(self.tenant_id,
-                                             self.subnet_id,
-                                             '1.2.3.0/24',
-                                             gateway_ip='1.2.3.1')
+        request = ipam_req.SpecificSubnetRequest(self.project_id,
+                                                 self.subnet_id,
+                                                 '1.2.3.0/24',
+                                                 gateway_ip='1.2.3.1')
         self.assertEqual(24, request.prefixlen)
         self.assertEqual(netaddr.IPAddress('1.2.3.1'), request.gateway_ip)
         self.assertEqual(netaddr.IPNetwork('1.2.3.0/24'), request.subnet_cidr)
 
     def test_subnet_request_gateway(self):
-        request = ipam_req.SpecificSubnetRequest(self.tenant_id,
+        request = ipam_req.SpecificSubnetRequest(self.project_id,
                                                  self.subnet_id,
                                                  '2001::1',
                                                  gateway_ip='2000::1')
@@ -233,7 +233,7 @@ class TestAddressRequest(base.BaseTestCase):
 class TestIpamDriverLoader(base.BaseTestCase):
 
     def setUp(self):
-        super(TestIpamDriverLoader, self).setUp()
+        super().setUp()
         self.ctx = context.get_admin_context()
 
     def _verify_fake_ipam_driver_is_loaded(self, driver_name):
@@ -333,7 +333,7 @@ class TestSubnetRequestFactory(IpamSubnetRequestTestCase):
         subnet = {'cidr': cidr,
                   'prefixlen': prefixlen,
                   'ip_version': ip_version,
-                  'tenant_id': self.tenant_id,
+                  'project_id': self.project_id,
                   'gateway_ip': gateway_ip,
                   'allocation_pools': None,
                   'id': id or self.subnet_id}
@@ -395,7 +395,7 @@ class TestSubnetRequestFactory(IpamSubnetRequestTestCase):
                                                             subnetpool)
         self.assertIsInstance(request,
                               ipam_req.SpecificSubnetRequest)
-        self.assertEqual(self.tenant_id, request.tenant_id)
+        self.assertEqual(self.project_id, request.project_id)
         self.assertEqual(self.subnet_id, request.subnet_id)
         self.assertIsNone(request.gateway_ip)
         self.assertIsNone(request.allocation_pools)
@@ -404,7 +404,7 @@ class TestSubnetRequestFactory(IpamSubnetRequestTestCase):
 class TestGetRequestFactory(base.BaseTestCase):
 
     def setUp(self):
-        super(TestGetRequestFactory, self).setUp()
+        super().setUp()
         cfg.CONF.set_override('ipam_driver', 'fake')
         self.driver = driver.Pool.get_instance(None, None)
 

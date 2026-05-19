@@ -16,6 +16,8 @@
 from unittest import mock
 
 from neutron_lib.agent import topics
+from neutron_lib.api import attributes
+from neutron_lib.api.definitions import network_ha
 from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as pnet
@@ -64,10 +66,10 @@ class FakeL3PluginWithAgents(l3_hamode_db.L3_HA_NAT_db_mixin,
 
 class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
     _mechanism_drivers = ['openvswitch', 'fake_agent', 'l2population']
-    tenant = 'tenant'
+    project = 'project'
 
     def setUp(self):
-        super(TestL2PopulationRpcTestCase, self).setUp()
+        super().setUp()
 
         self.adminContext = context.get_admin_context()
 
@@ -78,6 +80,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         net_arg = {pnet.NETWORK_TYPE: 'vxlan',
                    pnet.SEGMENTATION_ID: '1'}
         self._network = self._make_network(self.fmt, 'net1', True,
+                                           as_admin=True,
                                            arg_list=(pnet.NETWORK_TYPE,
                                                      pnet.SEGMENTATION_ID,),
                                            **net_arg)
@@ -86,6 +89,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                    pnet.PHYSICAL_NETWORK: 'physnet1',
                    pnet.SEGMENTATION_ID: '2'}
         self._network2 = self._make_network(self.fmt, 'net2', True,
+                                            as_admin=True,
                                             arg_list=(pnet.NETWORK_TYPE,
                                                       pnet.PHYSICAL_NETWORK,
                                                       pnet.SEGMENTATION_ID,),
@@ -94,6 +98,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         net_arg = {pnet.NETWORK_TYPE: 'flat',
                    pnet.PHYSICAL_NETWORK: 'noagent'}
         self._network3 = self._make_network(self.fmt, 'net3', True,
+                                            as_admin=True,
                                             arg_list=(pnet.NETWORK_TYPE,
                                                       pnet.PHYSICAL_NETWORK,),
                                             **net_arg)
@@ -117,6 +122,10 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         uptime = ('neutron.plugins.ml2.drivers.l2pop.db.get_agent_uptime')
         uptime_patch = mock.patch(uptime, return_value=190)
         uptime_patch.start()
+        # Extend network HA extension.
+        rname = network_ha.COLLECTION_NAME
+        attributes.RESOURCES[rname].update(
+            network_ha.RESOURCE_ATTRIBUTE_MAP[rname])
 
     def _setup_l3(self):
         notif_p = mock.patch.object(l3_hamode_db.L3_HA_NAT_db_mixin,
@@ -196,20 +205,20 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         result = jsonutils.loads(jsonutils.dumps(payload))
         self.assertEqual(entry, result['netuuid']['ports']['1'][0])
 
-    def _create_router(self, ha=True, tenant_id='tenant1',
+    def _create_router(self, ha=True, project_id='project1',
                        distributed=None, ctx=None):
         if ctx is None:
             ctx = self.adminContext
-        ctx.tenant_id = tenant_id
+        ctx.project_id = project_id
         router = {'name': TEST_ROUTER_ID, 'admin_state_up': True,
-                  'tenant_id': ctx.tenant_id}
+                  'project_id': ctx.project_id}
         if ha is not None:
             router['ha'] = ha
         if distributed is not None:
             router['distributed'] = distributed
         return self.plugin.create_router(ctx, {'router': router})
 
-    def _bind_router(self, router_id, tenant_id):
+    def _bind_router(self, router_id, project_id):
         scheduler = l3_agent_scheduler.ChanceScheduler()
         filters = {'agent_type': [constants.AGENT_TYPE_L3]}
         agents_object = self.plugin.get_agent_objects(
@@ -219,7 +228,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                 self.plugin,
                 self.adminContext,
                 router_id,
-                tenant_id,
+                project_id,
                 agent_obj)
         self._bind_ha_network_ports(router_id)
 
@@ -271,13 +280,13 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
     def _create_ha_router(self):
         self._setup_l3()
         router = self._create_router()
-        self._bind_router(router['id'], router['tenant_id'])
+        self._bind_router(router['id'], router['project_id'])
         return router
 
     def _create_dvr_router(self):
         self._setup_l3()
         router = self._create_router(distributed=True)
-        self._bind_router(router['id'], router['tenant_id'])
+        self._bind_router(router['id'], router['project_id'])
         return router
 
     def _verify_remove_fdb(self, expected, agent_id, device, host=None):
@@ -299,6 +308,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
 
             host_arg = {portbindings.HOST_ID: HOST_4, 'admin_state_up': True}
             with self.port(subnet=snet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
@@ -329,6 +339,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network, enable_dhcp=False) as snet:
             host_arg = {portbindings.HOST_ID: HOST, 'admin_state_up': True}
             with self.port(subnet=snet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
@@ -341,13 +352,13 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                 port = self._add_router_interface(subnet, router, HOST)
 
                 expected = {port['network_id']:
-                    {'ports': {'20.0.0.2': [constants.FLOODING_ENTRY]},
-                     'network_type': 'vxlan', 'segment_id': 1}}
+                            {'ports': {'20.0.0.2': [constants.FLOODING_ENTRY]},
+                             'network_type': 'vxlan', 'segment_id': 1}}
 
                 self.mock_fanout.reset_mock()
                 interface_info = {'subnet_id': subnet['id']}
-                self.plugin.remove_router_interface(self.adminContext,
-                                         router['id'], interface_info)
+                self.plugin.remove_router_interface(
+                    self.adminContext, router['id'], interface_info)
                 self.mock_fanout.assert_called_with(
                     mock.ANY, 'remove_fdb_entries', expected)
 
@@ -357,16 +368,17 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network,
                          enable_dhcp=False) as snet:
             with self.port(
+                    is_admin=True,
                     subnet=snet,
-                    project_id=self.tenant,
+                    project_id=self.project,
                     device_owner=constants.DEVICE_OWNER_DVR_INTERFACE)\
                         as port:
                 port_id = port['port']['id']
-                plugin.update_distributed_port_binding(self.adminContext,
+                plugin.update_distributed_port_binding(
+                    self.adminContext,
                     port_id, {'port': {portbindings.HOST_ID: HOST_4,
-                    'device_id': router['id']}})
-                port = self._show('ports', port_id,
-                                  neutron_context=self.adminContext)
+                              'device_id': router['id']}})
+                port = self._show('ports', port_id, as_admin=True)
                 self.assertEqual(portbindings.VIF_TYPE_DISTRIBUTED,
                                  port['port'][portbindings.VIF_TYPE])
                 self.callbacks.update_device_up(self.adminContext,
@@ -388,6 +400,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network, enable_dhcp=False) as snet:
             host_arg = {portbindings.HOST_ID: HOST_4, 'admin_state_up': True}
             with self.port(subnet=snet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
@@ -423,6 +436,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network, enable_dhcp=False) as snet:
             host_arg = {portbindings.HOST_ID: HOST_4, 'admin_state_up': True}
             with self.port(subnet=snet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
@@ -478,10 +492,12 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg):
                     p1 = port1['port']
@@ -512,9 +528,11 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST + '_3'}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg):
                     p1 = port1['port']
@@ -535,10 +553,12 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network2) as subnet:
             host_arg = {portbindings.HOST_ID: host}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg):
                     p1 = port1['port']
@@ -569,11 +589,13 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 host_arg = {portbindings.HOST_ID: HOST + '_2'}
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg):
@@ -610,12 +632,14 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
             host_arg = {portbindings.HOST_ID: HOST,
                         'admin_state_up': True}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID, 'admin_state_up',),
                            **host_arg) as port1:
                 host_arg = {portbindings.HOST_ID: HOST + '_2',
                             'admin_state_up': True}
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,
                                          'admin_state_up',),
@@ -669,16 +693,19 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST + '_2'}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.subnet(cidr='10.1.0.0/24') as subnet2:
                     with self.port(subnet=subnet2,
+                                   is_admin=True,
                                    device_owner=DEVICE_OWNER_COMPUTE,
                                    arg_list=(portbindings.HOST_ID,),
                                    **host_arg):
                         host_arg = {portbindings.HOST_ID: HOST}
                         with self.port(subnet=subnet,
+                                       is_admin=True,
                                        device_owner=DEVICE_OWNER_COMPUTE,
                                        arg_list=(portbindings.HOST_ID,),
                                        **host_arg) as port3:
@@ -707,7 +734,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                                                 p1['mac_address'],
                                                 p1_ips[0])]},
                                          'network_type': 'vxlan',
-                                         'segment_id': 1}}
+                                          'segment_id': 1}}
 
                             self.mock_cast.assert_called_with(
                                     mock.ANY, 'add_fdb_entries', expected1,
@@ -723,7 +750,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                                                 p3['mac_address'],
                                                 p3_ips[0])]},
                                          'network_type': 'vxlan',
-                                         'segment_id': 1}}
+                                          'segment_id': 1}}
 
                             self.mock_fanout.assert_called_with(
                                 mock.ANY, 'add_fdb_entries', expected2)
@@ -742,6 +769,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                 ipv6_address_mode=constants.IPV6_SLAAC) as subnet2:
             with self.port(
                 subnet,
+                is_admin=True,
                 fixed_ips=[{'subnet_id': subnet['subnet']['id']},
                            {'subnet_id': subnet2['subnet']['id']}],
                 device_owner=DEVICE_OWNER_COMPUTE,
@@ -783,10 +811,12 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
             host_arg = {portbindings.HOST_ID: HOST}
             # 2 ports on host 1
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port2:
@@ -794,6 +824,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                     # agent on host 1
                     host_arg = {portbindings.HOST_ID: HOST + '_2'}
                     with self.port(subnet=subnet,
+                                   is_admin=True,
                                    device_owner=DEVICE_OWNER_COMPUTE,
                                    arg_list=(portbindings.HOST_ID,),
                                    **host_arg) as port3:
@@ -814,15 +845,16 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
 
                         # agent on host 1 should be updated with entry from
                         # another host
-                        expected = {p3['network_id']:
-                            {'ports':
-                             {'20.0.0.2': [
-                                 constants.FLOODING_ENTRY,
-                                 l2pop_rpc.PortInfo(
-                                     p3['mac_address'],
-                                     p3['fixed_ips'][0]['ip_address'])]},
-                             'network_type': 'vxlan',
-                             'segment_id': 1}}
+                        expected = {
+                            p3['network_id']:
+                                {'ports':
+                                 {'20.0.0.2': [
+                                      constants.FLOODING_ENTRY,
+                                      l2pop_rpc.PortInfo(
+                                          p3['mac_address'],
+                                          p3['fixed_ips'][0]['ip_address'])]},
+                                 'network_type': 'vxlan',
+                                 'segment_id': 1}}
 
                         self.mock_cast.assert_called_once_with(
                             mock.ANY, 'add_fdb_entries', expected, HOST)
@@ -833,10 +865,12 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port2:
@@ -877,10 +911,12 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg):
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port2:
@@ -919,6 +955,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
 
             host_arg = {portbindings.HOST_ID: HOST_4, 'admin_state_up': True}
             with self.port(subnet=snet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
@@ -954,6 +991,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port:
@@ -966,6 +1004,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                                                 device=device)
 
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port2:
@@ -995,10 +1034,12 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg):
                 with self.port(subnet=subnet,
+                               is_admin=True,
                                device_owner=DEVICE_OWNER_COMPUTE,
                                arg_list=(portbindings.HOST_ID,),
                                **host_arg) as port:
@@ -1029,6 +1070,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST + '_5'}
             with self.port(subnet=subnet,
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
@@ -1043,7 +1085,8 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                 new_mac = ':'.join(mac)
                 data = {'port': {'mac_address': new_mac,
                                  portbindings.HOST_ID: HOST}}
-                req = self.new_update_request('ports', data, p1['id'])
+                req = self.new_update_request('ports', data, p1['id'],
+                                              as_admin=True)
                 res = self.deserialize(self.fmt, req.get_response(self.api))
                 self.assertIn('port', res)
                 self.assertEqual(new_mac, res['port']['mac_address'])
@@ -1080,6 +1123,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
             fixed_ips = [{'subnet_id': subnet['subnet']['id'],
                           'ip_address': '10.0.0.2'}]
             with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            fixed_ips=fixed_ips,
@@ -1094,7 +1138,8 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
 
                 data = {'port': {'fixed_ips': [{'ip_address': '10.0.0.2'},
                                                {'ip_address': '10.0.0.10'}]}}
-                self.new_update_request('ports', data, p['id'])
+                self.new_update_request('ports', data, p['id'],
+                                        as_admin=True)
                 l2pop_mech = l2pop_mech_driver.L2populationMechanismDriver()
                 l2pop_mech.L2PopulationAgentNotify = mock.Mock()
                 l2notify = l2pop_mech.L2PopulationAgentNotify
@@ -1109,6 +1154,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
             fixed_ips = [{'subnet_id': subnet['subnet']['id'],
                           'ip_address': '10.0.0.2'}]
             with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            fixed_ips=fixed_ips,
@@ -1125,7 +1171,8 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
 
                 data = {'port': {'fixed_ips': [{'ip_address': '10.0.0.2'},
                                                {'ip_address': '10.0.0.10'}]}}
-                req = self.new_update_request('ports', data, p1['id'])
+                req = self.new_update_request('ports', data, p1['id'],
+                                              as_admin=True)
                 res = self.deserialize(self.fmt, req.get_response(self.api))
                 ips = res['port']['fixed_ips']
                 self.assertEqual(2, len(ips))
@@ -1143,7 +1190,8 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
 
                 data = {'port': {'fixed_ips': [{'ip_address': '10.0.0.2'},
                                                {'ip_address': '10.0.0.16'}]}}
-                req = self.new_update_request('ports', data, p1['id'])
+                req = self.new_update_request('ports', data, p1['id'],
+                                              as_admin=True)
                 res = self.deserialize(self.fmt, req.get_response(self.api))
                 ips = res['port']['fixed_ips']
                 self.assertEqual(2, len(ips))
@@ -1162,7 +1210,8 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                 self.mock_fanout.reset_mock()
 
                 data = {'port': {'fixed_ips': [{'ip_address': '10.0.0.16'}]}}
-                req = self.new_update_request('ports', data, p1['id'])
+                req = self.new_update_request('ports', data, p1['id'],
+                                              as_admin=True)
                 res = self.deserialize(self.fmt, req.get_response(self.api))
                 ips = res['port']['fixed_ips']
                 self.assertEqual(1, len(ips))
@@ -1182,6 +1231,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
@@ -1204,6 +1254,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         self._register_ml2_agents()
         host_arg = {portbindings.HOST_ID: HOST}
         with self.port(arg_list=(portbindings.HOST_ID,),
+                       is_admin=True,
                        **host_arg) as port:
             port_id = port['port']['id']
             # ensure various formats all result in correct port_id
@@ -1217,7 +1268,8 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
 
     def _update_and_check_portbinding(self, port_id, host_id):
         data = {'port': {portbindings.HOST_ID: host_id}}
-        req = self.new_update_request('ports', data, port_id)
+        req = self.new_update_request('ports', data, port_id,
+                                      as_admin=True)
         res = self.deserialize(self.fmt,
                                req.get_response(self.api))
         self.assertEqual(host_id, res['port'][portbindings.HOST_ID])
@@ -1227,6 +1279,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network) as subnet:
             host_arg = {portbindings.HOST_ID: HOST}
             with self.port(subnet=subnet, cidr='10.0.0.0/24',
+                           is_admin=True,
                            device_owner=DEVICE_OWNER_COMPUTE,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as port1:
@@ -1326,6 +1379,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
         with self.subnet(network=self._network, enable_dhcp=False) as snet:
             host_arg = {portbindings.HOST_ID: HOST, 'admin_state_up': True}
             with self.port(subnet=snet,
+                           is_admin=True,
                            device_owner=constants.DEVICE_OWNER_ROUTER_SNAT,
                            arg_list=(portbindings.HOST_ID,),
                            **host_arg) as p:
@@ -1365,7 +1419,7 @@ class TestL2PopulationRpcTestCase(test_plugin.Ml2PluginV2TestCase):
                     self.context, port['port']['network_id']),
                 models.PortBinding(), None)
             l2pop_mech._fixed_ips_changed(
-                port_context, None, port['port'], (set(['10.0.0.1']), set()))
+                port_context, None, port['port'], ({'10.0.0.1'}, set()))
 
         # There's no need to send an RPC update if the IP address for an
         # unbound port changed.

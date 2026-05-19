@@ -47,7 +47,7 @@ from neutron.objects import flavor
 from neutron.objects import local_ip
 from neutron.objects import network as net_obj
 from neutron.objects.port.extensions import port_device_profile
-from neutron.objects.port.extensions import port_numa_affinity_policy
+from neutron.objects.port.extensions import port_hardware_offload_type
 from neutron.objects import ports
 from neutron.objects.qos import policy as qos_policy
 from neutron.objects import rbac_db
@@ -55,9 +55,10 @@ from neutron.objects import router
 from neutron.objects import securitygroup
 from neutron.objects import stdattrs
 from neutron.objects import subnet
+from neutron.objects import subnetpool
 from neutron.tests import base as test_base
+from neutron.tests.common import test_db_base_plugin_v2
 from neutron.tests import tools
-from neutron.tests.unit.db import test_db_base_plugin_v2
 
 
 SQLALCHEMY_COMMIT = 'sqlalchemy.engine.Connection._commit_impl'
@@ -187,7 +188,7 @@ class NeutronObjectRegistryFixture(fixtures.Fixture):
     """
 
     def setUp(self):
-        super(NeutronObjectRegistryFixture, self).setUp()
+        super().setUp()
         self._base_test_obj_backup = copy.deepcopy(
             base.NeutronObjectRegistry._registry._obj_classes)
         self.addCleanup(self._restore_obj_registry)
@@ -554,11 +555,13 @@ FIELD_TYPE_VALUE_GENERATOR_MAP = {
     obj_fields.ListOfStringsField: tools.get_random_string_list,
     obj_fields.ObjectField: lambda: None,
     obj_fields.StringField: lambda: helpers.get_random_string(10),
-    port_numa_affinity_policy.NumaAffinityPoliciesEnumField:
+    common_types.NumaAffinityPoliciesEnumField:
         tools.get_random_port_numa_affinity_policy,
     port_device_profile.PortDeviceProfile:
         lambda: helpers.get_random_string(255),
-    common_types.PortRangesField: get_random_port_ranges
+    common_types.PortRangesField: get_random_port_ranges,
+    port_hardware_offload_type.PortHardwareOffloadTypeEnumField:
+        tools.get_random_port_hardware_offload_type,
 }
 
 
@@ -587,12 +590,12 @@ def get_non_synthetic_fields(objclass, obj_fields):
             if not objclass.is_synthetic(field)}
 
 
-class _BaseObjectTestCase(object):
+class _BaseObjectTestCase:
 
     _test_class = FakeNeutronDbObject
 
     def setUp(self):
-        super(_BaseObjectTestCase, self).setUp()
+        super().setUp()
         # make sure all objects are loaded and registered in the registry
         objects.register_objects()
         self.context = context.get_admin_context()
@@ -740,7 +743,7 @@ class _BaseObjectTestCase(object):
 class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
 
     def setUp(self):
-        super(BaseObjectIfaceTestCase, self).setUp()
+        super().setUp()
         self.model_map = collections.defaultdict(list)
         self.model_map[self._test_class.db_model] = self.db_objs
         self.pager_map = collections.defaultdict(lambda: None)
@@ -851,9 +854,9 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         return mock_calls
 
     def test_get_objects(self, context=None):
+        '''Test that get_objects fetches data from database.'''
         if context is None:
             context = self.context
-        '''Test that get_objects fetches data from database.'''
         with mock.patch.object(
                 obj_db_api, 'get_objects',
                 side_effect=self.fake_get_objects) as get_objects_mock:
@@ -883,9 +886,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                           'found in test class %r' %
                           self._test_class)
 
-        filters = copy.copy(self.valid_field_filter)
-        filters[synthetic_fields.pop()] = 'xxx'
-
+        filters = self.valid_field_filter | {synthetic_fields.pop(): 'xxx'}
         with mock.patch.object(obj_db_api, 'get_objects',
                                return_value=self.db_objs):
             self.assertRaises(n_exc.InvalidInput,
@@ -1107,8 +1108,10 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
                           self._test_class)
         expected = 10
         with mock.patch.object(obj_db_api, 'count', return_value=expected):
-            self.assertEqual(expected, self._test_class.count(self.context,
-                validate_filters=False, fake_field='xxx'))
+            self.assertEqual(
+                expected,
+                self._test_class.count(
+                    self.context, validate_filters=False, fake_field='xxx'))
 
     # Adding delete_objects mock because some objects are using delete_objects
     # while calling create(), Port for example
@@ -1117,7 +1120,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         with mock.patch.object(obj_db_api, 'create_object',
                                return_value=self.db_objs[0]) as create_mock:
             with mock.patch.object(obj_db_api, 'get_objects',
-                  side_effect=self.fake_get_objects):
+                                   side_effect=self.fake_get_objects):
                 obj = self._test_class(self.context, **self.obj_fields[0])
                 self._check_equal(self.objs[0], obj)
                 obj.create()
@@ -1134,7 +1137,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         with mock.patch.object(obj_db_api, 'create_object',
                                return_value=self.db_objs[0]):
             with mock.patch.object(obj_db_api, 'get_objects',
-                  side_effect=self.fake_get_objects):
+                                   side_effect=self.fake_get_objects):
                 self.objs[1].create()
                 self._check_equal(self.objs[0], self.objs[1])
 
@@ -1168,7 +1171,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
             self.assertFalse(obj.obj_reset_changes.called)
 
     def test_extra_fields(self):
-        if not len(self._test_class.obj_extra_fields):
+        if not self._test_class.obj_extra_fields:
             self.skipTest(
                 'Test class %r has no obj_extra_fields' % self._test_class)
         obj = self._test_class(self.context, **self.obj_fields[0])
@@ -1264,7 +1267,7 @@ class BaseObjectIfaceTestCase(_BaseObjectTestCase, test_base.BaseTestCase):
         with mock.patch.object(obj_db_api, 'update_object',
                                return_value=self.db_objs[0]):
             with mock.patch.object(obj_db_api, 'get_objects',
-                  side_effect=self.fake_get_objects):
+                                   side_effect=self.fake_get_objects):
                 obj = self._test_class(self.context, **self.obj_fields[1])
                 fields_to_update = self.get_updatable_fields(
                     self.obj_fields[1])
@@ -1429,7 +1432,7 @@ class BaseObjectIfaceWithProjectIdTestCase(BaseObjectIfaceTestCase):
         new_obj_fields['field2'] = uuidutils.generate_uuid()
 
         obj.update_fields(new_obj_fields)
-        self.assertEqual(set(['field2']), obj.obj_what_changed())
+        self.assertEqual({'field2'}, obj.obj_what_changed())
         self.assertEqual(project_id, obj.project_id)
 
     def test_project_id_filter_added_when_project_id_present(self):
@@ -1529,7 +1532,7 @@ class BaseObjectIfaceListDictMiscValuesTestCase(_BaseObjectTestCase,
 class BaseDbObjectTestCase(_BaseObjectTestCase,
                            test_db_base_plugin_v2.DbOperationBoundMixin):
     def setUp(self):
-        super(BaseDbObjectTestCase, self).setUp()
+        super().setUp()
         synthetic_fields = self._get_object_synthetic_fields(self._test_class)
         for synth_field in synthetic_fields:
             objclass = self._get_ovo_object_class(self._test_class,
@@ -1547,12 +1550,16 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
                     ]
 
     def _create_test_network(self, name='test-network1', network_id=None,
-                             qos_policy_id=None):
+                             qos_policy_id=None, external=False):
         network_id = (uuidutils.generate_uuid() if network_id is None
                       else network_id)
         _network = net_obj.Network(self.context, name=name, id=network_id,
                                    qos_policy_id=qos_policy_id)
         _network.create()
+        if external:
+            ext_net = net_obj.ExternalNetwork(self.context,
+                                              network_id=network_id)
+            ext_net.create()
         return _network
 
     def _create_test_network_id(self, qos_policy_id=None):
@@ -1564,7 +1571,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         test_network_id = self._create_test_network_id(
             qos_policy_id=qos_policy_id)
         ext_net = net_obj.ExternalNetwork(self.context,
-            network_id=test_network_id)
+                                          network_id=test_network_id)
         ext_net.create()
         return ext_net.network_id
 
@@ -1583,7 +1590,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         fip_obj.create()
         return fip_obj.id
 
-    def _create_test_subnet_id(self, network_id=None):
+    def _create_test_subnet_id(self, network_id=None, subnet_pool_id=None):
         if not network_id:
             network_id = self._create_test_network_id()
         test_subnet = {
@@ -1597,6 +1604,8 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
             'ipv6_ra_mode': None,
             'ipv6_address_mode': None
         }
+        if subnet_pool_id:
+            test_subnet['subnetpool_id'] = subnet_pool_id
         subnet_obj = subnet.Subnet(self.context, **test_subnet)
         subnet_obj.create()
         return subnet_obj.id
@@ -1722,6 +1731,21 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         _qos_policy.create()
         return _qos_policy
 
+    def _create_test_subnet_pool(
+            self, prefix, default_prefixlen, min_prefixlen, max_prefixlen,
+            ip_version):
+        subnet_pool = {
+            'prefixes': [prefix],
+            'default_prefixlen': default_prefixlen,
+            'min_prefixlen': min_prefixlen,
+            'max_prefixlen': max_prefixlen,
+            'ip_version': ip_version,
+            'address_scope_id': uuidutils.generate_uuid(),
+        }
+        subnet_pool_obj = subnetpool.SubnetPool(self.context, **subnet_pool)
+        subnet_pool_obj.create()
+        return subnet_pool_obj.id, subnet_pool_obj.address_scope_id
+
     def test_get_standard_attr_id(self):
 
         if not self._test_class.has_standard_attributes():
@@ -1821,22 +1845,8 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
             obj.delete()
         self.assertEqual(1, mock_commit.call_count)
 
-    def _get_ro_txn_exit_func_name(self):
-        # with no engine facade, we didn't have distinction between r/o and
-        # r/w transactions and so we always call commit even for getters when
-        # no facade is used
-        return (
-            SQLALCHEMY_CLOSE
-            if self._test_class._use_db_facade else SQLALCHEMY_COMMIT)
-
     def test_get_objects_single_transaction(self):
-        with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
-            with db_api.CONTEXT_READER.using(self.context):
-                self._test_class.get_objects(self.context)
-        self.assertEqual(1, mock_exit.call_count)
-
-    def test_get_objects_single_transaction_enginefacade(self):
-        with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
+        with mock.patch(SQLALCHEMY_CLOSE) as mock_exit:
             with db_api.CONTEXT_READER.using(self.context):
                 self._test_class.get_objects(self.context)
         self.assertEqual(1, mock_exit.call_count)
@@ -1845,17 +1855,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         obj = self._make_object(self.obj_fields[0])
         obj.create()
 
-        with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
-            with db_api.CONTEXT_READER.using(self.context):
-                obj = self._test_class.get_object(self.context,
-                                                  **obj._get_composite_keys())
-        self.assertEqual(1, mock_exit.call_count)
-
-    def test_get_object_single_transaction_enginefacade(self):
-        obj = self._make_object(self.obj_fields[0])
-        obj.create()
-
-        with mock.patch(self._get_ro_txn_exit_func_name()) as mock_exit:
+        with mock.patch(SQLALCHEMY_CLOSE) as mock_exit:
             with db_api.CONTEXT_READER.using(self.context):
                 obj = self._test_class.get_object(self.context,
                                                   **obj._get_composite_keys())
@@ -2035,8 +2035,9 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
         for fields in self.obj_fields:
             self._make_object(fields).create()
         self.assertEqual(
-            len(self.obj_fields), self._test_class.count(self.context,
-                validate_filters=False, fake_filter='xxx'))
+            len(self.obj_fields),
+            self._test_class.count(
+                self.context, validate_filters=False, fake_filter='xxx'))
 
     def test_count_invalid_filters(self):
         for fields in self.obj_fields:
@@ -2190,7 +2191,7 @@ class BaseDbObjectTestCase(_BaseObjectTestCase,
 
 class UniqueObjectBase(test_base.BaseTestCase):
     def setUp(self):
-        super(UniqueObjectBase, self).setUp()
+        super().setUp()
         obj_registry = self.useFixture(
             NeutronObjectRegistryFixture())
         self.db_model = FakeModel
@@ -2204,7 +2205,7 @@ class UniqueObjectBase(test_base.BaseTestCase):
 
 class GetObjectClassByModelTestCase(UniqueObjectBase):
     def setUp(self):
-        super(GetObjectClassByModelTestCase, self).setUp()
+        super().setUp()
         self.not_registered_object = FakeSmallNeutronObject
 
     def test_object_found_by_model(self):

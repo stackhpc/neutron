@@ -21,13 +21,10 @@ from neutron_lib.plugins.ml2 import ovs_constants
 from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_log import log as logging
-from pyroute2.netlink import exceptions \
-    as netlink_exceptions  # pylint: disable=no-name-in-module
+from pyroute2.netlink import exceptions as netlink_exceptions
 
 from neutron.agent.linux import bridge_lib
 from neutron.conf.agent import l2_ext_fdb_population
-from neutron.plugins.ml2.drivers.linuxbridge.agent.common import (
-     constants as linux_bridge_constants)
 
 l2_ext_fdb_population.register_fdb_population_opts()
 
@@ -36,8 +33,8 @@ LOG = logging.getLogger(__name__)
 
 class FdbPopulationAgentExtension(
         l2_extension.L2AgentExtension):
-    """The FDB population is an agent extension to OVS or linux bridge
-    who's objective is to update the FDB table for existing instance
+    """The FDB population is an agent extension to OVS
+    whose objective is to update the FDB table for existing instance
     using normal port, thus enabling communication between SR-IOV instances
     and normal instances.
     Additional information describing the problem can be found here:
@@ -61,10 +58,11 @@ class FdbPopulationAgentExtension(
                                constants.DEVICE_OWNER_ROUTER_INTF,
                                constants.DEVICE_OWNER_DHCP}
 
-    class FdbTableTracker(object):
+    class FdbTableTracker:
         """FDB table tracker is a helper class
         intended to keep track of the existing FDB rules.
         """
+
         def __init__(self, devices):
             self.device_to_macs = {}
             self.portid_to_mac = {}
@@ -118,12 +116,9 @@ class FdbPopulationAgentExtension(
     # class FdbPopulationAgentExtension implementation:
     def initialize(self, connection, driver_type):
         """Perform FDB Agent Extension initialization."""
-        valid_driver_types = (linux_bridge_constants.EXTENSION_DRIVER_TYPE,
-                              ovs_constants.EXTENSION_DRIVER_TYPE)
-        if driver_type not in valid_driver_types:
-            LOG.error('FDB extension is only supported for OVS and '
-                      'linux bridge agent, currently uses '
-                      '%(driver_type)s', {'driver_type': driver_type})
+        if driver_type != ovs_constants.EXTENSION_DRIVER_TYPE:
+            LOG.error('FDB extension is only supported for OVS agent, '
+                      'currently uses %s', driver_type)
             sys.exit(1)
 
         self.device_mappings = helpers.parse_mappings(

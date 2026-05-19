@@ -21,7 +21,7 @@
       (Avoid deeper levels because they do not render well.)
 
 
-Agent extensions
+Agent Extensions
 ================
 
 All reference agents utilize a common extension mechanism that allows for the
@@ -40,7 +40,8 @@ Interactions with the agent API object are in the following order:
 #. The agent initializes the agent API object.
 #. The agent passes the agent API object into the extension manager.
 #. The manager passes the agent API object into each extension.
-#. An extension calls the new agent API object method to receive, for instance, bridge wrappers with cookies allocated.
+#. An extension calls the new agent API object method to receive, for instance,
+   bridge wrappers with cookies allocated.
 
 ::
 

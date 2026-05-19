@@ -18,7 +18,7 @@ from neutron_lib.db import api as db_api
 
 from neutron.db import db_base_plugin_v2
 from neutron.db import port_device_profile_db as pdp_db
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
 
 
 class PortDeviceProfileExtensionTestPlugin(
@@ -30,8 +30,7 @@ class PortDeviceProfileExtensionTestPlugin(
 
     def create_port(self, context, port):
         with db_api.CONTEXT_WRITER.using(context):
-            new_port = super(PortDeviceProfileExtensionTestPlugin,
-                             self).create_port(context, port)
+            new_port = super().create_port(context, port)
             self._process_create_port(context, port['port'], new_port)
         return new_port
 
@@ -44,7 +43,7 @@ class PortDeviceProfileExtensionTestCase(
     def setUp(self, *args):
         plugin = ('neutron.tests.unit.extensions.test_port_device_profile.'
                   'PortDeviceProfileExtensionTestPlugin')
-        super(PortDeviceProfileExtensionTestCase, self).setUp(plugin=plugin)
+        super().setUp(plugin=plugin)
 
     @ddt.data('device_profile_1', None)
     def test_create_and_check_port_device_profile(self, device_profile):

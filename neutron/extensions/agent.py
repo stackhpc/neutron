@@ -34,9 +34,14 @@ class Agent(api_extensions.APIExtensionDescriptor):
         """Returns Ext Resources."""
         plugin = directory.get_plugin()
         params = apidef.RESOURCE_ATTRIBUTE_MAP.get(apidef.COLLECTION_NAME)
-        controller = base.create_resource(apidef.COLLECTION_NAME,
-                                          apidef.RESOURCE_NAME,
-                                          plugin, params)
+        controller = base.create_resource(
+            apidef.COLLECTION_NAME,
+            apidef.RESOURCE_NAME,
+            plugin,
+            params,
+            allow_pagination=True,
+            allow_sorting=True,
+        )
 
         ex = extensions.ResourceExtension(apidef.COLLECTION_NAME,
                                           controller)
@@ -44,7 +49,7 @@ class Agent(api_extensions.APIExtensionDescriptor):
         return [ex]
 
 
-class AgentPluginBase(object, metaclass=abc.ABCMeta):
+class AgentPluginBase(metaclass=abc.ABCMeta):
     """REST API to operate the Agent.
 
     All of method must be in an admin context.
@@ -56,7 +61,9 @@ class AgentPluginBase(object, metaclass=abc.ABCMeta):
         This operation is not allow in REST API.
         @raise exceptions.BadRequest:
         """
-        raise exceptions.BadRequest()
+        raise exceptions.BadRequest(
+            resource='agents',
+            msg='Agent creation using API is not supported.')
 
     @abc.abstractmethod
     def delete_agent(self, context, id):

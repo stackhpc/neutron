@@ -38,7 +38,7 @@ serviceprovider_opts = prov_config.serviceprovider_opts
 prov_config.register_service_provider_opts()
 
 
-class NeutronModule(object):
+class NeutronModule:
     """A Neutron extension module."""
 
     def __init__(self, service_module):
@@ -146,8 +146,8 @@ def get_provider_driver_class(driver, namespace=SERVICE_PROVIDERS):
         return driver
     except RuntimeError:
         return driver
-    new_driver = "%s.%s" % (driver_manager.__module__,
-                            driver_manager.__name__)
+    new_driver = "{}.{}".format(driver_manager.__module__,
+                                driver_manager.__name__)
     LOG.warning(
         "The configured driver %(driver)s has been moved, automatically "
         "using %(new_driver)s instead. Please update your config files, "
@@ -157,7 +157,6 @@ def get_provider_driver_class(driver, namespace=SERVICE_PROVIDERS):
 
 
 def parse_service_provider_opt(service_module='neutron', service_type=None):
-
     """Parse service definition opts and returns result."""
     def validate_name(name):
         if len(name) > db_const.NAME_FIELD_SIZE:
@@ -183,14 +182,13 @@ def parse_service_provider_opt(service_module='neutron', service_type=None):
         name = normalize_provider_name(name)
         default = False
         if len(split) == 4 and split[3]:
-            if split[3] == 'default':
-                default = True
-            else:
+            if split[3] != 'default':
                 msg = (_("Invalid provider format. "
                          "Last part should be 'default' or empty: %s") %
                        prov_def)
                 LOG.error(msg)
                 raise n_exc.Invalid(msg)
+            default = True
 
         driver = get_provider_driver_class(driver)
         res.append({'service_type': svc_type,
@@ -215,7 +213,7 @@ class ServiceProviderAlreadyAssociated(n_exc.Conflict):
                 "provider '%(provider)s' for service type '%(service_type)s'")
 
 
-class ProviderConfiguration(object):
+class ProviderConfiguration:
 
     def __init__(self, svc_module='neutron', svc_type=None):
         self.providers = {}

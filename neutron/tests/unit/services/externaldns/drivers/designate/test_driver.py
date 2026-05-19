@@ -22,7 +22,7 @@ from neutron.tests import base
 
 class TestDesignateDriver(base.BaseTestCase):
     def setUp(self):
-        super(TestDesignateDriver, self).setUp()
+        super().setUp()
         self.context = mock.Mock()
         self.client = mock.Mock()
         self.admin_client = mock.Mock()
@@ -169,6 +169,31 @@ class TestDesignateDriver(base.BaseTestCase):
         )
         self.admin_client.recordsets.delete.assert_not_called()
 
+    def test_delete_single_record_from_two_records(self):
+        # Set up two records similar to test_delete_record_set
+        self.client.recordsets.list.return_value = [
+            {'id': 123, 'records': ['192.168.0.10']},
+            {'id': 456, 'records': ['2001:db8:0:1::1']}
+        ]
+
+        cfg.CONF.set_override(
+            'allow_reverse_dns_lookup', False, group='designate'
+        )
+
+        # Delete only the first record (IPv4) out of the two
+        self.driver.delete_record_set(
+            self.context, 'example.test.', 'test',
+            ['192.168.0.10']
+        )
+
+        # Verify that only the IPv4 record was deleted
+        self.client.recordsets.delete.assert_called_once_with(
+            'example.test.', 123
+        )
+
+        # Admin client should not be called since reverse DNS is disabled
+        self.admin_client.recordsets.delete.assert_not_called()
+
     def test_delete_record_set_with_reverse_dns(self):
         self.client.recordsets.list.return_value = [
             {'id': 123, 'records': ['192.168.0.10']},
@@ -179,6 +204,42 @@ class TestDesignateDriver(base.BaseTestCase):
             self.context, 'example.test.', 'test',
             ['192.168.0.10', '2001:db8:0:1::1']
         )
+
+        self.client.recordsets.delete.assert_has_calls(
+            [
+                mock.call('example.test.', 123),
+                mock.call('example.test.', 456)
+            ]
+        )
+
+        self.admin_client.recordsets.delete.assert_has_calls(
+            [
+                mock.call(
+                    '0.168.192.in-addr.arpa.', '10.0.168.192.in-addr.arpa.'
+                ),
+                mock.call(
+                    '0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.0.0.0.0.0.8.b.d.0.1.0.'
+                    '0.2.ip6.arpa.',
+                    '1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.0.0.0.0.0.8.b.d.0.'
+                    '1.0.0.2.ip6.arpa.'
+                )
+            ]
+        )
+
+    def test_delete_record_set_with_reverse_dns_not_found(self):
+        self.admin_client.recordsets.delete.side_effect = [
+            d_exc.NotFound, None]
+        self.client.recordsets.list.return_value = [
+            {'id': 123, 'records': ['192.168.0.10']},
+            {'id': 456, 'records': ['2001:db8:0:1::1']}
+        ]
+
+        with mock.patch.object(driver, "LOG") as log_mock:
+            self.driver.delete_record_set(
+                self.context, 'example.test.', 'test',
+                ['192.168.0.10', '2001:db8:0:1::1']
+            )
+            log_mock.warning.assert_called_once()
 
         self.client.recordsets.delete.assert_has_calls(
             [
@@ -253,26 +314,83 @@ class TestDesignateDriver(base.BaseTestCase):
             'test', ['192.168.0.10']
         )
 
-    def test_ipv4_ptr_is_misconfigured(self):
+    @mock.patch.object(driver, '_SESSION', new=mock.Mock())
+    @mock.patch.object(driver, 'd_client')
+    @mock.patch('keystoneauth1.token_endpoint.Token')
+    @mock.patch('keystoneauth1.loading.load_auth_from_conf_options')
+    @mock.patch.object(driver, 'get_clients',
+                       side_effect=driver.get_clients)
+    def test_admin_client_passes_edit_managed(
+            self, mock_get_clients, mock_load_auth, mock_token,
+            mock_d_client):
+        mock_get_clients(self.context)
+        self.assertEqual(2, mock_d_client.Client.call_count)
+        user_call, admin_call = mock_d_client.Client.call_args_list
+        self.assertNotIn('edit_managed', user_call.kwargs)
+        self.assertTrue(admin_call.kwargs.get('edit_managed'))
+
+    @mock.patch.object(driver, '_SESSION', new=mock.Mock())
+    @mock.patch.object(driver, 'd_client')
+    @mock.patch('keystoneauth1.token_endpoint.Token')
+    @mock.patch.object(driver, 'get_all_projects_client',
+                       side_effect=driver.get_all_projects_client)
+    def test_all_projects_client_no_edit_managed(
+            self, mock_get_all, mock_token, mock_d_client):
+        mock_get_all(self.context)
+        call = mock_d_client.Client.call_args
+        self.assertNotIn('edit_managed', call.kwargs)
+
+    def test_delete_managed_record_falls_back_to_admin(self):
+        self.client.recordsets.list.return_value = [
+            {'id': 123, 'records': ['192.168.0.10']}
+        ]
+        self.client.recordsets.delete.side_effect = d_exc.BadRequest
+
         cfg.CONF.set_override(
-            'ipv4_ptr_zone_prefix_size', -1, group='designate'
+            'allow_reverse_dns_lookup', False, group='designate'
         )
 
+        self.driver.delete_record_set(
+            self.context, 'example.test.', 'test', ['192.168.0.10']
+        )
+
+        self.client.recordsets.delete.assert_called_once_with(
+            'example.test.', 123)
+        self.admin_client.recordsets.delete.assert_called_once_with(
+            'example.test.', 123)
+
+    def test_ipv4_ptr_is_misconfigured(self):
+        self.assertRaises(
+            ValueError,
+            cfg.CONF.set_override,
+            'ipv4_ptr_zone_prefix_size', 0, group='designate'
+        )
+        self.assertRaises(
+            ValueError,
+            cfg.CONF.set_override,
+            'ipv4_ptr_zone_prefix_size', 32, group='designate'
+        )
         self.assertRaisesRegex(
-            dns_exc.InvalidPTRZoneConfiguration,
-            'Value of ipv4_ptr_zone_size has to be multiple of 8, with '
-            'maximum value of 24 and minimum value of 8',
-            driver.Designate
+            ValueError,
+            'Should be multiple of 8',
+            cfg.CONF.set_override,
+            'ipv4_ptr_zone_prefix_size', 9, group='designate'
         )
 
     def test_ipv6_ptr_is_misconfigured(self):
-        cfg.CONF.set_override(
-            'ipv6_ptr_zone_prefix_size', -1, group='designate'
+        self.assertRaises(
+            ValueError,
+            cfg.CONF.set_override,
+            'ipv6_ptr_zone_prefix_size', 0, group='designate'
         )
-
+        self.assertRaises(
+            ValueError,
+            cfg.CONF.set_override,
+            'ipv6_ptr_zone_prefix_size', 128, group='designate'
+        )
         self.assertRaisesRegex(
-            dns_exc.InvalidPTRZoneConfiguration,
-            'Value of ipv6_ptr_zone_size has to be multiple of 4, with '
-            'maximum value of 124 and minimum value of 4',
-            driver.Designate
+            ValueError,
+            'Should be multiple of 4',
+            cfg.CONF.set_override,
+            'ipv6_ptr_zone_prefix_size', 5, group='designate'
         )

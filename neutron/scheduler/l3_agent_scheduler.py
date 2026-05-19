@@ -17,7 +17,7 @@ import abc
 import collections
 import functools
 import itertools
-import random
+import secrets
 
 from neutron_lib import constants as lib_const
 from neutron_lib.db import api as lib_db_api
@@ -26,6 +26,7 @@ from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 
+from neutron.common import _constants as n_const
 from neutron.common import utils
 from neutron.conf.db import l3_hamode_db
 from neutron.db.models import l3agent as rb_model
@@ -37,7 +38,7 @@ LOG = logging.getLogger(__name__)
 cfg.CONF.register_opts(l3_hamode_db.L3_HA_OPTS)
 
 
-class L3Scheduler(object, metaclass=abc.ABCMeta):
+class L3Scheduler(metaclass=abc.ABCMeta):
 
     def __init__(self):
         self.max_ha_agents = cfg.CONF.max_l3_agents_per_router
@@ -57,7 +58,7 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
         query = query.filter(router_binding_model.router_id == router_id,
                              router_binding_model.l3_agent_id == l3_agent_id)
 
-        return query.count() > 0
+        return query.first() is not None
 
     def _get_routers_can_schedule(self, plugin, context, routers, l3_agent):
         """Get the subset of routers that can be scheduled on the L3 agent."""
@@ -102,11 +103,18 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
         underscheduled_routers = []
         max_agents_for_ha = plugin.get_number_of_agents_for_scheduling(context)
 
-        for router, count in plugin.get_routers_l3_agents_count(context):
-            if (count < 1 or
-                    router.get('ha', False) and count < max_agents_for_ha):
-                # Either the router was un-scheduled (scheduled to 0 agents),
-                # or it's an HA router and it was under-scheduled (scheduled to
+        # since working out a unified SQL is hard for both regular and
+        # ha routers. Split its up and run queries separately
+        for router, count in plugin.get_routers_l3_agents_count(
+                context, ha=False, less_than=1):
+            if count < 1:
+                # the router was un-scheduled (scheduled to 0 agents),
+                underscheduled_routers.append(router)
+
+        for router, count in plugin.get_routers_l3_agents_count(
+                context, ha=True, less_than=max_agents_for_ha):
+            if count < max_agents_for_ha:
+                # it's an HA router and it was under-scheduled (scheduled to
                 # less than max_agents_for_ha). Either way, it should be added
                 # to the list of routers we want to handle.
                 underscheduled_routers.append(router)
@@ -142,17 +150,6 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
 
             return candidates
 
-    def _bind_routers(self, plugin, context, routers, l3_agent):
-        for router in routers:
-            if router.get('ha'):
-                if not self._router_has_binding(context, router['id'],
-                                                l3_agent.id):
-                    self.create_ha_port_and_bind(
-                        plugin, context, router['id'],
-                        router['tenant_id'], l3_agent)
-            else:
-                self.bind_router(plugin, context, router['id'], l3_agent.id)
-
     @lib_db_api.retry_db_errors
     def bind_router(self, plugin, context, router_id, agent_id,
                     is_manual_scheduling=False, is_ha=False):
@@ -185,7 +182,7 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
             return
 
         if not is_ha:
-            binding_index = rb_model.LOWEST_BINDING_INDEX
+            binding_index = n_const.LOWEST_AGENT_BINDING_INDEX
             if rb_obj.RouterL3AgentBinding.objects_exist(
                     context, router_id=router_id, binding_index=binding_index):
                 LOG.debug('Non-HA router %s has already been scheduled',
@@ -194,7 +191,7 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
         else:
             binding_index = plugin.get_vacant_binding_index(
                 context, router_id, is_manual_scheduling)
-            if binding_index < rb_model.LOWEST_BINDING_INDEX:
+            if binding_index < n_const.LOWEST_AGENT_BINDING_INDEX:
                 LOG.debug('Unable to find a vacant binding_index for '
                           'router %(router_id)s and agent %(agent_id)s',
                           {'router_id': router_id,
@@ -225,10 +222,10 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
             plugin, context, sync_router)
         if not candidates:
             return
-        elif sync_router.get('ha', False):
+        if sync_router.get('ha', False):
             chosen_agents = self._bind_ha_router(plugin, context,
                                                  router_id,
-                                                 sync_router.get('tenant_id'),
+                                                 sync_router.get('project_id'),
                                                  candidates)
             if not chosen_agents:
                 return
@@ -254,21 +251,21 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
                 else candidates_count)
 
     def _add_port_from_net_and_ensure_vr_id(self, plugin, ctxt, router_db,
-                                            tenant_id, ha_net):
+                                            project_id, ha_net):
         plugin._ensure_vr_id(ctxt, router_db, ha_net)
         return plugin.add_ha_port(ctxt, router_db.id, ha_net.network_id,
-                                  tenant_id)
+                                  project_id)
 
     def create_ha_port_and_bind(self, plugin, context, router_id,
-                                tenant_id, agent, is_manual_scheduling=False):
+                                project_id, agent, is_manual_scheduling=False):
         """Creates and binds a new HA port for this agent."""
         ctxt = context.elevated()
         router_db = plugin._get_router(ctxt, router_id)
         creator = functools.partial(self._add_port_from_net_and_ensure_vr_id,
-                                    plugin, ctxt, router_db, tenant_id)
-        dep_getter = functools.partial(plugin.get_ha_network, ctxt, tenant_id)
+                                    plugin, ctxt, router_db, project_id)
+        dep_getter = functools.partial(plugin.get_ha_network, ctxt, project_id)
         dep_creator = functools.partial(plugin._create_ha_network,
-                                        ctxt, tenant_id)
+                                        ctxt, project_id)
         dep_deleter = functools.partial(plugin._delete_ha_network, ctxt)
         dep_id_attr = 'network_id'
 
@@ -305,9 +302,9 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
             # we try to clear the HA network here in case the port we created
             # blocked the concurrent router delete operation from getting rid
             # of the HA network
-            ha_net = plugin.get_ha_network(ctxt, tenant_id)
+            ha_net = plugin.get_ha_network(ctxt, project_id)
             if ha_net:
-                plugin.safe_delete_ha_network(ctxt, ha_net, tenant_id)
+                plugin.safe_delete_ha_network(ctxt, ha_net, project_id)
 
     def _filter_scheduled_agents(self, plugin, context, router_id, candidates):
         hosting = plugin.get_l3_agents_hosting_routers(context, [router_id])
@@ -316,7 +313,7 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
         return list(set(candidates) - set(hosting_list))
 
     def _bind_ha_router(self, plugin, context, router_id,
-                        tenant_id, candidates):
+                        project_id, candidates):
         """Bind a HA router to agents based on a specific policy."""
 
         candidates = self._filter_scheduled_agents(plugin, context, router_id,
@@ -327,7 +324,7 @@ class L3Scheduler(object, metaclass=abc.ABCMeta):
 
         for agent in chosen_agents:
             self.create_ha_port_and_bind(plugin, context, router_id,
-                                         tenant_id, agent)
+                                         project_id, agent)
 
         return chosen_agents
 
@@ -336,11 +333,11 @@ class ChanceScheduler(L3Scheduler):
     """Randomly allocate an L3 agent for a router."""
 
     def _choose_router_agent(self, plugin, context, candidates):
-        return random.choice(candidates)
+        return secrets.SystemRandom().choice(candidates)
 
     def _choose_router_agents_for_ha(self, plugin, context, candidates):
         num_agents = self._get_num_of_agents_for_ha(len(candidates))
-        return random.sample(candidates, num_agents)
+        return secrets.SystemRandom().sample(candidates, num_agents)
 
 
 class LeastRoutersScheduler(L3Scheduler):
@@ -365,6 +362,7 @@ class AZLeastRoutersScheduler(LeastRoutersScheduler):
        If a router is ha router, allocate L3 agents distributed AZs
        according to router's az_hints.
     """
+
     def _get_az_hints(self, router):
         return utils.get_az_hints(router)
 
@@ -379,13 +377,13 @@ class AZLeastRoutersScheduler(LeastRoutersScheduler):
         if not target_routers:
             return []
 
-        return super(AZLeastRoutersScheduler, self)._get_routers_can_schedule(
+        return super()._get_routers_can_schedule(
             plugin, context, target_routers, l3_agent)
 
     def _get_candidates(self, plugin, context, sync_router):
         """Overwrite L3Scheduler's method to filter by availability zone."""
         all_candidates = (
-            super(AZLeastRoutersScheduler, self)._get_candidates(
+            super()._get_candidates(
                 plugin, context, sync_router))
 
         candidates = []

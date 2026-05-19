@@ -21,6 +21,7 @@ Tests in this module will be skipped unless:
 
  - sudo testing is enabled (see neutron.tests.functional.base for details)
 """
+import signal
 import time
 
 from oslo_config import cfg
@@ -36,7 +37,7 @@ from neutron.tests.functional.agent.linux import base as linux_base
 class BaseMonitorTest(linux_base.BaseOVSLinuxTestCase):
 
     def setUp(self):
-        super(BaseMonitorTest, self).setUp()
+        super().setUp()
 
         rootwrap_not_configured = (cfg.CONF.AGENT.root_helper == base.SUDO_CMD)
         if rootwrap_not_configured:
@@ -60,7 +61,7 @@ class BaseMonitorTest(linux_base.BaseOVSLinuxTestCase):
 class TestOvsdbMonitor(BaseMonitorTest):
 
     def setUp(self):
-        super(TestOvsdbMonitor, self).setUp()
+        super().setUp()
 
         self.monitor = ovsdb_monitor.OvsdbMonitor('Bridge')
         self.addCleanup(self.monitor.stop)
@@ -81,11 +82,14 @@ class TestOvsdbMonitor(BaseMonitorTest):
 class TestSimpleInterfaceMonitor(BaseMonitorTest):
 
     def setUp(self):
-        super(TestSimpleInterfaceMonitor, self).setUp()
+        super().setUp()
 
         self.monitor = ovsdb_monitor.SimpleInterfaceMonitor()
-        self.addCleanup(self.monitor.stop)
+        self.addCleanup(self._monitor_stop)
         self.monitor.start(block=True, timeout=60)
+
+    def _monitor_stop(self):
+        self.monitor.stop(kill_signal=signal.SIGTERM)
 
     def test_has_updates(self):
         utils.wait_until_true(lambda: self.monitor.has_updates)

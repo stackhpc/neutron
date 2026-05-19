@@ -28,11 +28,12 @@ LOG = logging.getLogger(__name__)
 objects.register_objects()
 
 
-class RemoteResourceCache(object):
+class RemoteResourceCache:
     """Retrieves and stashes logical resources in their OVO format.
 
     This is currently only compatible with OVO objects that have an ID.
     """
+
     def __init__(self, resource_types):
         self.resource_types = resource_types
         self._cache_by_type_and_id = {rt: {} for rt in self.resource_types}
@@ -130,7 +131,7 @@ class RemoteResourceCache(object):
             for key, values in filters.items():
                 for value in values:
                     attr = getattr(obj, key)
-                    if isinstance(attr, (list, tuple, set)):
+                    if isinstance(attr, list | tuple | set):
                         # attribute is a list so we check if value is in
                         # list
                         if value in attr:
@@ -202,6 +203,17 @@ class RemoteResourceCache(object):
                              resource_id=resource.id,
                              states=(existing, resource)))
 
+    def record_resource_remove(self, rtype, resource_id):
+        filters = {'id': (resource_id, )}
+        for i in self._get_query_ids(rtype, filters):
+            try:
+                self._satisfied_server_queries.remove(i)
+            except KeyError:
+                continue
+        LOG.debug("Remove resource cache for resource %s: %s",
+                  rtype, resource_id)
+        self._type_cache(rtype).pop(resource_id, None)
+
     def record_resource_delete(self, context, rtype, resource_id):
         # deletions are final, record them so we never
         # accept new data for the same ID.
@@ -233,7 +245,7 @@ class RemoteResourceCache(object):
         return changed
 
 
-class RemoteResourceWatcher(object):
+class RemoteResourceWatcher:
     """Converts RPC callback notifications to local registry notifications.
 
     This allows a constructor to listen for RPC callbacks for a given

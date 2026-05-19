@@ -26,10 +26,9 @@ from neutron.common import utils
 from neutron.conf.agent import common as config
 from neutron.tests.common import net_helpers
 from neutron.tests.functional.agent.linux import base as linux_base
-from neutron.tests.functional import base
 
 
-class InterfaceDriverTestCaseMixin(object):
+class InterfaceDriverTestCaseMixin:
     def _test_mtu_set_after_action(self, device_name, br_name, namespace,
                                    action=None):
         mac_address = net.get_random_mac('fa:16:3e:00:00:00'.split(':'))
@@ -89,7 +88,7 @@ class InterfaceDriverTestCaseMixin(object):
 class OVSInterfaceDriverTestCase(linux_base.BaseOVSLinuxTestCase,
                                  InterfaceDriverTestCaseMixin):
     def setUp(self):
-        super(OVSInterfaceDriverTestCase, self).setUp()
+        super().setUp()
         conf = cfg.ConfigOpts()
         config.register_interface_opts(conf)
         self.interface = interface.OVSInterfaceDriver(conf)
@@ -140,17 +139,3 @@ class OVSInterfaceDriverTestCase(linux_base.BaseOVSLinuxTestCase,
         # the bridge
         self._test_mtu_set_after_action(
             device_name, self.bridge_name, namespace)
-
-
-class BridgeInterfaceDriverTestCase(base.BaseSudoTestCase,
-                                    InterfaceDriverTestCaseMixin):
-    def setUp(self):
-        super(BridgeInterfaceDriverTestCase, self).setUp()
-        conf = cfg.ConfigOpts()
-        config.register_interface_opts(conf)
-        self.interface = interface.BridgeInterfaceDriver(conf)
-        self.bridge = self.useFixture(net_helpers.LinuxBridgeFixture()).bridge
-
-    @property
-    def bridge_name(self):
-        return self.bridge.name

@@ -24,14 +24,15 @@ from oslo_db import exception as db_exc
 
 from neutron.api import extensions
 from neutron.common import config
+from neutron.common.ovn import constants as ovn_const
 from neutron.db.models import ovn as ovn_models
 from neutron.db import ovn_revision_numbers_db as ovn_rn_db
 import neutron.extensions
 from neutron.services.revisions import revision_plugin
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
+from neutron.tests.unit.extensions import test_address_group
 from neutron.tests.unit.extensions import test_l3
 from neutron.tests.unit.extensions import test_securitygroup
-
 
 EXTENSIONS_PATH = ':'.join(neutron.extensions.__path__)
 PLUGIN_CLASS = (
@@ -41,7 +42,7 @@ PLUGIN_CLASS = (
 class TestRevisionNumber(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
 
     def setUp(self):
-        super(TestRevisionNumber, self).setUp()
+        super().setUp()
         self.ctx = context.get_admin_context()
         self.addCleanup(self._delete_objs)
         res = self._create_network(fmt=self.fmt, name='net',
@@ -63,21 +64,21 @@ class TestRevisionNumber(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
     def test_bump_revision(self):
         with db_api.CONTEXT_WRITER.using(self.ctx):
             self._create_initial_revision(self.net['id'],
-                                          ovn_rn_db.TYPE_NETWORKS)
+                                          ovn_const.TYPE_NETWORKS)
             self.net['revision_number'] = 123
             ovn_rn_db.bump_revision(self.ctx, self.net,
-                                    ovn_rn_db.TYPE_NETWORKS)
+                                    ovn_const.TYPE_NETWORKS)
             row = ovn_rn_db.get_revision_row(self.ctx, self.net['id'])
             self.assertEqual(123, row.revision_number)
 
     def test_bump_older_revision(self):
         with db_api.CONTEXT_WRITER.using(self.ctx):
             self._create_initial_revision(
-                self.net['id'], ovn_rn_db.TYPE_NETWORKS,
+                self.net['id'], ovn_const.TYPE_NETWORKS,
                 revision_number=124)
             self.net['revision_number'] = 1
             ovn_rn_db.bump_revision(self.ctx, self.net,
-                                    ovn_rn_db.TYPE_NETWORKS)
+                                    ovn_const.TYPE_NETWORKS)
             row = ovn_rn_db.get_revision_row(self.ctx, self.net['id'])
             self.assertEqual(124, row.revision_number)
 
@@ -86,7 +87,7 @@ class TestRevisionNumber(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
         with db_api.CONTEXT_WRITER.using(self.ctx):
             self.net['revision_number'] = 123
             ovn_rn_db.bump_revision(self.ctx, self.net,
-                                    ovn_rn_db.TYPE_NETWORKS)
+                                    ovn_const.TYPE_NETWORKS)
             # Assert the revision number wasn't bumped
             row = ovn_rn_db.get_revision_row(self.ctx, self.net['id'])
             self.assertEqual(123, row.revision_number)
@@ -96,32 +97,50 @@ class TestRevisionNumber(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
     def test_delete_revision(self):
         with db_api.CONTEXT_WRITER.using(self.ctx):
             self._create_initial_revision(self.net['id'],
-                                          ovn_rn_db.TYPE_NETWORKS)
+                                          ovn_const.TYPE_NETWORKS)
             ovn_rn_db.delete_revision(self.ctx, self.net['id'],
-                                      ovn_rn_db.TYPE_NETWORKS)
+                                      ovn_const.TYPE_NETWORKS)
             row = ovn_rn_db.get_revision_row(self.ctx, self.net['id'])
             self.assertIsNone(row)
 
     def test_create_initial_revision_may_exist_duplicated_entry(self):
         try:
             with db_api.CONTEXT_WRITER.using(self.ctx):
-                args = (self.net['id'], ovn_rn_db.TYPE_NETWORKS)
+                args = (self.net['id'], ovn_const.TYPE_NETWORKS)
                 self._create_initial_revision(*args)
                 # DBDuplicateEntry is raised when may_exist is False (default)
                 self._create_initial_revision(*args)
         except Exception as exc:
-            if type(exc) is not db_exc.DBDuplicateEntry:
+            if not isinstance(exc, db_exc.DBDuplicateEntry):
                 self.fail("create_initial_revision with the same parameters "
                           "should have raised a DBDuplicateEntry exception")
 
         with db_api.CONTEXT_WRITER.using(self.ctx):
-            args = (self.net['id'], ovn_rn_db.TYPE_NETWORKS)
+            args = (self.net['id'], ovn_const.TYPE_NETWORKS)
             self._create_initial_revision(*args)
             try:
                 self._create_initial_revision(*args, may_exist=True)
             except db_exc.DBDuplicateEntry:
                 self.fail("create_initial_revision shouldn't raise "
                           "DBDuplicateEntry when may_exist is True")
+
+    def test_get_revision_row_ports(self):
+        res = self._create_port(self.fmt, self.net['id'])
+        port = self.deserialize(self.fmt, res)['port']
+        with db_api.CONTEXT_WRITER.using(self.ctx):
+            for resource_type in (ovn_const.TYPE_PORTS,
+                                  ovn_const.TYPE_ROUTER_PORTS):
+                self._create_initial_revision(port['id'], resource_type)
+
+        for resource_type in (ovn_const.TYPE_PORTS,
+                              ovn_const.TYPE_ROUTER_PORTS):
+            row = ovn_rn_db.get_revision_row(
+                self.ctx, port['id'], resource_type=resource_type)
+            self.assertEqual(resource_type, row.resource_type)
+            self.assertEqual(port['id'], row.resource_uuid)
+
+        self.assertRaises(ovn_rn_db.RevisionNumberNotDefined,
+                          ovn_rn_db.get_revision_row, self.ctx, port['id'])
 
 
 class TestMaintenancePlugin(test_securitygroup.SecurityGroupTestPlugin,
@@ -139,7 +158,7 @@ class TestMaintenancePlugin(test_securitygroup.SecurityGroupTestPlugin,
 class TestExtensionManager(extensions.PluginAwareExtensionManager):
 
     def get_resources(self):
-        resources = super(TestExtensionManager, self).get_resources()
+        resources = super().get_resources()
         sg_ext_mgr = test_securitygroup.SecurityGroupTestExtensionManager
         sg_resources = sg_ext_mgr.get_resources(self)
         sg_resources_collection_names = [
@@ -150,13 +169,14 @@ class TestExtensionManager(extensions.PluginAwareExtensionManager):
 
 
 class TestRevisionNumberMaintenance(test_securitygroup.SecurityGroupsTestCase,
+                                    test_address_group.AddressGroupTestCase,
                                     test_l3.L3NatTestCaseMixin):
 
     def setUp(self):
         service_plugins = {
             'router':
             'neutron.tests.unit.extensions.test_l3.TestL3NatServicePlugin'}
-        super(TestRevisionNumberMaintenance, self).setUp(
+        super().setUp(
               plugin=PLUGIN_CLASS, service_plugins=service_plugins)
         l3_plugin = test_l3.TestL3NatServicePlugin()
         sec_plugin = test_securitygroup.SecurityGroupTestPlugin()
@@ -190,7 +210,7 @@ class TestRevisionNumberMaintenance(test_securitygroup.SecurityGroupsTestCase,
     def test_get_inconsistent_resources(self):
         # Set the intial revision to -1 to force it to be incosistent
         self._create_initial_revision(
-            self.net['id'], ovn_rn_db.TYPE_NETWORKS, revision_number=-1)
+            self.net['id'], ovn_const.TYPE_NETWORKS, revision_number=-1)
         res = ovn_rn_db.get_inconsistent_resources(self.ctx)
         self.assertEqual(1, len(res))
         self.assertEqual(self.net['id'], res[0].resource_uuid)
@@ -200,7 +220,7 @@ class TestRevisionNumberMaintenance(test_securitygroup.SecurityGroupsTestCase,
         # it's default value
         self.older_than_mock.stop()
         self._create_initial_revision(
-            self.net['id'], ovn_rn_db.TYPE_NETWORKS, revision_number=-1)
+            self.net['id'], ovn_const.TYPE_NETWORKS, revision_number=-1)
         res = ovn_rn_db.get_inconsistent_resources(self.ctx)
 
         # Assert that nothing is returned because the entry is not old
@@ -218,14 +238,14 @@ class TestRevisionNumberMaintenance(test_securitygroup.SecurityGroupsTestCase,
         # Set the initial revision to 0 which is the initial revision_number
         # for recently created resources
         self._create_initial_revision(
-            self.net['id'], ovn_rn_db.TYPE_NETWORKS, revision_number=0)
+            self.net['id'], ovn_const.TYPE_NETWORKS, revision_number=0)
         res = ovn_rn_db.get_inconsistent_resources(self.ctx)
         # Assert nothing is inconsistent
         self.assertEqual([], res)
 
     def test_get_deleted_resources(self):
         self._create_initial_revision(
-            self.net['id'], ovn_rn_db.TYPE_NETWORKS, revision_number=0)
+            self.net['id'], ovn_const.TYPE_NETWORKS, revision_number=0)
         self._delete('networks', self.net['id'])
         res = ovn_rn_db.get_deleted_resources(self.ctx)
         self.assertEqual(1, len(res))
@@ -237,7 +257,7 @@ class TestRevisionNumberMaintenance(test_securitygroup.SecurityGroupsTestCase,
                                    '10.0.0.0/24')['subnet']
         self._set_net_external(self.net['id'])
         info = {'network_id': self.net['id']}
-        router = self._make_router(self.fmt, None,
+        router = self._make_router(self.fmt, self._project_id,
                                    external_gateway_info=info)['router']
         fip = self._make_floatingip(self.fmt, self.net['id'])['floatingip']
         port = self._make_port(self.fmt, self.net['id'])['port']
@@ -246,16 +266,20 @@ class TestRevisionNumberMaintenance(test_securitygroup.SecurityGroupsTestCase,
             sg['id'], 'ingress', n_const.PROTO_NUM_TCP)
         sg_rule = self._make_security_group_rule(
             self.fmt, rule)['security_group_rule']
+        ag = self.deserialize(
+            self.fmt, self._create_address_group(
+                **{'name': 'ag1'}))['address_group']
 
-        self._create_initial_revision(router['id'], ovn_rn_db.TYPE_ROUTERS)
-        self._create_initial_revision(subnet['id'], ovn_rn_db.TYPE_SUBNETS)
-        self._create_initial_revision(fip['id'], ovn_rn_db.TYPE_FLOATINGIPS)
-        self._create_initial_revision(port['id'], ovn_rn_db.TYPE_PORTS)
-        self._create_initial_revision(port['id'], ovn_rn_db.TYPE_ROUTER_PORTS)
-        self._create_initial_revision(sg['id'], ovn_rn_db.TYPE_SECURITY_GROUPS)
+        self._create_initial_revision(router['id'], ovn_const.TYPE_ROUTERS)
+        self._create_initial_revision(subnet['id'], ovn_const.TYPE_SUBNETS)
+        self._create_initial_revision(fip['id'], ovn_const.TYPE_FLOATINGIPS)
+        self._create_initial_revision(port['id'], ovn_const.TYPE_PORTS)
+        self._create_initial_revision(port['id'], ovn_const.TYPE_ROUTER_PORTS)
+        self._create_initial_revision(sg['id'], ovn_const.TYPE_SECURITY_GROUPS)
         self._create_initial_revision(sg_rule['id'],
-                                      ovn_rn_db.TYPE_SECURITY_GROUP_RULES)
-        self._create_initial_revision(self.net['id'], ovn_rn_db.TYPE_NETWORKS)
+                                      ovn_const.TYPE_SECURITY_GROUP_RULES)
+        self._create_initial_revision(self.net['id'], ovn_const.TYPE_NETWORKS)
+        self._create_initial_revision(ag['id'], ovn_const.TYPE_ADDRESS_GROUPS)
 
         if delete:
             self._delete('security-group-rules', sg_rule['id'])
@@ -265,16 +289,17 @@ class TestRevisionNumberMaintenance(test_securitygroup.SecurityGroupsTestCase,
             self._delete('routers', router['id'])
             self._delete('subnets', subnet['id'])
             self._delete('networks', self.net['id'])
+            self._delete('address-groups', ag['id'])
 
     def test_get_inconsistent_resources_order(self):
         self._prepare_resources_for_ordering_test()
         res = ovn_rn_db.get_inconsistent_resources(self.ctx)
         actual_order = tuple(r.resource_type for r in res)
-        self.assertEqual(ovn_rn_db._TYPES_PRIORITY_ORDER, actual_order)
+        self.assertEqual(ovn_const.TYPES_PRIORITY_ORDER, actual_order)
 
     def test_get_deleted_resources_order(self):
         self._prepare_resources_for_ordering_test(delete=True)
         res = ovn_rn_db.get_deleted_resources(self.ctx)
         actual_order = tuple(r.resource_type for r in res)
-        self.assertEqual(tuple(reversed(ovn_rn_db._TYPES_PRIORITY_ORDER)),
+        self.assertEqual(tuple(reversed(ovn_const.TYPES_PRIORITY_ORDER)),
                          actual_order)

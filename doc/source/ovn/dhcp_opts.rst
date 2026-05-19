@@ -17,6 +17,7 @@ classless-static-route     classless_static_route
 default-ttl                default_ttl
 dns-server                 dns_server
 domain-name                domain_name
+domain-search              domain_search_list
 ethernet-encap             ethernet_encap
 ip-forward-enable          ip_forward_enable
 lease-time                 lease_time
@@ -67,6 +68,7 @@ wpad                       wpad
 59                         T2
 66                         tftp_server
 67                         bootfile_name
+119                        domain_search_list
 121                        classless_static_route
 150                        tftp_server_address
 210                        path_prefix
@@ -100,8 +102,7 @@ Let's add a DHCP option to a Neutron port:
 
 .. code-block:: bash
 
-    $ neutron port-update --extra-dhcp-opt opt_name='server-ip-address',opt_value='10.0.0.1' b4c3f265-369e-4bf5-8789-7caa9a1efb9c
-    Updated port: b4c3f265-369e-4bf5-8789-7caa9a1efb9c
+    $ openstack port set --extra-dhcp-option name='server-ip-address',value='10.0.0.1' b4c3f265-369e-4bf5-8789-7caa9a1efb9c
 
 .. end
 

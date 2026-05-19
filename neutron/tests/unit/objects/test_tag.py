@@ -26,9 +26,18 @@ class TagDbObjectTestCase(obj_test_base.BaseDbObjectTestCase,
     _test_class = tag.Tag
 
     def setUp(self):
-        super(TagDbObjectTestCase, self).setUp()
+        super().setUp()
         self.update_obj_fields(
             {
                 'standard_attr_id':
                     lambda: self._create_test_standard_attribute_id()
             })
+
+    def test_case_sensitive_tags(self):
+        # All objects will have the same standard_attr_id value
+        obj1 = self._make_object({'standard_attr_id': 1, 'tag': 'tag1'})
+        obj2 = self._make_object({'standard_attr_id': 1, 'tag': 'Tag1'})
+        obj3 = self._make_object({'standard_attr_id': 1, 'tag': 'TAG1'})
+        obj1.create()
+        obj2.create()
+        obj3.create()

@@ -45,7 +45,7 @@ PLUGIN_NAME = 'ml2'
 class TestL2PopulationDBTestCase(testlib_api.SqlTestCase):
 
     def setUp(self):
-        super(TestL2PopulationDBTestCase, self).setUp()
+        super().setUp()
         self.setup_coreplugin(PLUGIN_NAME)
         self.ctx = context.get_admin_context()
         self._create_network()
@@ -111,7 +111,8 @@ class TestL2PopulationDBTestCase(testlib_api.SqlTestCase):
             device_id = kwargs.get('device_id', uuidutils.generate_uuid())
             host = kwargs.get('host', helpers.HOST)
 
-            port_obj.Port(self.ctx,
+            port_obj.Port(
+                self.ctx,
                 id=port_id, network_id=network_id, mac_address=mac,
                 admin_state_up=True, status=constants.PORT_STATUS_ACTIVE,
                 device_id=device_id, device_owner=device_owner).create()
@@ -189,7 +190,7 @@ class TestL2PopulationDBTestCase(testlib_api.SqlTestCase):
         self._setup_port_binding(
             device_owner=constants.DEVICE_OWNER_ROUTER_SNAT,
             device_id=TEST_ROUTER_ID)
-        ha_iface_ids = l2pop_db._get_ha_router_interface_ids(
+        ha_iface_ids = l2pop_db._get_ha_router_interface_ids_subquery(
             self.ctx, TEST_NETWORK_ID)
         self.assertEqual(1, len(list(ha_iface_ids)))
 
@@ -201,7 +202,7 @@ class TestL2PopulationDBTestCase(testlib_api.SqlTestCase):
         self._setup_port_binding(
             device_owner=constants.DEVICE_OWNER_HA_REPLICATED_INT,
             device_id=TEST_ROUTER_ID)
-        ha_iface_ids = l2pop_db._get_ha_router_interface_ids(
+        ha_iface_ids = l2pop_db._get_ha_router_interface_ids_subquery(
             self.ctx, TEST_NETWORK_ID)
         self.assertEqual(1, len(list(ha_iface_ids)))
 
@@ -210,7 +211,7 @@ class TestL2PopulationDBTestCase(testlib_api.SqlTestCase):
         self._setup_port_binding(
             device_owner=constants.DEVICE_OWNER_ROUTER_SNAT,
             device_id=TEST_ROUTER_ID)
-        ha_iface_ids = l2pop_db._get_ha_router_interface_ids(
+        ha_iface_ids = l2pop_db._get_ha_router_interface_ids_subquery(
             self.ctx, TEST_NETWORK_ID)
         self.assertEqual(0, len(list(ha_iface_ids)))
 

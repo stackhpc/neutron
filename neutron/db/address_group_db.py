@@ -37,6 +37,7 @@ class AddressGroupDbMixin(ag_ext.AddressGroupPluginBase):
         res = address_group.to_dict()
         res['addresses'] = [str(addr_assoc['address'])
                             for addr_assoc in address_group['addresses']]
+        res['standard_attr_id'] = address_group.standard_attr_id
         return db_utils.resource_fields(res, fields)
 
     @staticmethod
@@ -69,7 +70,7 @@ class AddressGroupDbMixin(ag_ext.AddressGroupPluginBase):
         normalized_addrs = set()
         for addr in req_addrs:
             addr = netaddr.IPNetwork(addr)
-            normalized_addr = "%s/%s" % (addr.network, addr.prefixlen)
+            normalized_addr = f"{addr.network}/{addr.prefixlen}"
             normalized_addrs.add(normalized_addr)
         addrs_in_ag = []
         addrs_not_in_ag = []
@@ -168,6 +169,7 @@ class AddressGroupDbMixin(ag_ext.AddressGroupPluginBase):
     def get_address_groups(self, context, filters=None, fields=None,
                            sorts=None, limit=None, marker=None,
                            page_reverse=False):
+        filters = filters or {}
         pager = base_obj.Pager(sorts, limit, page_reverse, marker)
         address_groups = ag_obj.AddressGroup.get_objects(
             context, _pager=pager, **filters)

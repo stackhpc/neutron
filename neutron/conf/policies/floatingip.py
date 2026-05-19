@@ -10,6 +10,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -18,6 +19,24 @@ from neutron.conf.policies import base
 
 COLLECTION_PATH = '/floatingips'
 RESOURCE_PATH = '/floatingips/{id}'
+TAGS_PATH = RESOURCE_PATH + '/tags'
+TAG_PATH = RESOURCE_PATH + '/tags/{tag_id}'
+
+ACTION_GET_TAGS: list[policy.Operation] = [
+    {'method': 'GET', 'path': TAGS_PATH},
+    {'method': 'GET', 'path': TAG_PATH},
+]
+ACTION_PUT_TAGS: list[policy.Operation] = [
+    {'method': 'PUT', 'path': TAGS_PATH},
+    {'method': 'PUT', 'path': TAG_PATH},
+]
+ACTION_POST_TAGS: list[policy.Operation] = [
+    {'method': 'POST', 'path': TAGS_PATH},
+]
+ACTION_DELETE_TAGS: list[policy.Operation] = [
+    {'method': 'DELETE', 'path': TAGS_PATH},
+    {'method': 'DELETE', 'path': TAG_PATH},
+]
 
 DEPRECATION_REASON = (
     "The Floating IP API now supports system scope and default roles.")
@@ -25,9 +44,7 @@ DEPRECATION_REASON = (
 rules = [
     policy.DocumentedRuleDefault(
         name='create_floatingip',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         description='Create a floating IP',
         operations=[
             {
@@ -38,13 +55,13 @@ rules = [
         scope_types=['project'],
         deprecated_rule=policy.DeprecatedRule(
             name='create_floatingip',
-            check_str=base.RULE_ANY,
+            check_str=neutron_policy.RULE_ANY,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='create_floatingip:floating_ip_address',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         description='Create a floating IP with a specific IP address',
         operations=[
             {
@@ -55,15 +72,25 @@ rules = [
         scope_types=['project'],
         deprecated_rule=policy.DeprecatedRule(
             name='create_floatingip:floating_ip_address',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='create_floatingip:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        description='Create the floating IP tags',
+        operations=ACTION_POST_TAGS,
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='create_floatingips_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
+    ),
+    policy.DocumentedRuleDefault(
         name='get_floatingip',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_READER),
+        check_str=base.ADMIN_OR_PROJECT_READER,
         description='Get a floating IP',
         operations=[
             {
@@ -78,15 +105,26 @@ rules = [
         scope_types=['project'],
         deprecated_rule=policy.DeprecatedRule(
             name='get_floatingip',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='get_floatingip:tags',
+        check_str=base.ADMIN_OR_PROJECT_READER,
+        description='Get the floating IP tags',
+        operations=ACTION_GET_TAGS,
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='get_floatingips_tags',
+            check_str=base.ADMIN_OR_PROJECT_READER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
+    ),
+
+    policy.DocumentedRuleDefault(
         name='update_floatingip',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         description='Update a floating IP',
         operations=[
             {
@@ -97,15 +135,26 @@ rules = [
         scope_types=['project'],
         deprecated_rule=policy.DeprecatedRule(
             name='update_floatingip',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='update_floatingip:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        description='Update the floating IP tags',
+        operations=ACTION_PUT_TAGS,
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='update_floatingips_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
+    ),
+
+    policy.DocumentedRuleDefault(
         name='delete_floatingip',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_MEMBER),
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
         description='Delete a floating IP',
         operations=[
             {
@@ -116,9 +165,21 @@ rules = [
         scope_types=['project'],
         deprecated_rule=policy.DeprecatedRule(
             name='delete_floatingip',
-            check_str=base.RULE_ADMIN_OR_OWNER,
+            check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='delete_floatingips:tags',
+        check_str=base.ADMIN_OR_PROJECT_MEMBER,
+        description='Delete the floating IP tags',
+        operations=ACTION_DELETE_TAGS,
+        scope_types=['project'],
+        deprecated_rule=policy.DeprecatedRule(
+            name='delete_floatingips_tags',
+            check_str=base.ADMIN_OR_PROJECT_MEMBER,
+            deprecated_reason="Name of the rule is changed.",
+            deprecated_since="2025.1")
     ),
 ]
 

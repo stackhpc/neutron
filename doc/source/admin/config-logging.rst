@@ -1,23 +1,177 @@
 .. _config-logging:
 
-================================
-Neutron Packet Logging Framework
-================================
+========================
+Packet Logging Framework
+========================
 
 Packet logging service is designed as a Neutron plug-in that captures network
 packets for relevant resources (e.g. security group or firewall group) when the
 registered events occur.
 
-.. image:: figures/logging-framework.png
-   :width: 100%
-   :alt: Packet Logging Framework
+--------------
+ML2/OVN Driver
+--------------
+
 
 Supported loggable resource types
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-From Rocky release, both of ``security_group`` and ``firewall_group`` are
-supported as resource types in Neutron packet logging framework.
+From the Wallaby release the ML2/OVN driver supports the ``security_group``
+resource.
 
+The following diagram shows a mapping from Neutron security group framework to
+the ACLs, which are the resources where we enable the logging when using
+ML2/OVN. Each security group rule maps to an ACL associated to a port group
+that contains all the ports belonging to the security group.
+
+
+.. image:: figures/secgrouprule-to-acl.png
+   :width: 100%
+   :alt: Packet Logging Framework with ML2/OVS
+
+.. _contributors documentation: https://docs.openstack.org/neutron/latest/contributor/internals/ovn/ovn_network_logging.html
+
+For more details on the developing peculiarities of this implementation, you
+can check the `contributors documentation`_.
+
+Service Configuration
+~~~~~~~~~~~~~~~~~~~~~
+
+To enable the logging service, add ``log`` to the ``service_plugins`` setting
+in ``/etc/neutron/neutron.conf``:
+
+.. code-block:: ini
+
+     service_plugins = router,metering,log
+
+It is possible to set parameters in ml2_conf.ini to tune how we want to log the
+packets by modifying ``rate_limit`` and ``burst_limit`` in section
+``[network_log]`` in ``/etc/neutron/plugins/ml2/ml2_conf.ini``:
+
+* ``rate_limit`` - Limit the packet rate of the logs that are sent to the OVN
+  controller, in packets per second. The higher the number, the more logs we
+  will get in the log file.
+
+* ``burst_limit`` - Increase the packet rate limit by the specified value for a
+  short period of time.
+
+.. code-block:: ini
+
+     [network_log]
+     rate_limit = 150
+     burst_limit = 50
+
+.. note::
+
+     There is a minimum value for these parameters. For ``rate_limit`` it is
+     100 and for ``burst_limit`` it is 25.
+
+In order to make the changes to rate and burst effective, restart the
+neutron-server service. To ensure the configuration for rate and burst was
+updated, check the meter-band table on the OVN Northbound database. You need to
+create at least one log object to see the meter band entry created.
+
+.. code-block:: console
+
+     $ ovn-nbctl list meter-band
+
+
+Service workflow
+~~~~~~~~~~~~~~~~
+Create a logging resource with security group as resource type:
+
+.. code-block:: console
+
+   $ openstack network log create --resource-type security_group \
+   --resource sg1 --event ALL log1
+
+     +-----------------+--------------------------------------+
+     | Field           | Value                                |
+     +-----------------+--------------------------------------+
+     | Description     |                                      |
+     | Enabled         | True                                 |
+     | Event           | ALL                                  |
+     | ID              | 67b1f618-0b89-4b9c-b3e4-9378b4472175 |
+     | Name            | log1                                 |
+     | Project         | 74731b187a824a8d9b85a12b6eacbcbb     |
+     | Resource        | 387494cb-392a-4760-8c36-09be2fdb0b49 |
+     | Target          | None                                 |
+     | Type            | security_group                       |
+     | created_at      | 2023-07-31T09:44:34Z                 |
+     | revision_number | 0                                    |
+     | project_id      | 74731b187a824a8d9b85a12b6eacbcbb     |
+     | updated_at      | 2023-07-31T09:44:34Z                 |
+     +-----------------+--------------------------------------+
+
+
+.. note::
+
+     Due to the internal design of the ML2/OVN driver, there is one ACL that
+     aggregates all dropped traffic, instead of having one drop ACL per
+     security group. Since the smallest logging unit in OVN is the ACL, that
+     means that if we choose to log DROP traffic, we will get traffic logged
+     from all security groups.
+
+     If we choose to log ALL traffic, we will get the accepted traffic
+     from the selected security group, but the dropped traffic from all
+     security groups.
+
+     This can change in following releases if the ACL management is redesigned
+     in OVN.
+
+
+.. warning::
+
+   We cannot assign individual ports when using ML2/OVN, so the ``--target``
+   parameter is not used.
+
+
+Just as with ML2/OVS, we can enable or disable logging objects at runtime. If
+we have two objects targeted to log the same resource, as long as one of them
+is enabled, the resource will be logged on the logfile.
+
+
+Understanding the logging
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In ML2/OVN we find the packet monitoring logging recorded on each
+``ovn-controller.log`` file within the compute nodes. This means that we will
+have as many logfiles as compute nodes, because each OVN controller has the
+capacity of logging only the traffic they manage. The location of the OVN
+controller log may differ depending on the distribution, please consult your
+installation documentation for more details. The format of the logging is:
+
+
+.. code-block:: console
+
+   2023-01-08T17:57:28.283002425+00:00 stderr F
+   2023-01-08T17:57:28Z|00094|acl_log(ovn_pinctrl0)|INFO|
+   name="neutron-e9ebf19c-3d84-49ae-a81e-7a01035a8768", verdict=allow,
+   severity=info, direction=to-lport: icmp, vlan_tci=0x0000,
+   dl_src=fa:16:3e:d3:b4:48, dl_dst=fa:16:3e:9a:d9:7d, nw_src=10.0.0.67,
+   nw_dst=192.168.100.11, nw_tos=0, nw_ecn=0, nw_ttl=63, nw_frag=no,
+   icmp_type=8, icmp_code=0
+
+In this example, the name is ``neutron-<security group log object ID>``. We can
+also see the verdict, the severity, the direction of the datagram and the
+content.
+
+
+
+--------------
+ML2/OVS Driver
+--------------
+
+.. image:: figures/logging-framework.png
+   :width: 100%
+   :alt: Packet Logging Framework with ML2/OVS
+
+
+Supported loggable resource types
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+From Rocky Release, the ML2/OVS driver supports both ``security_group`` and
+``firewall_group`` as resource types in the Neutron packet logging framework.
 
 Service Configuration
 ~~~~~~~~~~~~~~~~~~~~~
@@ -27,13 +181,14 @@ To enable the logging service, follow the below steps.
 #. On Neutron controller node, add ``log`` to ``service_plugins`` setting in
    ``/etc/neutron/neutron.conf`` file. For example:
 
-   .. code-block:: none
+   .. code-block:: ini
 
      service_plugins = router,metering,log
 
 #. To enable logging service for ``security_group`` in Layer 2, add ``log`` to
-   option ``extensions`` in section ``[agent]`` in ``/etc/neutron/plugins/ml2/ml2_conf.ini``
-   for controller node and in ``/etc/neutron/plugins/ml2/openvswitch_agent.ini``
+   option ``extensions`` in section ``[agent]`` in
+   ``/etc/neutron/plugins/ml2/ml2_conf.ini`` for controller node and in
+   ``/etc/neutron/plugins/ml2/openvswitch_agent.ini``
    for compute/network nodes. For example:
 
    .. code-block:: ini
@@ -43,8 +198,7 @@ To enable the logging service, follow the below steps.
 
    .. note::
 
-       Fwaas v2 log is currently only supported by openvswitch, the firewall
-       logging driver of linuxbridge is not implemented.
+       Fwaas v2 log is currently only supported by openvswitch.
 
 #. To enable logging service for ``firewall_group`` in Layer 3, add
    ``fwaas_v2_log`` to option ``extensions`` in section ``[AGENT]`` in
@@ -56,29 +210,29 @@ To enable the logging service, follow the below steps.
      extensions = fwaas_v2,fwaas_v2_log
 
 #. On compute/network nodes, add configuration for logging service to
-   ``[network_log]`` in ``/etc/neutron/plugins/ml2/openvswitch_agent.ini`` and in
-   ``/etc/neutron/l3_agent.ini`` as shown bellow:
+   ``[network_log]`` in ``/etc/neutron/plugins/ml2/openvswitch_agent.ini``
+   and in ``/etc/neutron/l3_agent.ini`` as shown below:
 
-    .. code-block:: ini
+   .. code-block:: ini
 
       [network_log]
       rate_limit = 100
       burst_limit = 25
       #local_output_log_base = <None>
 
-    In which, ``rate_limit`` is used to configure the maximum number of packets
-    to be logged per second (packets per second). When a high rate triggers
-    ``rate_limit``, logging queues packets to be logged. ``burst_limit`` is
-    used to configure the maximum of queued packets. And logged packets can be
-    stored anywhere by using ``local_output_log_base``.
+   In which, ``rate_limit`` is used to configure the maximum number of packets
+   to be logged per second (packets per second). When a high rate triggers
+   ``rate_limit``, logging queues packets to be logged. ``burst_limit`` is
+   used to configure the maximum of queued packets. And logged packets can be
+   stored anywhere by using ``local_output_log_base``.
 
-    .. note::
+   .. note::
 
-       - It requires at least ``100`` for ``rate_limit`` and at least ``25``
-         for ``burst_limit``.
-       - If ``rate_limit`` is unset, logging will log unlimited.
-       - If we don't specify ``local_output_log_base``, logged packets will be
-         stored in system journal like ``/var/log/syslog`` by default.
+      - It requires at least ``100`` for ``rate_limit`` and at least ``25``
+        for ``burst_limit``.
+      - If ``rate_limit`` is unset, logging will log unlimited.
+      - If we don't specify ``local_output_log_base``, logged packets will be
+        stored in system journal like ``/var/log/syslog`` by default.
 
 Trusted projects policy.yaml configuration
 ----------------------------------------------
@@ -91,14 +245,14 @@ cloud, neutron's policy file ``policy.yaml`` can be modified to allow this.
 
 Modify ``/etc/neutron/policy.yaml`` entries as follows:
 
-.. code-block:: none
+.. code-block:: yaml
 
-   "get_loggable_resources": "rule:regular_user",
-   "create_log": "rule:regular_user",
-   "get_log": "rule:regular_user",
-   "get_logs": "rule:regular_user",
-   "update_log": "rule:regular_user",
-   "delete_log": "rule:regular_user",
+   "get_loggable_resources": "rule:regular_user"
+   "create_log": "rule:regular_user"
+   "get_log": "rule:regular_user"
+   "get_logs": "rule:regular_user"
+   "update_log": "rule:regular_user"
+   "delete_log": "rule:regular_user"
 
 Service workflow for Operator
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -118,8 +272,7 @@ Service workflow for Operator
    .. note::
 
       - In VM ports, logging for ``security_group`` in currently works with
-        ``openvswitch`` firewall driver only. ``linuxbridge`` is under
-        development.
+        ``openvswitch`` firewall driver.
       - Logging for ``firewall_group`` works on internal router ports only. VM
         ports would be supported in the future.
 
@@ -127,55 +280,55 @@ Service workflow for Operator
 
    * Create a logging resource with an appropriate resource type
 
-      .. code-block:: console
+     .. code-block:: console
 
-         $ openstack network log create --resource-type security_group \
-           --description "Collecting all security events" \
-           --event ALL Log_Created
-         +-----------------+------------------------------------------------+
-         | Field           | Value                                          |
-         +-----------------+------------------------------------------------+
-         | Description     | Collecting all security events                 |
-         | Enabled         | True                                           |
-         | Event           | ALL                                            |
-         | ID              | 8085c3e6-0fa2-4954-b5ce-ff6207931b6d           |
-         | Name            | Log_Created                                    |
-         | Project         | 02568bd62b414221956f15dbe9527d16               |
-         | Resource        | None                                           |
-         | Target          | None                                           |
-         | Type            | security_group                                 |
-         | created_at      | 2017-07-05T02:56:43Z                           |
-         | revision_number | 0                                              |
-         | tenant_id       | 02568bd62b414221956f15dbe9527d16               |
-         | updated_at      | 2017-07-05T02:56:43Z                           |
-         +-----------------+------------------------------------------------+
+        $ openstack network log create --resource-type security_group \
+          --description "Collecting all security events" \
+          --event ALL Log_Created
+        +-----------------+------------------------------------------------+
+        | Field           | Value                                          |
+        +-----------------+------------------------------------------------+
+        | Description     | Collecting all security events                 |
+        | Enabled         | True                                           |
+        | Event           | ALL                                            |
+        | ID              | 8085c3e6-0fa2-4954-b5ce-ff6207931b6d           |
+        | Name            | Log_Created                                    |
+        | Project         | 02568bd62b414221956f15dbe9527d16               |
+        | Resource        | None                                           |
+        | Target          | None                                           |
+        | Type            | security_group                                 |
+        | created_at      | 2017-07-05T02:56:43Z                           |
+        | revision_number | 0                                              |
+        | project_id      | 02568bd62b414221956f15dbe9527d16               |
+        | updated_at      | 2017-07-05T02:56:43Z                           |
+        +-----------------+------------------------------------------------+
 
-   .. warning::
+     .. warning::
 
-      In the case of ``--resource`` and ``--target`` are not specified from the
-      request, these arguments will be assigned to ``ALL`` by default. Hence,
-      there is an enormous range of log events will be created.
+        In the case of ``--resource`` and ``--target`` are not specified from the
+        request, these arguments will be assigned to ``ALL`` by default. Hence,
+        there is an enormous range of log events will be created.
 
    * Create logging resource with a given resource (sg1 or fwg1)
 
-      .. code-block:: console
+     .. code-block:: console
 
-         $ openstack network log create my-log --resource-type security_group --resource sg1
-         $ openstack network log create my-log --resource-type firewall_group --resource fwg1
+        $ openstack network log create my-log --resource-type security_group --resource sg1
+        $ openstack network log create my-log --resource-type firewall_group --resource fwg1
 
    * Create logging resource with a given target (portA)
 
-      .. code-block:: console
+     .. code-block:: console
 
-         $ openstack network log create my-log --resource-type security_group --target portA
+        $ openstack network log create my-log --resource-type security_group --target portA
 
    * Create logging resource for only the given target (portB) and the given
      resource (sg1 or fwg1)
 
-      .. code-block:: console
+     .. code-block:: console
 
-         $ openstack network log create my-log --resource-type security_group --target portB --resource sg1
-         $ openstack network log create my-log --resource-type firewall_group --target portB --resource fwg1
+        $ openstack network log create my-log --resource-type security_group --target portB --resource sg1
+        $ openstack network log create my-log --resource-type firewall_group --target portB --resource fwg1
 
    .. note::
 
@@ -209,7 +362,7 @@ Service workflow for Operator
        | Type            | security_group                                 |
        | created_at      | 2017-07-05T02:56:43Z                           |
        | revision_number | 1                                              |
-       | tenant_id       | 02568bd62b414221956f15dbe9527d16               |
+       | project_id      | 02568bd62b414221956f15dbe9527d16               |
        | updated_at      | 2017-07-05T03:12:01Z                           |
        +-----------------+------------------------------------------------+
 
@@ -252,14 +405,14 @@ The  general characteristics of each event will be shown as the following:
 
    * A timestamp of the flow.
    * A status of the flow ``ACCEPT``/``DROP``.
-   * An indication of the originator of the flow, e.g which project or log resource
-     generated the events.
+   * An indication of the originator of the flow, e.g which project or log
+     resource generated the events.
    * An identifier of the associated instance interface (neutron port id).
    * A layer 2, 3 and 4 information (mac, address, port, protocol, etc).
 
    * Security event record format:
 
-     * Logged data of an ``ACCEPT`` event would look like:
+     Logged data of an ``ACCEPT`` event would look like:
 
      .. code-block:: console
 
@@ -274,7 +427,7 @@ The  general characteristics of each event will be shown as the following:
          TCPOptionNoOperation(kind=1,length=1), TCPOptionWindowScale(kind=3,length=3,shift_cnt=3)],
          seq=3284890090,src_port=47825,urgent=0,window_size=14600)
 
-     * Logged data of a ``DROP`` event:
+     Logged data of a ``DROP`` event:
 
      .. code-block:: console
 
@@ -298,7 +451,7 @@ The  general characteristics of each event will be shown as the following:
 
    * Security event record format:
 
-     * Logged data of an ``ACCEPT`` event would look like:
+     Logged data of an ``ACCEPT`` event would look like:
 
      .. code-block:: console
 
@@ -310,7 +463,7 @@ The  general characteristics of each event will be shown as the following:
          \x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
          \x00\x00\x00\x00\x00\x00\x00',id=29185,seq=0),type=8)
 
-     * Logged data of a ``DROP`` event:
+     Logged data of a ``DROP`` event:
 
      .. code-block:: console
 

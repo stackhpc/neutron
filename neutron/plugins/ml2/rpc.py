@@ -44,7 +44,7 @@ LOG = log.getLogger(__name__)
 class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
 
     # history
-    #   1.0 Initial version (from openvswitch/linuxbridge)
+    #   1.0 Initial version (from openvswitch)
     #   1.1 Support Security Group RPC
     #   1.2 Support get_devices_details_list
     #   1.3 get_device_details rpc signature upgrade to obtain 'host' and
@@ -68,7 +68,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
 
     def __init__(self, notifier, type_manager):
         self.setup_tunnel_callback_mixin(notifier, type_manager)
-        super(RpcCallbacks, self).__init__()
+        super().__init__()
 
     def _get_new_status(self, host, port_context):
         port = port_context.current
@@ -133,8 +133,7 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                 plugin.update_port_status(rpc_context,
                                           port_id,
                                           new_status,
-                                          host,
-                                          port_context.network.current)
+                                          host)
         return result
 
     def _get_device_details(self, rpc_context, agent_id, host, device,
@@ -219,11 +218,11 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                 continue
             try:
                 devices.append(self._get_device_details(
-                               rpc_context,
-                               agent_id=kwargs.get('agent_id'),
-                               host=host,
-                               device=device,
-                               port_context=bound_contexts[device]))
+                    rpc_context,
+                    agent_id=kwargs.get('agent_id'),
+                    host=host,
+                    device=device,
+                    port_context=bound_contexts[device]))
             except Exception:
                 LOG.exception("Failed to get details for device %s",
                               device)
@@ -309,20 +308,19 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
             # need to notify nova explicitly
             port = ml2_db.get_port(rpc_context, port_id)
             # _device_to_port_id may have returned a truncated UUID if the
-            # agent did not provide a full one (e.g. Linux Bridge case).
+            # agent did not provide a full one.
             if not port:
                 LOG.debug("Port %s not found, will not notify nova.", port_id)
                 return
-            else:
-                if port.device_owner.startswith(
-                        n_const.DEVICE_OWNER_COMPUTE_PREFIX):
-                    # NOTE(haleyb): It is possible for a test to override a
-                    # config option after the plugin has been initialized so
-                    # the nova_notifier attribute is not set on the plugin.
-                    if (cfg.CONF.notify_nova_on_port_status_changes and
-                            hasattr(plugin, 'nova_notifier')):
-                        plugin.nova_notifier.notify_port_active_direct(port)
-                    return
+            if port.device_owner.startswith(
+                    n_const.DEVICE_OWNER_COMPUTE_PREFIX):
+                # NOTE(haleyb): It is possible for a test to override a
+                # config option after the plugin has been initialized so
+                # the nova_notifier attribute is not set on the plugin.
+                if (cfg.CONF.notify_nova_on_port_status_changes and
+                        hasattr(plugin, 'nova_notifier')):
+                    plugin.nova_notifier.notify_port_active_direct(port)
+                return
         else:
             self.update_port_status_to_active(port, rpc_context, port_id, host)
         self.notify_l2pop_port_wiring(port_id, rpc_context,
@@ -339,8 +337,8 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                                       n_const.PORT_STATUS_ACTIVE, host)
         else:
             # _device_to_port_id may have returned a truncated UUID if the
-            # agent did not provide a full one (e.g. Linux Bridge case). We
-            # need to look up the full one before calling provisioning_complete
+            # agent did not provide a full one. We need to look up the full one
+            # before calling provisioning_complete
             if not port:
                 port = ml2_db.get_port(rpc_context, port_id)
             if not port:
@@ -359,14 +357,14 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
         """
         plugin = directory.get_plugin()
         l2pop_driver = plugin.mechanism_manager.mech_drivers.get(
-                'l2population')
+            'l2population')
         if not l2pop_driver:
             return
         port = ml2_db.get_port(rpc_context, port_id)
         if not port:
             return
         port_context = plugin.get_bound_port_context(
-                rpc_context, port_id, host)
+            rpc_context, port_id, host)
         if not port_context:
             # port deleted
             return

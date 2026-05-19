@@ -192,7 +192,7 @@ class IptablesTestCase(base.BaseTestCase):
 class IptablesCommentsTestCase(base.BaseTestCase):
 
     def setUp(self):
-        super(IptablesCommentsTestCase, self).setUp()
+        super().setUp()
         cfg.CONF.set_override('comment_iptables_rules', True, 'AGENT')
         self.iptables = iptables_manager.IptablesManager()
         self.execute = mock.patch.object(linux_utils, 'execute').start()
@@ -398,7 +398,7 @@ class IptablesFixture(fixtures.Fixture):
 
 class IptablesManagerBaseTestCase(base.BaseTestCase):
     def setUp(self):
-        super(IptablesManagerBaseTestCase, self).setUp()
+        super().setUp()
         cfg.CONF.set_override('comment_iptables_rules', False, 'AGENT')
         cfg.CONF.set_override('report_interval', 30, 'AGENT')
         self.execute = mock.patch.object(linux_utils, "execute").start()
@@ -431,7 +431,7 @@ class IptablesManagerStateFulTestCase(IptablesManagerBaseTestCase):
     use_ipv6 = False
 
     def setUp(self):
-        super(IptablesManagerStateFulTestCase, self).setUp()
+        super().setUp()
         self.iptables = iptables_manager.IptablesManager(
             use_ipv6=self.use_ipv6)
 
@@ -547,8 +547,8 @@ class IptablesManagerStateFulTestCase(IptablesManagerBaseTestCase):
 
     def test_rule_with_wrap_target(self):
         name = '0123456789' * 5
-        wrap = "%s-%s" % (iptables_manager.binary_name,
-                          iptables_manager.get_chain_name(name))
+        wrap = "{}-{}".format(iptables_manager.binary_name,
+                              iptables_manager.get_chain_name(name))
 
         iptables_args = {'bn': iptables_manager.binary_name,
                          'wrap': wrap}
@@ -882,8 +882,8 @@ class IptablesManagerStateFulTestCase(IptablesManagerBaseTestCase):
         # call.
         # Failure without a specific line number in the error should cause
         # all lines to be logged with numbers.
-        logged = ['%7d. %s' % (n, l)
-                  for n, l in enumerate(self.input_lines, 1)]
+        logged = ['%7d. %s' % (num, line)
+                  for num, line in enumerate(self.input_lines, 1)]
         log.error.assert_called_once_with(_(
             'IPTablesManager.apply failed to apply the '
             'following set of iptables rules:\n%s'),
@@ -927,9 +927,9 @@ class IptablesManagerStateFulTestCase(IptablesManagerBaseTestCase):
         ctx = iptables_manager.IPTABLES_ERROR_LINES_OF_CONTEXT
         log_start = max(0, 11 - ctx)
         log_end = 11 + ctx
-        logged = ['%7d. %s' % (n, l)
-                  for n, l in enumerate(self.input_lines[log_start:log_end],
-                                        log_start + 1)]
+        logged = ['%7d. %s' % (n, li)
+                  for n, li in enumerate(self.input_lines[log_start:log_end],
+                                         log_start + 1)]
         log.error.assert_called_once_with(_(
             'IPTablesManager.apply failed to apply the '
             'following set of iptables rules:\n%s'),
@@ -1180,8 +1180,7 @@ class IptablesManagerStateFulTestCase(IptablesManagerBaseTestCase):
                          '-I run.py-test-filter 1 '
                          '-i tap-xxx -d 192.168.0.2 -j ACCEPT\n'
                          'COMMIT\n'
-                         '# Completed by iptables_manager\n'
-                         % IPTABLES_ARG)
+                         '# Completed by iptables_manager\n')
 
         expected_calls_and_values = [
             (mock.call(['iptables-save'], run_as_root=True, privsep_exec=True),
@@ -1221,7 +1220,7 @@ class IptablesManagerStateFulTestCaseCustomBinaryName(
     bn = ("xbcdef" * 5)
 
     def setUp(self):
-        super(IptablesManagerStateFulTestCaseCustomBinaryName, self).setUp()
+        super().setUp()
         self.iptables = iptables_manager.IptablesManager(
             binary_name=self.bn,
             use_ipv6=self.use_ipv6)
@@ -1287,8 +1286,7 @@ class IptablesManagerStateFulTestCaseEmptyCustomBinaryName(
     bn = ("xbcdef" * 5)[:16]
 
     def setUp(self):
-        super(IptablesManagerStateFulTestCaseEmptyCustomBinaryName,
-              self).setUp()
+        super().setUp()
         self.iptables = iptables_manager.IptablesManager(
             binary_name=self.bn,
             use_ipv6=self.use_ipv6)
@@ -1354,12 +1352,12 @@ class IptablesManagerStateFulTestCaseEmptyCustomBinaryNameIPv6(
 class IptablesManagerStateLessTestCase(base.BaseTestCase):
 
     def setUp(self):
-        super(IptablesManagerStateLessTestCase, self).setUp()
+        super().setUp()
         cfg.CONF.set_override('comment_iptables_rules', False, 'AGENT')
         self.iptables = (iptables_manager.IptablesManager(state_less=True))
 
-    def test_nat_not_found(self):
-        self.assertNotIn('nat', self.iptables.ipv4)
+    def test_nat_found(self):
+        self.assertIn('nat', self.iptables.ipv4)
 
     def test_mangle_not_found(self):
         self.assertNotIn('mangle', self.iptables.ipv4)
@@ -1368,7 +1366,7 @@ class IptablesManagerStateLessTestCase(base.BaseTestCase):
         iptables = iptables_manager.IptablesManager(state_less=True)
         iptables.initialize_mangle_table()
         self.assertIn('mangle', iptables.ipv4)
-        self.assertNotIn('nat', iptables.ipv4)
+        self.assertIn('nat', iptables.ipv4)
 
     def test_initialize_nat_table(self):
         iptables = iptables_manager.IptablesManager(state_less=True)
@@ -1380,12 +1378,12 @@ class IptablesManagerStateLessTestCase(base.BaseTestCase):
 class IptablesManagerNoNatTestCase(base.BaseTestCase):
 
     def setUp(self):
-        super(IptablesManagerNoNatTestCase, self).setUp()
+        super().setUp()
         cfg.CONF.set_override('comment_iptables_rules', False, 'AGENT')
         self.iptables = (iptables_manager.IptablesManager(nat=False))
 
-    def test_nat_not_found(self):
-        self.assertNotIn('nat', self.iptables.ipv4)
+    def test_nat_found(self):
+        self.assertIn('nat', self.iptables.ipv4)
 
     def test_mangle_found(self):
         self.assertIn('mangle', self.iptables.ipv4)
@@ -1395,3 +1393,37 @@ class IptablesManagerNoNatTestCase(base.BaseTestCase):
         iptables.initialize_nat_table()
         self.assertIn('nat', iptables.ipv4)
         self.assertIn('mangle', iptables.ipv4)
+
+
+class IptablesRandomFullyFixture(fixtures.Fixture):
+    def _setUp(self):
+        # We MUST save and restore _random_fully because it is a class
+        # attribute and could change state in some tests, which can cause
+        # the other router test cases to randomly fail due to race conditions.
+        self._random_fully = iptables_manager.IptablesManager._random_fully
+        iptables_manager.IptablesManager._random_fully = None
+        self.addCleanup(self._reset)
+
+    def _reset(self):
+        iptables_manager.IptablesManager._random_fully = self._random_fully
+
+
+class IptablesManagerDisableRandomFullyTestCase(base.BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.useFixture(IptablesRandomFullyFixture())
+        self.execute = mock.patch.object(linux_utils, "execute").start()
+        cfg.CONF.set_override('use_random_fully', False, "AGENT")
+
+    def test_verify_disable_random_fully(self):
+        expected_calls_and_values = [
+            (mock.call(['iptables', '--version'],
+                       run_as_root=True, privsep_exec=True),
+             "iptables v1.6.2")]
+        tools.setup_mock_calls(self.execute, expected_calls_and_values)
+        iptables_mgrs = [iptables_manager.IptablesManager() for _ in range(3)]
+        # The random_full properties of all
+        # IptablesManager instances must return False
+        for ipt_mgr in iptables_mgrs:
+            self.assertFalse(ipt_mgr.random_fully)

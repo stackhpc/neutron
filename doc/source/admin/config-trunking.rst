@@ -46,7 +46,7 @@ required by certain drivers like OVS. At this time the following
 The ``segmentation-type`` and ``segmentation-id`` specified by the user on the
 subports is intentionally decoupled from the ``segmentation-type`` and ID of
 the networks. For example, it is possible to configure the Networking service
-with ``tenant_network_types = vxlan`` and still create subports with
+with ``project_network_types = vxlan`` and still create subports with
 ``segmentation_type = vlan``. The Networking service performs remapping as
 necessary.
 
@@ -56,12 +56,11 @@ Example configuration
 The ML2 plug-in supports trunking with the following mechanism drivers:
 
 * Open vSwitch (OVS)
-* Linux bridge
 * Open Virtual Network (OVN)
 
-When using a ``segmentation-type`` of ``vlan``, the OVS and Linux bridge
-drivers present the network of the parent port as the untagged VLAN and all
-subports as tagged VLANs.
+When using a ``segmentation-type`` of ``vlan``, the OVS driver present the
+network of the parent port as the untagged VLAN and all subports as tagged
+VLANs.
 
 Controller node
 ---------------
@@ -72,6 +71,20 @@ Controller node
 
      [DEFAULT]
      service_plugins = trunk
+
+Compute node
+------------
+
+* If you are using the ``Open vSwitch`` mechanism driver, then you can
+  verify the value of ``trunk_enabled`` flag in
+  ``/etc/neutron/plugins/ml2/openvswitch_agent.ini`` config file.
+  Note that ``True`` is the default value, but you can overwrite this
+  option like this:
+
+  .. code-block:: ini
+
+     [OVS]
+     trunk_enabled = True
 
 Verify service operation
 ------------------------

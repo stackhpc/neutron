@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#!/usr/bin/env python3
 
 # Copyright (c) 2019 Red Hat, Inc.
 # All Rights Reserved.
@@ -32,13 +32,13 @@ READ_QUEUE = None
 
 
 def sigterm_handler(_signo, _stack_frame):
-    global EVENT_STOP
-    global IP_MONITOR
-    global READ_QUEUE
     EVENT_STOP.set()
-    IP_MONITOR.join()
-    READ_QUEUE.join()
-    exit(0)
+    # These might not be initialized if SIGTERM before assignment below
+    if IP_MONITOR:
+        IP_MONITOR.join()
+    if READ_QUEUE:
+        READ_QUEUE.join()
+    sys.exit(0)
 
 
 signal.signal(signal.SIGTERM, sigterm_handler)

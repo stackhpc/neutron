@@ -19,8 +19,10 @@ from neutron_lib import context
 from neutron_lib.plugins import utils as plugin_utils
 from oslo_config import cfg
 from oslo_db import exception as exc
+from oslo_utils import timeutils
 from sqlalchemy.orm import query
 
+from neutron.common import utils as n_utils
 from neutron.plugins.ml2.drivers import type_vlan
 from neutron.tests.unit import testlib_api
 
@@ -41,9 +43,9 @@ SERVICE_PLUGIN_KLASS = ('neutron.services.network_segment_range.plugin.'
 class HelpersTest(testlib_api.SqlTestCase):
 
     def setUp(self):
-        super(HelpersTest, self).setUp()
+        super().setUp()
         self.driver = type_vlan.VlanTypeDriver()
-        self.driver.network_vlan_ranges = NETWORK_VLAN_RANGES
+        self.driver._network_vlan_ranges = NETWORK_VLAN_RANGES
         self.driver._sync_vlan_allocations()
         self.context = context.get_admin_context()
 
@@ -52,7 +54,7 @@ class HelpersTest(testlib_api.SqlTestCase):
             self.assertEqual(value, observed[key])
 
     def test_primary_keys(self):
-        self.assertEqual(set(['physical_network', 'vlan_id']),
+        self.assertEqual({'physical_network', 'vlan_id'},
                          self.driver.primary_keys)
 
     def test_allocate_specific_unallocated_segment_in_pools(self):
@@ -143,14 +145,15 @@ class HelpersTest(testlib_api.SqlTestCase):
 class HelpersTestWithNetworkSegmentRange(HelpersTest):
 
     def setUp(self):
-        super(HelpersTestWithNetworkSegmentRange, self).setUp()
+        super().setUp()
         cfg.CONF.set_override('network_vlan_ranges',
                               NETWORK_VLAN_RANGES_CFG_ENTRIES,
                               group='ml2_type_vlan')
         cfg.CONF.set_override('service_plugins', [SERVICE_PLUGIN_KLASS])
-        self.network_vlan_ranges = plugin_utils.parse_network_vlan_ranges(
+        self._network_vlan_ranges = plugin_utils.parse_network_vlan_ranges(
             NETWORK_VLAN_RANGES_CFG_ENTRIES)
         self.context = context.get_admin_context()
         self.driver = type_vlan.VlanTypeDriver()
-        self.driver.initialize_network_segment_range_support()
+        start_time = n_utils.datetime_to_ts(timeutils.utcnow())
+        self.driver.initialize_network_segment_range_support(start_time)
         self.driver._sync_vlan_allocations()

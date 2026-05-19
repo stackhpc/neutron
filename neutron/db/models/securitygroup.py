@@ -34,25 +34,11 @@ class SecurityGroup(standard_attr.HasStandardAttributes, model_base.BASEV2,
                          nullable=False)
     rbac_entries = sa.orm.relationship(rbac_db_models.SecurityGroupRBAC,
                                        backref='security_group',
-                                       lazy='subquery',
+                                       lazy='joined',
                                        cascade='all, delete, delete-orphan')
     api_collections = [sg.SECURITYGROUPS]
     collection_resource_map = {sg.SECURITYGROUPS: 'security_group'}
     tag_support = True
-
-
-class DefaultSecurityGroup(model_base.BASEV2, model_base.HasProjectPrimaryKey):
-    __tablename__ = 'default_security_group'
-
-    security_group_id = sa.Column(sa.String(36),
-                                  sa.ForeignKey("securitygroups.id",
-                                                ondelete="CASCADE"),
-                                  nullable=False)
-    security_group = orm.relationship(
-        SecurityGroup, lazy='joined',
-        backref=orm.backref('default_security_group', cascade='all,delete'),
-        primaryjoin="SecurityGroup.id==DefaultSecurityGroup.security_group_id",
-    )
 
 
 class SecurityGroupPortBinding(model_base.BASEV2):
@@ -96,17 +82,42 @@ class SecurityGroupRule(standard_attr.HasStandardAttributes, model_base.BASEV2,
     revises_on_change = ('security_group', )
     direction = sa.Column(sa.Enum('ingress', 'egress',
                                   name='securitygrouprules_direction'))
-    ethertype = sa.Column(sa.String(40))
+    ethertype = sa.Column(sa.String(db_const.ETHERTYPE_FIELD_SIZE))
     protocol = sa.Column(sa.String(40))
     port_range_min = sa.Column(sa.Integer)
     port_range_max = sa.Column(sa.Integer)
     remote_ip_prefix = sa.Column(sa.String(255))
+    # NOTE(ralonsoh): loading method is temporarily changed to "joined" until
+    # a proper way to only load the security groups "shared" field, without
+    # loading the rest of the synthetic fields, is implemented. LP#2052419
+    # description for more information and context.
     security_group = orm.relationship(
         SecurityGroup, load_on_pending=True,
-        backref=orm.backref('rules', cascade='all,delete', lazy='dynamic'),
+        backref=orm.backref('rules', cascade='all,delete', lazy='joined'),
         primaryjoin="SecurityGroup.id==SecurityGroupRule.security_group_id")
     source_group = orm.relationship(
         SecurityGroup,
         backref=orm.backref('source_rules', cascade='all,delete'),
         primaryjoin="SecurityGroup.id==SecurityGroupRule.remote_group_id")
     api_collections = [sg.SECURITYGROUPRULES]
+
+
+class DefaultSecurityGroup(model_base.BASEV2, model_base.HasProjectPrimaryKey):
+    __tablename__ = 'default_security_group'
+
+    security_group_id = sa.Column(sa.String(36),
+                                  sa.ForeignKey("securitygroups.id",
+                                                ondelete="CASCADE"),
+                                  nullable=False)
+    security_group = orm.relationship(
+        SecurityGroup, lazy='joined',
+        backref=orm.backref('default_security_group', cascade='all,delete'),
+        primaryjoin="SecurityGroup.id==DefaultSecurityGroup.security_group_id",
+    )
+    security_group_rule = orm.relationship(
+        SecurityGroupRule, lazy='selectin',
+        backref=orm.backref('default_security_group'),
+        primaryjoin="foreign(SecurityGroupRule.security_group_id) == "
+                    "DefaultSecurityGroup.security_group_id",
+        viewonly=True,
+    )

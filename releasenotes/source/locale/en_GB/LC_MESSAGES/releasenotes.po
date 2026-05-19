@@ -1,15 +1,16 @@
 # Andi Chandler <andi@gowling.com>, 2017. #zanata
 # Andi Chandler <andi@gowling.com>, 2020. #zanata
 # Andi Chandler <andi@gowling.com>, 2022. #zanata
+# Andi Chandler <andi@gowling.com>, 2023. #zanata
 msgid ""
 msgstr ""
 "Project-Id-Version: Neutron Release Notes\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2022-09-16 13:38+0000\n"
+"POT-Creation-Date: 2025-07-11 07:50+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"PO-Revision-Date: 2022-09-15 09:01+0000\n"
+"PO-Revision-Date: 2023-06-21 09:02+0000\n"
 "Last-Translator: Andi Chandler <andi@gowling.com>\n"
 "Language-Team: English (United Kingdom)\n"
 "Language: en_GB\n"
@@ -17,11 +18,11 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1)\n"
 
 msgid ""
-"**Avoid using \"prelude\" section** for individual release notes. \"prelude"
-"\" section is for general comments about the release."
+"**Avoid using \"prelude\" section** for individual release notes. "
+"\"prelude\" section is for general comments about the release."
 msgstr ""
-"**Avoid using \"prelude\" section** for individual release notes. \"prelude"
-"\" section is for general comments about the release."
+"**Avoid using \"prelude\" section** for individual release notes. "
+"\"prelude\" section is for general comments about the release."
 
 msgid ""
 "**Use one entry per section** (like \"feature\" or \"upgrade\"). All entries "
@@ -68,6 +69,12 @@ msgstr "11.0.8-45"
 msgid "12.0.0"
 msgstr "12.0.0"
 
+msgid "12.0.0.0b1"
+msgstr "12.0.0.0b1"
+
+msgid "12.0.0.0b2"
+msgstr "12.0.0.0b2"
+
 msgid "12.0.1"
 msgstr "12.0.1"
 
@@ -89,8 +96,8 @@ msgstr "12.1.0"
 msgid "12.1.1"
 msgstr "12.1.1"
 
-msgid "12.1.1-141"
-msgstr "12.1.1-141"
+msgid "12.1.1-142"
+msgstr "12.1.1-142"
 
 msgid "13.0.0"
 msgstr "13.0.0"
@@ -113,8 +120,8 @@ msgstr "13.0.6"
 msgid "13.0.7"
 msgstr "13.0.7"
 
-msgid "13.0.7-118"
-msgstr "13.0.7-118"
+msgid "13.0.7-119"
+msgstr "13.0.7-119"
 
 msgid "14.0.0"
 msgstr "14.0.0"
@@ -149,8 +156,8 @@ msgstr "14.4.1"
 msgid "14.4.2"
 msgstr "14.4.2"
 
-msgid "14.4.2-53"
-msgstr "14.4.2-53"
+msgid "14.4.2-57"
+msgstr "14.4.2-57"
 
 msgid "15.0.0"
 msgstr "15.0.0"
@@ -176,8 +183,8 @@ msgstr "15.3.1"
 msgid "15.3.4"
 msgstr "15.3.4"
 
-msgid "15.3.4-97"
-msgstr "15.3.4-97"
+msgid "15.3.4-114"
+msgstr "15.3.4-114"
 
 msgid "16.0.0"
 msgstr "16.0.0"
@@ -203,11 +210,11 @@ msgstr "16.4.0"
 msgid "16.4.1"
 msgstr "16.4.1"
 
-msgid "16.4.2-98"
-msgstr "16.4.2-98"
-
 msgid "17.0.0"
 msgstr "17.0.0"
+
+msgid "17.0.0.0rc1"
+msgstr "17.0.0.0rc1"
 
 msgid "17.1.0"
 msgstr "17.1.0"
@@ -230,9 +237,6 @@ msgstr "17.3.0"
 msgid "17.4.0"
 msgstr "17.4.0"
 
-msgid "17.4.1-26"
-msgstr "17.4.1-26"
-
 msgid "18.0.0"
 msgstr "18.0.0"
 
@@ -248,8 +252,8 @@ msgstr "18.2.0"
 msgid "18.3.0"
 msgstr "18.3.0"
 
-msgid "18.5.0-14"
-msgstr "18.5.0-14"
+msgid "18.6.0"
+msgstr "18.6.0"
 
 msgid "19.0.0"
 msgstr "19.0.0"
@@ -263,8 +267,14 @@ msgstr "19.2.0"
 msgid "19.3.0"
 msgstr "19.3.0"
 
-msgid "19.4.0-16"
-msgstr "19.4.0-16"
+msgid "19.5.0"
+msgstr "19.5.0"
+
+msgid "19.6.0"
+msgstr "19.6.0"
+
+msgid "19.7.0"
+msgstr "19.7.0"
 
 msgid "20.0.0"
 msgstr "20.0.0"
@@ -272,8 +282,17 @@ msgstr "20.0.0"
 msgid "20.2.0"
 msgstr "20.2.0"
 
-msgid "20.2.0-20"
-msgstr "20.2.0-20"
+msgid "20.3.0"
+msgstr "20.3.0"
+
+msgid "2023.1 Series Release Notes"
+msgstr "2023.1 Series Release Notes"
+
+msgid "21.0.0"
+msgstr "21.0.0"
+
+msgid "21.1.0"
+msgstr "21.1.0"
 
 msgid "7.0.1"
 msgstr "7.0.1"
@@ -446,6 +465,13 @@ msgstr "Victoria Series Release Notes"
 msgid "Wallaby Series Release Notes"
 msgstr "Wallaby Series Release Notes"
 
+msgid ""
+"When ``uplink-status-propagation`` extension is enabled, new ports created "
+"will default the value of ``propagate_uplink_status`` to True."
+msgstr ""
+"When ``uplink-status-propagation`` extension is enabled, new ports created "
+"will default the value of ``propagate_uplink_status`` to True."
+
 msgid "Writing release notes"
 msgstr "Writing release notes"
 
@@ -454,6 +480,61 @@ msgstr "Xena Series Release Notes"
 
 msgid "Yoga Series Release Notes"
 msgstr "Yoga Series Release Notes"
+
+msgid "Zed Series Release Notes"
+msgstr "Zed Series Release Notes"
+
+msgid ""
+"`1996677 <https://bugs.launchpad.net/neutron/+bug/1996677>`_ When the "
+"fixed_ips of metadata port is modified, the ip address of tap device in "
+"metadata agent is modified."
+msgstr ""
+"`1996677 <https://bugs.launchpad.net/neutron/+bug/1996677>`_ When the "
+"fixed_ips of metadata port is modified, the ip address of tap device in "
+"metadata agent is modified."
+
+msgid "``--ipv6-ra-mode dhcpv6-stateful --ipv6-address-mode dhcpv6-stateful``"
+msgstr "``--ipv6-ra-mode dhcpv6-stateful --ipv6-address-mode dhcpv6-stateful``"
+
+msgid ""
+"``--ipv6-ra-mode dhcpv6-stateless --ipv6-address-mode dhcpv6-stateless``"
+msgstr ""
+"``--ipv6-ra-mode dhcpv6-stateless --ipv6-address-mode dhcpv6-stateless``"
+
+msgid "``--ipv6-ra-mode slaac --ipv6-address-mode slaac``"
+msgstr "``--ipv6-ra-mode slaac --ipv6-address-mode slaac``"
+
+msgid "``DVR`` routers now support ``flat`` networks."
+msgstr "``DVR`` routers now support ``flat`` networks."
+
+msgid "``admin_auth_url``"
+msgstr "``admin_auth_url``"
+
+msgid "``admin_password``"
+msgstr "``admin_password``"
+
+msgid "``admin_tenant_id``"
+msgstr "``admin_tenant_id``"
+
+msgid "``admin_tenant_name``"
+msgstr "``admin_tenant_name``"
+
+msgid "``admin_username``"
+msgstr "``admin_username``"
+
+msgid ""
+"``all_rules``: if True, the listing call will print all QoS rule types "
+"supported by the Neutron server."
+msgstr ""
+"``all_rules``: if True, the listing call will print all QoS rule types "
+"supported by the Neutron server."
+
+msgid ""
+"``all_supported``: if True, the listing call will print all QoS rule types "
+"supported by at least one loaded mechanism driver."
+msgstr ""
+"``all_supported``: if True, the listing call will print all QoS rule types "
+"supported by at least one loaded mechanism driver."
 
 msgid ""
 "``openflow_processed_per_port``: by default \"False\". If enabled, all "

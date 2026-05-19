@@ -18,20 +18,24 @@ from neutron.common import config
 
 
 class MaintenanceWorker(worker.BaseWorker):
+    desc = 'maintenance worker'
 
-    def start(self):
-        super(MaintenanceWorker, self).start()
+    def __init__(self, **kwargs):
+        super().__init__(desc=self.desc, **kwargs)
+
+    def start(self, **kwargs):
+        super().start()
         # NOTE(twilson) The super class will trigger the post_fork_initialize
         # in the driver, which starts the connection/IDL notify loop which
         # keeps the process from exiting
 
     def stop(self):
         """Stop service."""
-        super(MaintenanceWorker, self).stop()
+        pass
 
     def wait(self):
         """Wait for service to complete."""
-        super(MaintenanceWorker, self).wait()
+        pass
 
     @staticmethod
     def reset():

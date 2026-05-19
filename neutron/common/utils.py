@@ -17,22 +17,26 @@
 # when needed.
 
 """Utilities and helper functions."""
-
+from collections import abc
+from concurrent import futures
+import datetime
 import functools
+import hashlib
+import hmac
 import importlib
+import math
 import os
 import os.path
-import random
 import re
-import signal
+import secrets
 import socket
 import sys
 import threading
 import time
+import typing
 import uuid
+import weakref
 
-import eventlet
-from eventlet.green import subprocess
 import netaddr
 from neutron_lib.api.definitions import availability_zone as az_def
 from neutron_lib import constants as n_const
@@ -44,19 +48,21 @@ from neutron_lib.utils import helpers
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
+from oslo_utils import encodeutils
 from oslo_utils import excutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
+from oslo_utils import versionutils
 from osprofiler import profiler
-import pkg_resources
 from sqlalchemy.dialects.mysql import dialect as mysql_dialect
-from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.sql.expression import func as sql_func
 
 import neutron
 from neutron._i18n import _
 from neutron.api import api_common
+from neutron.conf import service as conf_service
+
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 LOG = logging.getLogger(__name__)
@@ -70,7 +76,7 @@ class WaitTimeout(Exception):
     """Default exception coming from wait_until_true() function."""
 
 
-class LockWithTimer(object):
+class LockWithTimer:
     def __init__(self, threshold):
         self._threshold = threshold
         self.timestamp = 0
@@ -105,7 +111,7 @@ def throttler(threshold=DEFAULT_THROTTLER_VALUE):
                         LOG.debug("Call of function %s scheduled, sleeping "
                                   "%.1f seconds", fname, time_to_wait)
                         # Decorated function has been called recently, wait.
-                        eventlet.sleep(time_to_wait)
+                        time.sleep(time_to_wait)
                     lock_with_timer.timestamp = time.time()
                 finally:
                     lock_with_timer.release()
@@ -113,20 +119,6 @@ def throttler(threshold=DEFAULT_THROTTLER_VALUE):
                 return f(*args, **kwargs)
         return wrapper
     return decorator
-
-
-def _subprocess_setup():
-    # Python installs a SIGPIPE handler by default. This is usually not what
-    # non-Python subprocesses expect.
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-
-
-def subprocess_popen(args, stdin=None, stdout=None, stderr=None, shell=False,
-                     env=None, preexec_fn=_subprocess_setup, close_fds=True):
-
-    return subprocess.Popen(args, shell=shell, stdin=stdin, stdout=stdout,
-                            stderr=stderr, preexec_fn=preexec_fn,
-                            close_fds=close_fds, env=env)
 
 
 def get_first_host_ip(net, ip_version):
@@ -144,8 +136,8 @@ def get_dhcp_agent_device_id(network_id, host, segmentation_id=None):
     local_hostname = host.split('.')[0]
     host_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, str(local_hostname))
     if not segmentation_id:
-        return 'dhcp%s-%s' % (host_uuid, network_id)
-    return 'dhcp%s-%s-%s' % (host_uuid, network_id, segmentation_id)
+        return f'dhcp{host_uuid}-{network_id}'
+    return f'dhcp{host_uuid}-{network_id}-{segmentation_id}'
 
 
 def is_dns_servers_any_address(dns_servers, ip_version):
@@ -155,7 +147,7 @@ def is_dns_servers_any_address(dns_servers, ip_version):
             netaddr.IPNetwork(dns_servers[0]).ip == ip_any)
 
 
-class exception_logger(object):
+class exception_logger:
     """Wrap a function and log raised exception
 
     :param logger: the logger to log the exception default is LOG.exception
@@ -164,6 +156,7 @@ class exception_logger(object):
               any occurred
 
     """
+
     def __init__(self, logger=None):
         self.logger = logger
 
@@ -188,9 +181,7 @@ def get_other_dvr_serviced_device_owners(host_dvr_for_dhcp=True):
     prefix, not a complete device_owner name, so should be handled
     separately (see is_dvr_serviced() below)
     """
-    device_owners = [n_const.DEVICE_OWNER_LOADBALANCER,
-                     n_const.DEVICE_OWNER_LOADBALANCERV2,
-                     trunk_constants.TRUNK_SUBPORT_OWNER]
+    device_owners = [trunk_constants.TRUNK_SUBPORT_OWNER]
     if host_dvr_for_dhcp:
         device_owners.append(n_const.DEVICE_OWNER_DHCP)
     return device_owners
@@ -205,10 +196,7 @@ def get_dvr_allowed_address_pair_device_owners():
     Later if other device owners are used for allowed_address_pairs those
     device_owners should be added to the list below.
     """
-    # TODO(Swami): Convert these methods to constants.
-    # Add the constants variable to the neutron-lib
-    return [n_const.DEVICE_OWNER_LOADBALANCER,
-            n_const.DEVICE_OWNER_LOADBALANCERV2]
+    return []
 
 
 def is_dvr_serviced(device_owner):
@@ -311,14 +299,33 @@ def cidr_broadcast_address(cidr):
         return str(broadcast)
 
 
+def cidr_broadcast_address_alternative(cidr):
+    """Wraps cidr_broadcast address and handles last cidr differently in
+    respect to netaddr
+
+    :param cidr: (string, netaddr.IPNetwork, netaddr.IPAddress) either an ipv4
+                 or ipv6 cidr.
+    :returns: (string) broadcast address of the cidr,
+              IP of the cidr if IPv4 /32 CIDR, otherwise None
+    """
+    broadcast = cidr_broadcast_address(cidr)
+    if broadcast:
+        return str(broadcast)
+    net = netaddr.IPNetwork(cidr)
+    if net.prefixlen == 32 and net.version == n_const.IP_VERSION_4:
+        return str(net.ip)
+    # NOTE(mtomaska): netaddr ver >= 0.9.0 will start returning None
+    # for IPv6 cidr /127 /128
+
+
 def get_ip_version(ip_or_cidr):
     return netaddr.IPNetwork(ip_or_cidr).version
 
 
 def ip_version_from_int(ip_version_int):
-    if ip_version_int == 4:
+    if ip_version_int == n_const.IP_VERSION_4:
         return n_const.IPv4
-    if ip_version_int == 6:
+    if ip_version_int == n_const.IP_VERSION_6:
         return n_const.IPv6
     raise ValueError(_('Illegal IP version number'))
 
@@ -337,11 +344,11 @@ def get_socket_address_family(ip_version):
 
 def is_version_greater_equal(version1, version2):
     """Returns True if version1 is greater or equal than version2 else False"""
-    return (pkg_resources.parse_version(version1) >=
-            pkg_resources.parse_version(version2))
+    return (versionutils.convert_version_to_tuple(version1) >=
+            versionutils.convert_version_to_tuple(version2))
 
 
-class DelayedStringRenderer(object):
+class DelayedStringRenderer:
     """Takes a callable and its args and calls when __str__ is called
 
     Useful for when an argument to a logging statement is expensive to
@@ -363,7 +370,7 @@ def _hex_format(port, mask=0):
     def hex_str(num):
         return format(num, '#06x')
     if mask > 0:
-        return "%s/%s" % (hex_str(port), hex_str(0xffff & ~mask))
+        return f"{hex_str(port)}/{hex_str(0xffff & ~mask)}"
     return hex_str(port)
 
 
@@ -645,7 +652,7 @@ def create_object_with_dependency(creator, dep_getter, dep_creator,
                     # sleep for a random time between 0 and 1 second to
                     # make sure a concurrent worker doesn't retry again
                     # at exactly the same time
-                    time.sleep(random.uniform(0, 1))
+                    time.sleep(secrets.SystemRandom().uniform(0, 1))
                     ctx.reraise = False
                     continue
         try:
@@ -715,18 +722,18 @@ def wait_until_true(predicate, timeout=60, sleep=1, exception=None):
     :param exception: Exception instance to raise on timeout. If None is passed
                       (default) then WaitTimeout exception is raised.
     """
-    try:
-        with eventlet.Timeout(timeout):
-            while not predicate():
-                eventlet.sleep(sleep)
-    except eventlet.Timeout:
-        if exception is not None:
-            # pylint: disable=raising-bad-type
-            raise exception
-        raise WaitTimeout(_("Timed out after %d seconds") % timeout)
+    start_time = time.time()
+
+    while not predicate():
+        elapsed_time = time.time() - start_time
+        if elapsed_time > timeout:
+            raise exception if exception else WaitTimeout(
+                _("Timed out after %d seconds") % timeout
+            )
+        time.sleep(sleep)
 
 
-class classproperty(object):
+class classproperty:
     def __init__(self, f):
         self.func = f
 
@@ -745,7 +752,7 @@ def attach_exc_details(e, msg, args=_NO_ARGS_MARKER):
 def extract_exc_details(e):
     for attr in ('_error_context_msg', '_error_context_args'):
         if not hasattr(e, attr):
-            return u'No details.'
+            return 'No details.'
     details = e._error_context_msg
     args = e._error_context_args
     if args is _NO_ARGS_MARKER:
@@ -826,21 +833,28 @@ def bytes_to_bits(value):
     return value * 8
 
 
-def bits_to_kilobits(value, base):
-    # NOTE(slaweq): round up that even 1 bit will give 1 kbit as a result
-    return int((value + (base - 1)) / base)
+def bits_to_kilobits(
+        value: int | float,
+        base: int
+) -> int:
+    # NOTE(slaweq): round up that even 1 bit will give 1 kbit as a result, but
+    # zero will return zero too.
+    return math.ceil(value / base)
 
 
 def disable_extension_by_service_plugin(core_plugin, service_plugin):
-    if ('filter-validation' in core_plugin.supported_extension_aliases and
-            not api_common.is_filter_validation_supported(service_plugin)):
+    if (service_plugin is None or
+            'filter-validation' not in
+            core_plugin.supported_extension_aliases):
+        return
+    if not api_common.is_filter_validation_supported(service_plugin):
         core_plugin.supported_extension_aliases.remove('filter-validation')
         LOG.info('Disable filter validation extension by service plugin '
                  '%s.', service_plugin.__class__.__name__)
 
 
 def get_port_fixed_ips_set(port):
-    return set([ip["ip_address"] for ip in port.get("fixed_ips", [])])
+    return {ip["ip_address"] for ip in port.get("fixed_ips", [])}
 
 
 def port_ip_changed(new_port, original_port):
@@ -861,7 +875,8 @@ def port_ip_changed(new_port, original_port):
     return False
 
 
-def validate_rp_bandwidth(rp_bandwidths, device_names):
+def validate_rp_bandwidth(rp_bandwidths, device_names,
+                          tunnelled_network_rp_name=None):
     """Validate resource provider bandwidths against device names.
 
     :param rp_bandwidths: Dict containing resource provider bandwidths,
@@ -870,10 +885,14 @@ def validate_rp_bandwidth(rp_bandwidths, device_names):
     :param device_names: A set of the device names given in bridge_mappings
                          in case of ovs-agent or in physical_device_mappings
                          in case of sriov-agent
+    :param tunnelled_network_rp_name: the resource provider name for tunnelled
+                                      networks; if present, it will be added
+                                      to the devices list.
     :raises ValueError: In case of the devices (keys) in the rp_bandwidths dict
                         are not in the device_names set.
     """
-
+    if tunnelled_network_rp_name:
+        device_names.add(tunnelled_network_rp_name)
     for dev_name in rp_bandwidths:
         if dev_name not in device_names:
             raise ValueError(_(
@@ -892,26 +911,6 @@ def collect_profiler_info():
         }
 
 
-def spawn(func, *args, **kwargs):
-    """As eventlet.spawn() but with osprofiler initialized in the new threads
-
-    osprofiler stores the profiler instance in thread local storage, therefore
-    in new threads (including eventlet threads) osprofiler comes uninitialized
-    by default. This spawn() is a stand-in replacement for eventlet.spawn()
-    but we re-initialize osprofiler in threads spawn()-ed.
-    """
-
-    profiler_info = collect_profiler_info()
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if profiler_info:
-            profiler.init(**profiler_info)
-        return func(*args, **kwargs)
-
-    return eventlet.spawn(wrapper, *args, **kwargs)
-
-
 def spawn_n(func, *args, **kwargs):
     """See spawn() above"""
 
@@ -923,33 +922,38 @@ def spawn_n(func, *args, **kwargs):
             profiler.init(**profiler_info)
         return func(*args, **kwargs)
 
-    return eventlet.spawn_n(wrapper, *args, **kwargs)
+    # NOTE(ralonsoh): the thread started and returned here is not tracked;
+    # the consumer should join() the thread in order to check that it finishes.
+    _thread = threading.Thread(target=wrapper, args=args, kwargs=kwargs)
+    _thread.start()
+    return _thread
 
 
 def timecost(f):
     call_id = uuidutils.generate_uuid()
     message_base = ("Time-cost: call %(call_id)s function %(fname)s ") % {
-                    "call_id": call_id, "fname": f.__name__}
+        "call_id": call_id, "fname": f.__name__}
     end_message = (message_base + "took %(seconds).3fs seconds to run")
 
     @timeutils.time_it(LOG, message=end_message, min_duration=None)
     def wrapper(*args, **kwargs):
-        LOG.debug(message_base + "start")
+        LOG.debug('%s start', message_base)
         ret = f(*args, **kwargs)
         return ret
     return wrapper
 
 
 class SingletonDecorator:
+    _singleton_instances = weakref.WeakValueDictionary()
 
     def __init__(self, klass):
         self._klass = klass
-        self._instance = None
 
     def __call__(self, *args, **kwargs):
-        if self._instance is None:
-            self._instance = self._klass(*args, **kwargs)
-        return self._instance
+        if self._klass not in self._singleton_instances:
+            _inst = self._klass(*args, **kwargs)
+            self._singleton_instances[self._klass] = _inst
+        return self._singleton_instances[self._klass]
 
 
 def with_metaclass(meta, *bases):
@@ -994,12 +998,11 @@ def get_sql_random_method(sql_dialect_name):
     """Return the SQL random method supported depending on the dialect."""
     # NOTE(ralonsoh): this method is a good candidate to be implemented in
     # oslo.db.
-    # https://www.postgresql.org/docs/8.2/functions-math.html
     # https://www.sqlite.org/c3ref/randomness.html
-    if sql_dialect_name in (postgresql_dialect.name, sqlite_dialect.name):
+    if sql_dialect_name == sqlite_dialect.name:
         return sql_func.random
     # https://dev.mysql.com/doc/refman/8.0/en/mathematical-functions.html
-    elif sql_dialect_name == mysql_dialect.name:
+    if sql_dialect_name == mysql_dialect.name:
         return sql_func.rand
 
 
@@ -1007,6 +1010,17 @@ def get_az_hints(resource):
     """Return the availability zone hints from a given resource."""
     return (sorted(resource.get(az_def.AZ_HINTS, [])) or
             cfg.CONF.default_availability_zones)
+
+
+def disable_notifications(function):
+    """Decorator to disable notifications"""
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        rpc_workers = conf_service.get_rpc_workers()
+        if rpc_workers is None or rpc_workers >= 1:
+            return function(*args, **kwargs)
+    return wrapper
 
 
 def skip_exceptions(exceptions):
@@ -1025,7 +1039,7 @@ def skip_exceptions(exceptions):
                 with excutils.save_and_reraise_exception() as ctx:
                     if issubclass(type(exc), tuple(exceptions)):
                         LOG.info('Skipped exception %s when calling method %s',
-                                 ctx.value.__repr__(), function.__repr__())
+                                 repr(ctx.value), repr(function))
                         ctx.reraise = False
         return wrapper
     return decorator
@@ -1041,3 +1055,136 @@ def effective_qos_policy_id(resource):
     """
     return (resource.get(qos_consts.QOS_POLICY_ID) or
             resource.get(qos_consts.QOS_NETWORK_POLICY_ID))
+
+
+def sign_instance_id(conf, instance_id):
+    secret = conf.metadata_proxy_shared_secret
+    secret = encodeutils.to_utf8(secret)
+    instance_id = encodeutils.to_utf8(instance_id)
+    return hmac.new(secret, instance_id, hashlib.sha256).hexdigest()
+
+
+def parse_permitted_ethertypes(permitted_ethertypes):
+    ret = set()
+    for pe in permitted_ethertypes:
+        if pe[:2].lower() != '0x':
+            LOG.warning('Custom ethertype %s is not a hexadecimal number.', pe)
+            continue
+
+        try:
+            value = hex(int(pe, 16))
+            if value in ret:
+                LOG.warning('Custom ethertype %s is repeated', pe)
+            else:
+                ret.add(value)
+        except ValueError:
+            LOG.warning('Custom ethertype %s is not a hexadecimal number.', pe)
+            continue
+
+    return ret
+
+
+def read_file(path: str) -> str:
+    """Return the content of a text file as a string
+
+    The output includes the empty lines too. If the file does not exist,
+    returns an empty string.
+    """
+    try:
+        with open(path) as file:
+            return file.read()
+    except FileNotFoundError:
+        return ''
+
+
+def ts_to_datetime(timestamp):
+    """Converts timestamp (in seconds) to datetime"""
+    return datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
+
+
+def datetime_to_ts(_datetime):
+    """Converts datetime to timestamp in seconds"""
+    return int(datetime.datetime.timestamp(_datetime))
+
+
+def stringmap(data: abc.Mapping[str, typing.Any],
+              default: str = '') -> dict[str, str]:
+    result = {}
+    for key, value in data.items():
+        result[key] = default if value is None else str(value)
+    return result
+
+
+class ThreadPoolExecutorWithBlock(futures.ThreadPoolExecutor):
+    """A thread pool executor with a submit blocking method
+
+    This class implements a method that allow to submit new workers but only if
+    there are available workers. If not, the method blocks indefinitely.
+    """
+
+    def __init__(self, max_workers=None, stopping_event=None, **kwargs):
+        super().__init__(max_workers=max_workers, **kwargs)
+        self._stopping_event = stopping_event or threading.Event()
+
+    def submit(self, fn, *args, **kwargs):
+        if self._stopping_event.is_set():
+            LOG.debug("ThreadPoolExecutor submit rejected due to stopping")
+            return None
+
+        while self._work_queue.qsize() > 0 and not self._shutdown:
+            if self._stopping_event.wait(timeout=0.1):
+                return None
+
+        if self._shutdown:
+            return
+
+        return super().submit(fn, *args, **kwargs)
+
+
+def is_iterable_not_string(value):
+    """Return if a value is iterable but not a string type"""
+    return (isinstance(value, abc.Iterable) and
+            not isinstance(value, bytes) and
+            not isinstance(value, bytearray) and
+            not isinstance(value, str))
+
+
+def find_unique_sequence(groups):
+    """Finds a unique sequence of choices from groups
+
+    Finds a sequence of choices from groups such that no value is
+    repeated in the selection.
+    """
+
+    def backtrack(group_index, current_path):
+        # Base Case: If we have made a choice for every group, we are done!
+        if group_index == len(groups):
+            return current_path
+
+        # Get the options for the current group
+        options = groups[group_index]
+
+        # Try every value in the current group
+        for value in options:
+
+            # --- CONSTRAINT CHECK ---
+            # "Never repeated": Check if value is already in our path.
+            # If you only wanted to check the IMMEDIATE neighbor,
+            # you would change this to: if not current_path or
+            # value != current_path[-1]
+            if value not in current_path:
+
+                # If valid, choose it and move to the next group (recurse)
+                result = backtrack(group_index + 1, current_path + [value])
+
+                # If the recursive call returned a valid result, propagate it
+                # up.
+                if result is not None:
+                    return result
+
+        # If we try all options and none work, return None (trigger
+        # backtracking).
+        return None
+
+    # Start the recursion at group index 0 with an empty path
+    return backtrack(0, [])

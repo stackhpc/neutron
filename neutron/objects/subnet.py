@@ -16,10 +16,12 @@ from neutron_lib import constants as const
 from neutron_lib.db import model_query
 from neutron_lib.objects import common_types
 from neutron_lib.utils import net as net_utils
+from oslo_log import log as logging
 
 from oslo_utils import versionutils
 from oslo_versionedobjects import fields as obj_fields
 from sqlalchemy import and_, or_
+from sqlalchemy import orm
 from sqlalchemy.sql import exists
 
 from neutron.db.models import dns as dns_models
@@ -31,6 +33,8 @@ from neutron.objects import base
 from neutron.objects import network
 from neutron.objects import rbac_db
 from neutron.services.segments import exceptions as segment_exc
+
+LOG = logging.getLogger(__name__)
 
 
 @base.NeutronObjectRegistry.register
@@ -60,9 +64,9 @@ class DNSNameServer(base.NeutronDbObject):
         if not _pager.sorts:
             # (NOTE) True means ASC, False is DESC
             _pager.sorts = [('order', True)]
-        return super(DNSNameServer, cls).get_objects(context, _pager,
-                                                     validate_filters,
-                                                     **kwargs)
+        return super().get_objects(context, _pager,
+                                   validate_filters,
+                                   **kwargs)
 
 
 @base.NeutronObjectRegistry.register
@@ -85,7 +89,7 @@ class Route(base.NeutronDbObject):
     @classmethod
     def modify_fields_from_db(cls, db_obj):
         # TODO(korzen) remove this method when IP and CIDR decorator ready
-        result = super(Route, cls).modify_fields_from_db(db_obj)
+        result = super().modify_fields_from_db(db_obj)
         if 'destination' in result:
             result['destination'] = net_utils.AuthenticIPNetwork(
                 result['destination'])
@@ -96,7 +100,7 @@ class Route(base.NeutronDbObject):
     @classmethod
     def modify_fields_to_db(cls, fields):
         # TODO(korzen) remove this method when IP and CIDR decorator ready
-        result = super(Route, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'destination' in result:
             result['destination'] = cls.filter_to_str(result['destination'])
         if 'nexthop' in fields:
@@ -130,7 +134,7 @@ class IPAllocationPool(base.NeutronDbObject):
     @classmethod
     def modify_fields_from_db(cls, db_obj):
         # TODO(korzen) remove this method when IP and CIDR decorator ready
-        result = super(IPAllocationPool, cls).modify_fields_from_db(db_obj)
+        result = super().modify_fields_from_db(db_obj)
         if 'start' in result:
             result['start'] = netaddr.IPAddress(result['start'])
         if 'end' in result:
@@ -140,7 +144,7 @@ class IPAllocationPool(base.NeutronDbObject):
     @classmethod
     def modify_fields_to_db(cls, fields):
         # TODO(korzen) remove this method when IP and CIDR decorator ready
-        result = super(IPAllocationPool, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'first_ip' in result:
             result['first_ip'] = cls.filter_to_str(result['first_ip'])
         if 'last_ip' in result:
@@ -165,7 +169,7 @@ class SubnetServiceType(base.NeutronDbObject):
     }
 
     @classmethod
-    def query_filter_service_subnets(cls, query, service_type):
+    def _query_entity_service_subnets(cls, query, service_type):
         # TODO(tuanvu): find OVO-like solution for handling "join queries"
         Subnet = models_v2.Subnet
         ServiceType = subnet_service_type.SubnetServiceType
@@ -178,7 +182,17 @@ class SubnetServiceType(base.NeutronDbObject):
             # service type when DHCP is enabled on the subnet.
             and_(Subnet.enable_dhcp.is_(True),
                  service_type == const.DEVICE_OWNER_DHCP)))
-        return query.from_self(Subnet)
+
+        if query._group_by_clauses:
+            # If the "Subnet" query has a "GROUP BY" clause (that happens when
+            # a non-admin user has executed the query, that requires the join
+            # of the RBAC registers), it is needed to add the
+            # "SubnetServiceType" fields to this clause too.
+            query = query.group_by(ServiceType.subnet_id,
+                                   ServiceType.service_type)
+
+        entity = orm.aliased(Subnet, query.subquery())
+        return entity
 
 
 # RBAC metaclass is not applied here because 'shared' attribute of Subnet
@@ -192,7 +206,8 @@ class SubnetServiceType(base.NeutronDbObject):
 class Subnet(base.NeutronDbObject):
     # Version 1.0: Initial version
     # Version 1.1: Add dns_publish_fixed_ip field
-    VERSION = '1.1'
+    # Version 1.2: Add external field
+    VERSION = '1.2'
 
     db_model = models_v2.Subnet
 
@@ -218,12 +233,13 @@ class Subnet(base.NeutronDbObject):
         'host_routes': obj_fields.ListOfObjectsField('Route', nullable=True),
         'ipv6_ra_mode': common_types.IPV6ModeEnumField(nullable=True),
         'ipv6_address_mode': common_types.IPV6ModeEnumField(nullable=True),
-        'service_types': obj_fields.ListOfStringsField(nullable=True)
+        'service_types': obj_fields.ListOfStringsField(nullable=True),
+        'external': obj_fields.BooleanField(nullable=True),
     }
 
     synthetic_fields = ['allocation_pools', 'dns_nameservers',
                         'dns_publish_fixed_ip', 'host_routes',
-                        'service_types', 'shared']
+                        'service_types', 'shared', 'external']
 
     foreign_keys = {'Network': {'network_id': 'id'}}
 
@@ -234,7 +250,7 @@ class Subnet(base.NeutronDbObject):
     }
 
     def __init__(self, context=None, **kwargs):
-        super(Subnet, self).__init__(context, **kwargs)
+        super().__init__(context, **kwargs)
         self.add_extra_filter_name('shared')
 
     def obj_load_attr(self, attrname):
@@ -244,7 +260,9 @@ class Subnet(base.NeutronDbObject):
             return self._load_shared()
         if attrname == 'service_types':
             return self._load_service_types()
-        super(Subnet, self).obj_load_attr(attrname)
+        if attrname == 'external':
+            return self._load_external()
+        super().obj_load_attr(attrname)
 
     def _load_dns_publish_fixed_ip(self, db_obj=None):
         if db_obj:
@@ -290,16 +308,27 @@ class Subnet(base.NeutronDbObject):
                               service_type in service_types]
         self.obj_reset_changes(['service_types'])
 
+    def _load_external(self, db_obj=None):
+        if db_obj:
+            external_network = bool(db_obj.get('external'))
+        else:
+            external_network = network.ExternalNetwork.get_objects(
+                self.obj_context, network_id=self.network_id)
+
+        setattr(self, 'external', external_network)
+        self.obj_reset_changes(['external'])
+
     def from_db_object(self, db_obj):
-        super(Subnet, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
         self._load_dns_publish_fixed_ip(db_obj)
         self._load_shared(db_obj)
         self._load_service_types(db_obj)
+        self._load_external(db_obj)
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
         # TODO(korzen) remove this method when IP and CIDR decorator ready
-        result = super(Subnet, cls).modify_fields_from_db(db_obj)
+        result = super().modify_fields_from_db(db_obj)
         if 'cidr' in result:
             result['cidr'] = net_utils.AuthenticIPNetwork(result['cidr'])
         if 'gateway_ip' in result and result['gateway_ip'] is not None:
@@ -309,7 +338,7 @@ class Subnet(base.NeutronDbObject):
     @classmethod
     def modify_fields_to_db(cls, fields):
         # TODO(korzen) remove this method when IP and CIDR decorator ready
-        result = super(Subnet, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'cidr' in result:
             result['cidr'] = cls.filter_to_str(result['cidr'])
         if 'gateway_ip' in result and result['gateway_ip'] is not None:
@@ -322,8 +351,11 @@ class Subnet(base.NeutronDbObject):
                                distributed_service=False):
         """Find canditate subnets for the network, host, and service_type"""
         query = cls.query_subnets_on_network(context, network_id)
-        query = SubnetServiceType.query_filter_service_subnets(
+
+        subnet_entity = SubnetServiceType._query_entity_service_subnets(
             query, service_type)
+
+        query = context.session.query(subnet_entity)
 
         # Select candidate subnets and return them
         if not cls.is_host_set(host):
@@ -333,30 +365,34 @@ class Subnet(base.NeutronDbObject):
                 # on port update with binding:host_id set. Allocation _cannot_
                 # be deferred as requested fixed_ips would then be lost.
                 return cls._query_filter_by_fixed_ips_segment(
-                    query, fixed_ips,
+                    query, fixed_ips, subnet_entity,
                     allow_multiple_segments=distributed_service).all()
             # If the host isn't known, we can't allocate on a routed network.
             # So, exclude any subnets attached to segments.
-            return cls._query_exclude_subnets_on_segments(query).all()
+            return cls._query_exclude_subnets_on_segments(
+                query, subnet_entity
+            ).all()
 
         # The host is known. Consider both routed and non-routed networks
-        results = cls._query_filter_by_segment_host_mapping(query, host).all()
+        results = cls._query_filter_by_segment_host_mapping(
+            query, subnet_entity, host
+        ).all()
 
-        # For now, we're using a simplifying assumption that a host will only
-        # touch one segment in a given routed network.  Raise exception
-        # otherwise.  This restriction may be relaxed as use cases for multiple
-        # mappings are understood.
+        # For now, we know that OVS agent is supporting multi-segments.
         segment_ids = {subnet.segment_id
                        for subnet, mapping in results
                        if mapping}
+
         if len(segment_ids) > 1:
-            raise segment_exc.HostConnectedToMultipleSegments(
-                host=host, network_id=network_id)
+            LOG.info("The network '%s' has multiple segments, "
+                     "this is currently supported by OVS agent only.",
+                     network_id)
 
         return [subnet for subnet, _mapping in results]
 
     @classmethod
     def _query_filter_by_fixed_ips_segment(cls, query, fixed_ips,
+                                           subnet_entity,
                                            allow_multiple_segments=False):
         """Excludes subnets not on the same segment as fixed_ips
 
@@ -364,7 +400,6 @@ class Subnet(base.NeutronDbObject):
         """
         segment_ids = []
         subnets = query.all()
-
         for fixed_ip in fixed_ips:
             subnet = None
             if 'subnet_id' in fixed_ip:
@@ -402,10 +437,10 @@ class Subnet(base.NeutronDbObject):
             return query
 
         segment_id = None if not segment_ids else segment_ids[0]
-        return query.filter(cls.db_model.segment_id == segment_id)
+        return query.filter(subnet_entity.segment_id == segment_id)
 
     @classmethod
-    def _query_filter_by_segment_host_mapping(cls, query, host):
+    def _query_filter_by_segment_host_mapping(cls, query, subnet_entity, host):
         # TODO(tuanvu): find OVO-like solution for handling "join queries" and
         #               write unit test for this function
         """Excludes subnets on segments not reachable by the host
@@ -425,13 +460,13 @@ class Subnet(base.NeutronDbObject):
         query = query.add_entity(SegmentHostMapping)
         query = query.outerjoin(
             SegmentHostMapping,
-            and_(cls.db_model.segment_id == SegmentHostMapping.segment_id,
+            and_(subnet_entity.segment_id == SegmentHostMapping.segment_id,
                  SegmentHostMapping.host == host))
 
         # Essentially "segment_id IS NULL XNOR host IS NULL"
-        query = query.filter(or_(and_(cls.db_model.segment_id.isnot(None),
+        query = query.filter(or_(and_(subnet_entity.segment_id.isnot(None),
                                       SegmentHostMapping.host.isnot(None)),
-                                 and_(cls.db_model.segment_id.is_(None),
+                                 and_(subnet_entity.segment_id.is_(None),
                                       SegmentHostMapping.host.is_(None))))
         return query
 
@@ -441,14 +476,16 @@ class Subnet(base.NeutronDbObject):
         return query.filter(cls.db_model.network_id == network_id)
 
     @classmethod
-    def _query_exclude_subnets_on_segments(cls, query):
+    def _query_exclude_subnets_on_segments(cls, query, subnet_entity):
         """Excludes all subnets associated with segments
 
         For the case where the host is not known, we don't consider any subnets
         that are on segments. But, we still consider subnets that are not
         associated with any segment (i.e. for non-routed networks).
         """
-        return query.filter(cls.db_model.segment_id.is_(None))
+        # here, we assume this assertion is true
+        # assert cls.db_model is models_v2.Subnet
+        return query.filter(subnet_entity.segment_id.is_(None))
 
     @classmethod
     def is_host_set(cls, host):
@@ -466,19 +503,21 @@ class Subnet(base.NeutronDbObject):
         if cls.is_host_set(host):
             # Empty because host isn't mapped to a segment with a subnet?
             s_query = query.filter(cls.db_model.segment_id.isnot(None))
-            if s_query.limit(1).count() != 0:
+            if s_query.first() is not None:
                 # It is a routed network but no subnets found for host
                 raise segment_exc.HostNotConnectedToAnySegment(
                     host=host, network_id=network_id)
 
-        if not query.limit(1).count():
+        if query.first() is None:
             # Network has *no* subnets of any kind. This isn't an error.
             return True
 
         # Does filtering ineligible service subnets makes the list empty?
-        query = SubnetServiceType.query_filter_service_subnets(
+        subnet_entity = SubnetServiceType._query_entity_service_subnets(
             query, service_type)
-        if query.limit(1).count():
+
+        query = context.session.query(subnet_entity)
+        if query.first() is not None:
             # No, must be a deferred IP port because there are matching
             # subnets. Happens on routed networks when host isn't known.
             raise ipam_exceptions.DeferIpam()
@@ -492,8 +531,8 @@ class Subnet(base.NeutronDbObject):
 
     def obj_make_compatible(self, primitive, target_version):
         _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 1):  # version 1.1 adds "dns_publish_fixed_ip"
-            primitive.pop('dns_publish_fixed_ip', None)
+        if _target_version < (1, 2):  # version 1.2 adds "external"
+            primitive.pop('external', None)
 
     @classmethod
     def get_subnet_segment_ids(cls, context, network_id,
@@ -537,7 +576,7 @@ class NetworkSubnetLock(base.NeutronDbObject):
 
     @classmethod
     def lock_subnet(cls, context, network_id, subnet_id):
-        subnet_lock = super(NetworkSubnetLock, cls).get_object(
+        subnet_lock = super().get_object(
             context, network_id=network_id)
         if subnet_lock:
             subnet_lock.subnet_id = subnet_id

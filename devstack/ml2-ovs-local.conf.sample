@@ -38,7 +38,7 @@ disable_service swift
 disable_service ovn
 disable_service ovn-controller
 disable_service ovn-northd
-disable_service q-ovn-metadata-agent
+disable_service q-ovn-agent
 
 # Use openvswitch as the ml2 plugin driver
 Q_AGENT=openvswitch
@@ -66,7 +66,7 @@ verbose = True
 [[post-config|/$Q_PLUGIN_CONF_FILE]]
 [ml2]
 type_drivers=flat,gre,vlan,vxlan
-tenant_network_types=vxlan
+project_network_types=vxlan
 mechanism_drivers=openvswitch,l2population
 
 [agent]
@@ -74,7 +74,7 @@ tunnel_types=vxlan,gre
 
 # You can add more config options here for ml2_conf.ini, for instance
 # you can uncomment the followings to set the segment ID ranges for
-# various tenant network types.
+# various project network types.
 
 #[ml2_type_vxlan]
 #vni_ranges=1:10000
@@ -86,4 +86,4 @@ tunnel_types=vxlan,gre
 #tunnel_id_ranges = 1:10000
 
 #[ml2_type_vlan]
-#network_vlan_ranges = tenant:1:1000
+#network_vlan_ranges = project:1:1000

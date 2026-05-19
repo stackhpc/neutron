@@ -22,7 +22,6 @@ from oslo_config import cfg
 from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron.agent.common import ovs_lib
-from neutron.agent.linux import ip_lib
 from neutron.common import utils
 from neutron.tests.common import net_helpers
 from neutron.tests.functional.agent.linux import base
@@ -32,7 +31,7 @@ class OVSBridgeTestBase(base.BaseOVSLinuxTestCase):
     # TODO(twilson) So far, only ovsdb-related tests are written. It would be
     # good to also add the openflow-related functions
     def setUp(self):
-        super(OVSBridgeTestBase, self).setUp()
+        super().setUp()
         self.ovs = ovs_lib.BaseOVS()
         self.br = self.useFixture(net_helpers.OVSBridgeFixture()).bridge
 
@@ -205,8 +204,10 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
         br_other_config = self.ovs.ovsdb.db_find(
             'Bridge', ('name', '=', self.br.br_name), columns=['other_config']
         ).execute()[0]['other_config']
+        expected_flood_value = (
+            'false' if cfg.CONF.OVS.igmp_flood_unregistered else 'true')
         self.assertEqual(
-            'false',
+            expected_flood_value,
             br_other_config.get(
                 'mcast-snooping-disable-flood-unregistered', '').lower())
 
@@ -215,13 +216,6 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
 
     def test_set_igmp_snooping_disabled(self):
         self._test_set_igmp_snooping_state(False)
-
-    def test_get_datapath_id(self):
-        brdev = ip_lib.IPDevice(self.br.br_name)
-        dpid = brdev.link.attributes['link/ether'].replace(':', '')
-        self.br.set_db_attribute('Bridge',
-                                 self.br.br_name, 'datapath_id', dpid)
-        self.assertIn(dpid, self.br.get_datapath_id())
 
     def _test_add_tunnel_port(self, attrs,
                               expected_tunnel_type=const.TYPE_GRE):
@@ -248,7 +242,7 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
             'packet_type': 'legacy_l2',
         }
         self._test_add_tunnel_port(
-            attrs, expected_tunnel_type=ovs_lib.TYPE_GRE_IP6)
+            attrs, expected_tunnel_type=const.TYPE_GRE_IP6)
 
     def test_add_tunnel_port_custom_port(self):
         port_name = utils.get_rand_device_name(net_helpers.PORT_PREFIX)
@@ -295,11 +289,22 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
         ifaces = {self.create_ovs_port()[0] for i in range(5)}
         self.assertSetEqual(ifaces, set(self.br.get_iface_name_list()))
 
+    def test_get_iface_ofports_by_types(self):
+        internal_port_ofport = self.create_ovs_port()[1]
+        patch_port_ofport = self.create_ovs_port(('type', 'patch'))[1]
+        observed_internal_ofports = self.br.get_iface_ofports_by_types(
+            'internal')
+        observed_patch_ofports = self.br.get_iface_ofports_by_types(
+            'patch')
+        self.assertCountEqual(
+            observed_internal_ofports, [internal_port_ofport])
+        self.assertCountEqual(observed_patch_ofports, [patch_port_ofport])
+
     def test_get_port_stats(self):
         # Nothing seems to use this function?
         (port_name, ofport) = self.create_ovs_port()
         stats = set(self.br.get_port_stats(port_name).keys())
-        self.assertTrue(set(['rx_packets', 'tx_packets']).issubset(stats))
+        self.assertTrue({'rx_packets', 'tx_packets'}.issubset(stats))
 
     def test_get_vif_ports(self):
         for i in range(2):
@@ -307,7 +312,7 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
         vif_ports = [self.create_ovs_vif_port() for i in range(3)]
         ports = self.br.get_vif_ports()
         self.assertEqual(3, len(ports))
-        self.assertTrue(all([isinstance(x, ovs_lib.VifPort) for x in ports]))
+        self.assertTrue(all(isinstance(x, ovs_lib.VifPort) for x in ports))
         self.assertEqual(sorted([x.port_name for x in vif_ports]),
                          sorted([x.port_name for x in ports]))
 
@@ -318,12 +323,14 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
         # bond ports don't have records in the Interface table but they do in
         # the Port table
         orig = self.br.get_port_name_list
-        new_port_name_list = lambda: orig() + ['bondport']
+
+        def new_port_name_list():
+            return orig() + ['bondport']
         mock.patch.object(self.br, 'get_port_name_list',
                           new=new_port_name_list).start()
         ports = self.br.get_vif_ports()
         self.assertEqual(3, len(ports))
-        self.assertTrue(all([isinstance(x, ovs_lib.VifPort) for x in ports]))
+        self.assertTrue(all(isinstance(x, ovs_lib.VifPort) for x in ports))
         self.assertEqual(sorted([x.port_name for x in vif_ports]),
                          sorted([x.port_name for x in ports]))
 
@@ -332,7 +339,7 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
             self.create_ovs_port()
         vif_ports = [self.create_ovs_vif_port() for i in range(2)]
         ports = self.br.get_vif_port_set()
-        expected = set([x.vif_id for x in vif_ports])
+        expected = {x.vif_id for x in vif_ports}
         self.assertEqual(expected, ports)
 
     def test_get_vif_port_set_with_missing_port(self):
@@ -341,11 +348,13 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
 
         # return an extra port to make sure the db list ignores it
         orig = self.br.get_port_name_list
-        new_port_name_list = lambda: orig() + ['anotherport']
+
+        def new_port_name_list():
+            return orig() + ['anotherport']
         mock.patch.object(self.br, 'get_port_name_list',
                           new=new_port_name_list).start()
         ports = self.br.get_vif_port_set()
-        expected = set([vif_ports[0].vif_id])
+        expected = {vif_ports[0].vif_id}
         self.assertEqual(expected, ports)
 
     def test_get_vif_port_set_on_empty_bridge_returns_empty_set(self):
@@ -485,7 +494,7 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
                 txn.add(ovsdb.del_port(port_name, self.br.br_name,
                                        if_exists=False))
                 txn.add(ovsdb.db_set('Interface', port_name,
-                                     ('type', 'internal')))
+                                     ('type', 'internal'), if_exists=False))
         self.assertRaises((RuntimeError, idlutils.RowNotFound),
                           del_port_mod_iface)
 
@@ -506,7 +515,7 @@ class OVSBridgeTestCase(OVSBridgeTestBase):
 class OVSLibTestCase(base.BaseOVSLinuxTestCase):
 
     def setUp(self):
-        super(OVSLibTestCase, self).setUp()
+        super().setUp()
         self.ovs = ovs_lib.BaseOVS()
 
     def test_bridge_lifecycle_baseovs(self):

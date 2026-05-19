@@ -9,7 +9,7 @@ During normal operation, ``keepalived`` on the master router periodically
 transmits *heartbeat* packets over a hidden network that connects all VRRP
 routers for a particular project. Each project with VRRP routers uses a
 separate hidden network. By default this network uses the first value in
-the ``tenant_network_types`` option in the ``ml2_conf.ini`` file. For
+the ``project_network_types`` option in the ``ml2_conf.ini`` file. For
 additional control, you can specify the self-service network type and physical
 network name for the hidden network using the ``l3_ha_network_type`` and
 ``l3_ha_network_name`` options in the ``neutron.conf`` file.

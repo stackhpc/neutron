@@ -15,12 +15,13 @@
 import os
 from os import path
 import re
+import subprocess
 
-from eventlet.green import subprocess
 from neutron_lib.utils import helpers
 from oslo_concurrency import processutils
 from oslo_utils import fileutils
 
+from neutron.common import utils
 from neutron import privileged
 
 
@@ -53,6 +54,20 @@ def delete_if_exists(_path, remove=os.unlink):
 
 
 @privileged.default.entrypoint
+def read_file(_path: str) -> str:
+    return utils.read_file(_path)
+
+
+@privileged.default.entrypoint
+def write_to_tempfile(content: bytes,
+                      _path: str | None = None,
+                      suffix: str = '',
+                      prefix: str = 'tmp'):
+    return fileutils.write_to_tempfile(content, path=_path, suffix=suffix,
+                                       prefix=prefix)
+
+
+@privileged.default.entrypoint
 def execute_process(cmd, _process_input, addl_env):
     obj, cmd = _create_process(cmd, addl_env=addl_env)
     _stdout, _stderr = obj.communicate(_process_input)
@@ -80,8 +95,14 @@ def _create_process(cmd, addl_env=None):
     list of command arguments used to create it.
     """
     cmd = list(map(str, _addl_env_args(addl_env) + list(cmd)))
-    obj = subprocess.Popen(cmd, shell=False, stdin=subprocess.PIPE,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # pylint: disable=consider-using-with
+    obj = subprocess.Popen(  # noqa: S603
+        cmd,
+        shell=False,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
     return obj, cmd
 
 

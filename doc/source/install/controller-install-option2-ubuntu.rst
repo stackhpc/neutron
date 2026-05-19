@@ -10,7 +10,7 @@ Install the components
 .. code-block:: console
 
    # apt install neutron-server neutron-plugin-ml2 \
-     neutron-linuxbridge-agent neutron-l3-agent neutron-dhcp-agent \
+     neutron-openvswitch-agent neutron-l3-agent neutron-dhcp-agent \
      neutron-metadata-agent
 
 .. end
@@ -45,7 +45,7 @@ Configure the server component
        ``[database]`` section.
 
   * In the ``[DEFAULT]`` section, enable the Modular Layer 2 (ML2)
-    plug-in, router service, and overlapping IP addresses:
+    plug-in and router service:
 
     .. path /etc/neutron/neutron.conf
     .. code-block:: ini
@@ -88,8 +88,8 @@ Configure the server component
        auth_url = http://controller:5000
        memcached_servers = controller:11211
        auth_type = password
-       project_domain_name = default
-       user_domain_name = default
+       project_domain_name = Default
+       user_domain_name = Default
        project_name = service
        username = neutron
        password = NEUTRON_PASS
@@ -119,8 +119,8 @@ Configure the server component
        # ...
        auth_url = http://controller:5000
        auth_type = password
-       project_domain_name = default
-       user_domain_name = default
+       project_domain_name = Default
+       user_domain_name = Default
        region_name = RegionOne
        project_name = service
        username = nova
@@ -170,7 +170,7 @@ and switching) virtual networking infrastructure for instances.
 
        [ml2]
        # ...
-       tenant_network_types = vxlan
+       project_network_types = vxlan
 
     .. end
 
@@ -182,7 +182,7 @@ and switching) virtual networking infrastructure for instances.
 
        [ml2]
        # ...
-       mechanism_drivers = linuxbridge,l2population
+       mechanism_drivers = openvswitch,l2population
 
     .. end
 
@@ -230,78 +230,79 @@ and switching) virtual networking infrastructure for instances.
 
     .. end
 
-  * In the ``[securitygroup]`` section, enable ipset to increase
-    efficiency of security group rules:
-
-    .. path /etc/neutron/plugins/ml2/ml2_conf.ini
-    .. code-block:: ini
-
-       [securitygroup]
-       # ...
-       enable_ipset = true
-
-    .. end
-
-Configure the Linux bridge agent
+Configure the Open vSwitch agent
 --------------------------------
 
 The Linux bridge agent builds layer-2 (bridging and switching) virtual
 networking infrastructure for instances and handles security groups.
 
-* Edit the ``/etc/neutron/plugins/ml2/linuxbridge_agent.ini`` file and
+* Edit the ``/etc/neutron/plugins/ml2/openvswitch_agent.ini`` file and
   complete the following actions:
 
-  * In the ``[linux_bridge]`` section, map the provider virtual network to the
-    provider physical network interface:
+  * In the ``[ovs]`` section, map the provider virtual network to the
+    provider physical bridge and configure the IP address of
+    the physical network interface that handles overlay networks:
 
-    .. path /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+    .. path /etc/neutron/plugins/ml2/openvswitch_agent.ini
     .. code-block:: ini
 
-       [linux_bridge]
-       physical_interface_mappings = provider:PROVIDER_INTERFACE_NAME
-
-    .. end
-
-    Replace ``PROVIDER_INTERFACE_NAME`` with the name of the underlying
-    provider physical network interface. See :doc:`environment-networking-ubuntu`
-    for more information.
-
-  * In the ``[vxlan]`` section, enable VXLAN overlay networks, configure the
-    IP address of the physical network interface that handles overlay
-    networks, and enable layer-2 population:
-
-    .. path /etc/neutron/plugins/ml2/linuxbridge_agent.ini
-    .. code-block:: ini
-
-       [vxlan]
-       enable_vxlan = true
+       [ovs]
+       bridge_mappings = provider:PROVIDER_BRIDGE_NAME
        local_ip = OVERLAY_INTERFACE_IP_ADDRESS
-       l2_population = true
 
     .. end
 
-    Replace ``OVERLAY_INTERFACE_IP_ADDRESS`` with the IP address of the
+    Replace ``PROVIDER_BRIDGE_NAME`` with the name of the bridge connected to
+    the underlying provider physical network.
+    See :doc:`environment-networking-ubuntu`
+    and :doc:`../admin/deploy-ovs-provider` for more information.
+
+    Also replace ``OVERLAY_INTERFACE_IP_ADDRESS`` with the IP address of the
     underlying physical network interface that handles overlay networks. The
     example architecture uses the management interface to tunnel traffic to
     the other nodes. Therefore, replace ``OVERLAY_INTERFACE_IP_ADDRESS`` with
     the management IP address of the controller node. See
     :doc:`environment-networking-ubuntu` for more information.
 
-  * In the ``[securitygroup]`` section, enable security groups and
-    configure the Linux bridge iptables firewall driver:
+  * Ensure ``PROVIDER_BRIDGE_NAME`` external bridge is created and
+    ``PROVIDER_INTERFACE_NAME`` is added to that bridge
 
-    .. path /etc/neutron/plugins/ml2/linuxbridge_agent.ini
+    .. code-block:: bash
+
+       # ovs-vsctl add-br $PROVIDER_BRIDGE_NAME
+       # ovs-vsctl add-port $PROVIDER_BRIDGE_NAME $PROVIDER_INTERFACE_NAME
+
+    .. end
+
+  * In the ``[agent]`` section, enable VXLAN overlay networks and enable
+    layer-2 population:
+
+    .. path /etc/neutron/plugins/ml2/openvswitch_agent.ini
+    .. code-block:: ini
+
+       [agent]
+       tunnel_types = vxlan
+       l2_population = true
+
+    .. end
+
+  * In the ``[securitygroup]`` section, enable security groups and
+    configure the Open vSwitch native or the hybrid iptables firewall driver:
+
+    .. path /etc/neutron/plugins/ml2/openvswitch_agent.ini
     .. code-block:: ini
 
        [securitygroup]
        # ...
        enable_security_group = true
-       firewall_driver = neutron.agent.linux.iptables_firewall.IptablesFirewallDriver
+       firewall_driver = openvswitch
+       #firewall_driver = iptables_hybrid
 
     .. end
 
-  * Ensure your Linux operating system kernel supports network bridge filters
-    by verifying all the following ``sysctl`` values are set to ``1``:
+  * In the case of using the hybrid iptables firewall driver, ensure your
+    Linux operating system kernel supports network bridge filters by verifying
+    all the following ``sysctl`` values are set to ``1``:
 
     .. code-block:: ini
 
@@ -320,19 +321,8 @@ Configure the layer-3 agent
 The Layer-3 (L3) agent provides routing and NAT services for
 self-service virtual networks.
 
-* Edit the ``/etc/neutron/l3_agent.ini`` file and complete the following
-  actions:
-
-  * In the ``[DEFAULT]`` section, configure the Linux bridge interface driver:
-
-    .. path /etc/neutron/l3_agent.ini
-    .. code-block:: ini
-
-       [DEFAULT]
-       # ...
-       interface_driver = linuxbridge
-
-    .. end
+* Edit the ``/etc/neutron/l3_agent.ini`` file in case additional customization
+  is needed.
 
 Configure the DHCP agent
 ------------------------
@@ -342,16 +332,15 @@ The DHCP agent provides DHCP services for virtual networks.
 * Edit the ``/etc/neutron/dhcp_agent.ini`` file and complete the following
   actions:
 
-  * In the ``[DEFAULT]`` section, configure the Linux bridge interface driver,
-    Dnsmasq DHCP driver, and enable isolated metadata so instances on provider
-    networks can access metadata over the network:
+  * In the ``[DEFAULT]`` section, configure Dnsmasq DHCP driver, and enable
+    isolated metadata so instances on provider networks can access metadata
+    over the network:
 
     .. path /etc/neutron/dhcp_agent.ini
     .. code-block:: ini
 
        [DEFAULT]
        # ...
-       interface_driver = linuxbridge
        dhcp_driver = neutron.agent.linux.dhcp.Dnsmasq
        enable_isolated_metadata = true
 

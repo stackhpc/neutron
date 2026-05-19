@@ -60,7 +60,7 @@ class RouterFipRateLimitMaps(qos_base.RateLimitMaps):
         """
         self.ingress_ratelimits = {}
         self.egress_ratelimits = {}
-        super(RouterFipRateLimitMaps, self).__init__(self.LOCK_NAME)
+        super().__init__(self.LOCK_NAME)
 
     def get_router_id_by_fip(self, fip_res):
 
@@ -74,7 +74,7 @@ class RouterFipRateLimitMaps(qos_base.RateLimitMaps):
 
         @lockutils.synchronized(self.lock_name)
         def _get_fips_by_router_id():
-            return self._router_2_fips.get(router_id, set([]))
+            return self._router_2_fips.get(router_id, set())
 
         return _get_fips_by_router_id()
 
@@ -94,7 +94,7 @@ class RouterFipRateLimitMaps(qos_base.RateLimitMaps):
 
         @lockutils.synchronized(self.lock_name)
         def _delete_fips():
-            router_ids = set([])
+            router_ids = set()
             for fip_res in fips:
                 router_id = self._fips_2_router.pop(fip_res, None)
                 if router_id:
@@ -241,12 +241,13 @@ class FipQosAgentExtension(qos_base.L3QosAgentExtensionBase,
             self.fip_qos_map.clean_by_resource(fip_res)
             # process_ip_rate_limit will treat value 0 as
             # cleaning the tc filters if exits or no action.
-            return {constants.INGRESS_DIRECTION: {
-                        "rate": qos_base.IP_DEFAULT_RATE,
-                        "burst": qos_base.IP_DEFAULT_BURST},
-                    constants.EGRESS_DIRECTION: {
-                        "rate": qos_base.IP_DEFAULT_RATE,
-                        "burst": qos_base.IP_DEFAULT_BURST}}
+            return {
+                constants.INGRESS_DIRECTION: {
+                    "rate": qos_base.IP_DEFAULT_RATE,
+                    "burst": qos_base.IP_DEFAULT_BURST},
+                constants.EGRESS_DIRECTION: {
+                    "rate": qos_base.IP_DEFAULT_RATE,
+                    "burst": qos_base.IP_DEFAULT_BURST}}
         policy = self.resource_rpc.pull(
             context, resources.QOS_POLICY, policy_id)
         self.fip_qos_map.set_resource_policy(fip_res, policy)
@@ -336,7 +337,7 @@ class FipQosAgentExtension(qos_base.L3QosAgentExtensionBase,
                         router_info.get_port_forwarding_fips())
         current_fips = self.fip_qos_map.get_fips_by_router_id(
             router_info.router_id)
-        new_fips = set([])
+        new_fips = set()
         for fip in floating_ips:
             fip_res = FipResource(fip['id'], fip['floating_ip_address'])
             new_fips.add(fip_res)

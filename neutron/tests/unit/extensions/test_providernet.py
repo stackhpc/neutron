@@ -36,7 +36,7 @@ from neutron.tests.unit.api.v2 import test_base
 from neutron.tests.unit import testlib_api
 
 
-class ProviderExtensionManager(object):
+class ProviderExtensionManager:
 
     def get_resources(self):
         return []
@@ -55,7 +55,7 @@ class ProvidernetExtensionTestCase(testlib_api.WebTestCase):
     fmt = 'json'
 
     def setUp(self):
-        super(ProvidernetExtensionTestCase, self).setUp()
+        super().setUp()
 
         plugin = 'neutron.neutron_plugin_base_v2.NeutronPluginBaseV2'
 
@@ -92,21 +92,28 @@ class ProvidernetExtensionTestCase(testlib_api.WebTestCase):
 
     def _put_network_with_provider_attrs(self, ctx, expect_errors=False):
         data = self._prepare_net_data()
+        ctx.roles = ['member', 'reader']
+        if ctx.is_admin:
+            ctx.roles.append('admin')
         env = {'neutron.context': ctx}
         instance = self.plugin.return_value
-        instance.get_network.return_value = {'tenant_id': ctx.tenant_id,
+        instance.get_network.return_value = {'project_id': ctx.project_id,
                                              'shared': False}
         net_id = uuidutils.generate_uuid()
         res = self.api.put(test_base._get_path('networks',
                                                id=net_id,
                                                fmt=self.fmt),
                            self.serialize({'network': data}),
+                           content_type='application/' + self.fmt,
                            extra_environ=env,
                            expect_errors=expect_errors)
         return res, data, net_id
 
     def _post_network_with_provider_attrs(self, ctx, expect_errors=False):
         data = self._prepare_net_data()
+        ctx.roles = ['member', 'reader']
+        if ctx.is_admin:
+            ctx.roles.append('admin')
         env = {'neutron.context': ctx}
         res = self.api.post(test_base._get_path('networks', fmt=self.fmt),
                             self.serialize({'network': data}),
@@ -119,6 +126,9 @@ class ProvidernetExtensionTestCase(testlib_api.WebTestCase):
                                               expect_errors=False):
         data = self._prepare_net_data()
         data.update(bad_data)
+        ctx.roles = ['member', 'reader']
+        if ctx.is_admin:
+            ctx.roles.append('admin')
         env = {'neutron.context': ctx}
         res = self.api.post(test_base._get_path('networks', fmt=self.fmt),
                             self.serialize({'network': data}),
@@ -129,14 +139,16 @@ class ProvidernetExtensionTestCase(testlib_api.WebTestCase):
 
     def test_network_create_with_provider_attrs(self):
         ctx = context.get_admin_context()
-        tenant_id = 'an_admin'
-        ctx.tenant_id = tenant_id
-        res, data = self._post_network_with_provider_attrs(ctx)
+        project_id = 'an_admin'
+        ctx.project_id = project_id
         instance = self.plugin.return_value
+        instance.create_network.return_value = {}
+        res, data = self._post_network_with_provider_attrs(ctx)
         exp_input = {'network': data}
+        # TODO(haleyb): "tenant_id" reference should be removed.
         exp_input['network'].update({'admin_state_up': True,
-                                     'tenant_id': tenant_id,
-                                     'project_id': tenant_id,
+                                     'tenant_id': project_id,
+                                     'project_id': project_id,
                                      'shared': False})
         instance.create_network.assert_called_with(mock.ANY,
                                                    network=exp_input)
@@ -144,7 +156,7 @@ class ProvidernetExtensionTestCase(testlib_api.WebTestCase):
 
     def test_network_create_with_bad_provider_attrs_400(self):
         ctx = context.get_admin_context()
-        ctx.tenant_id = 'an_admin'
+        ctx.project_id = 'an_admin'
         bad_data = {provider_net.SEGMENTATION_ID: "abc"}
         res, _1 = self._post_network_with_bad_provider_attrs(ctx, bad_data,
                                                              True)
@@ -152,9 +164,10 @@ class ProvidernetExtensionTestCase(testlib_api.WebTestCase):
 
     def test_network_update_with_provider_attrs(self):
         ctx = context.get_admin_context()
-        ctx.tenant_id = 'an_admin'
-        res, data, net_id = self._put_network_with_provider_attrs(ctx)
+        ctx.project_id = 'an_admin'
         instance = self.plugin.return_value
+        instance.update_network.return_value = {}
+        res, data, net_id = self._put_network_with_provider_attrs(ctx)
         exp_input = {'network': data}
         instance.update_network.assert_called_with(mock.ANY,
                                                    net_id,
@@ -162,13 +175,13 @@ class ProvidernetExtensionTestCase(testlib_api.WebTestCase):
         self.assertEqual(web_exc.HTTPOk.code, res.status_int)
 
     def test_network_create_with_provider_attrs_noadmin_returns_403(self):
-        tenant_id = 'no_admin'
-        ctx = context.Context('', tenant_id, is_admin=False)
+        project_id = 'no_admin'
+        ctx = context.Context('', project_id, is_admin=False)
         res, _1 = self._post_network_with_provider_attrs(ctx, True)
         self.assertEqual(web_exc.HTTPForbidden.code, res.status_int)
 
     def test_network_update_with_provider_attrs_noadmin_returns_403(self):
-        tenant_id = 'no_admin'
-        ctx = context.Context('', tenant_id, is_admin=False)
+        project_id = 'no_admin'
+        ctx = context.Context('', project_id, is_admin=False)
         res, _1, _2 = self._put_network_with_provider_attrs(ctx, True)
         self.assertEqual(web_exc.HTTPForbidden.code, res.status_int)

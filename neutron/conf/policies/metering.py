@@ -10,6 +10,7 @@
 #  License for the specific language governing permissions and limitations
 #  under the License.
 
+from neutron_lib import policy as neutron_policy
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -29,7 +30,7 @@ RULE_RESOURCE_PATH = '/metering/metering-label-rules/{id}'
 rules = [
     policy.DocumentedRuleDefault(
         name='create_metering_label',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Create a metering label',
         operations=[
@@ -40,15 +41,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='create_metering_label',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='get_metering_label',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_READER),
+        check_str=base.ADMIN_OR_PROJECT_READER,
         scope_types=['project'],
         description='Get a metering label',
         operations=[
@@ -63,13 +62,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='get_metering_label',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='delete_metering_label',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Delete a metering label',
         operations=[
@@ -80,13 +79,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='delete_metering_label',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='create_metering_label_rule',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Create a metering label rule',
         operations=[
@@ -97,15 +96,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='create_metering_label_rule',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='get_metering_label_rule',
-        check_str=base.policy_or(
-            base.ADMIN,
-            base.PROJECT_READER),
+        check_str=base.ADMIN_OR_PROJECT_READER,
         scope_types=['project'],
         description='Get a metering label rule',
         operations=[
@@ -120,13 +117,13 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='get_metering_label_rule',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
         name='delete_metering_label_rule',
-        check_str=base.ADMIN,
+        check_str=base.ADMIN_OR_PROJECT_MANAGER,
         scope_types=['project'],
         description='Delete a metering label rule',
         operations=[
@@ -137,7 +134,7 @@ rules = [
         ],
         deprecated_rule=policy.DeprecatedRule(
             name='delete_metering_label_rule',
-            check_str=base.RULE_ADMIN_ONLY,
+            check_str=neutron_policy.RULE_ADMIN_ONLY,
             deprecated_reason=DEPRECATED_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
     )

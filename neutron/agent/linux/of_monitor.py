@@ -13,14 +13,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import queue
 import re
+import threading
 
-import eventlet
 
 from neutron.agent.common import async_process
 
 
-class OFEvent(object):
+class OFEvent:
 
     def __init__(self, event_type, flow):
         self.event_type = event_type
@@ -46,15 +47,17 @@ class OFMonitor(async_process.AsyncProcess):
     def __init__(self, bridge_name, namespace=None, respawn_interval=None,
                  start=True):
         cmd = ['ovs-ofctl', 'monitor', bridge_name, 'watch:', '--monitor']
-        super(OFMonitor, self).__init__(cmd, run_as_root=True,
-                                        respawn_interval=respawn_interval,
-                                        namespace=namespace)
+        super().__init__(cmd, run_as_root=True,
+                         respawn_interval=respawn_interval,
+                         namespace=namespace)
         if start:
             self.start()
 
-        self._queue = eventlet.queue.Queue()
-        eventlet.spawn(self._read_and_enqueue, self.iter_stdout)
-        eventlet.spawn(self._read_and_enqueue, self.iter_stderr)
+        self._queue = queue.Queue()
+        threading.Thread(
+            target=self._read_and_enqueue, args=(self.iter_stdout,)).start()
+        threading.Thread(
+            target=self._read_and_enqueue, args=(self.iter_stderr,)).start()
 
     def _read_and_enqueue(self, iter):
         for event_line in iter(block=True):
@@ -77,8 +80,8 @@ class OFMonitor(async_process.AsyncProcess):
 
     def start(self, **kwargs):
         if not self._is_running:
-            super(OFMonitor, self).start(block=True)
+            super().start(block=True)
 
     def stop(self, **kwargs):
         if self._is_running:
-            super(OFMonitor, self).stop(block=True)
+            super().stop(block=True)

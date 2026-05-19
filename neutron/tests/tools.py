@@ -27,16 +27,6 @@ from oslo_utils import netutils
 from oslo_utils import timeutils
 
 
-# NOTE(yamahata): from neutron-lib 1.9.1, callback priority was added and
-# priority_group module was added for constants of priority.
-# test the existence of the module of priority_group to check if
-# callback priority is supported or not.
-_CALLBACK_PRIORITY_SUPPORTED = True
-try:
-    from neutron_lib.callbacks import priority_group  # noqa
-except ImportError:
-    _CALLBACK_PRIORITY_SUPPORTED = False
-
 LAST_RANDOM_PORT_RANGE_GENERATED = 1
 
 
@@ -145,16 +135,6 @@ def make_mock_plugin_json_encodable(plugin_instance_mock):
         method_mock._get_child_mock = _get_child_mock
 
 
-def get_subscribe_args(*args):
-    # NOTE(yamahata): from neutron-lib 1.9.1, callback priority was added.
-    # old signature: (callback, resource, event)
-    # new signature: (callback, resource, event, priority=PRIORITY_DEFAULT)
-    if len(args) == 3 and _CALLBACK_PRIORITY_SUPPORTED:
-        args = list(args)  # don't modify original list
-        args.append(priority_group.PRIORITY_DEFAULT)
-    return args
-
-
 def fail(msg=None):
     """Fail immediately, with the given message.
 
@@ -218,12 +198,9 @@ def get_random_ip_address(version=4):
                                      random.randint(3, 254),
                                      random.randint(3, 254))
         return netaddr.IPAddress(ip_string)
-    else:
-        ip = netutils.get_ipv6_addr_by_EUI64(
-            '2001:db8::/64',
-            net.get_random_mac(['fe', '16', '3e', '00', '00', '00'])
-        )
-        return ip
+    return netutils.get_ipv6_addr_by_EUI64(
+        '2001:db8::/64',
+        net.get_random_mac(['fe', '16', '3e', '00', '00', '00']))
 
 
 def get_random_router_status():
@@ -279,3 +256,7 @@ def get_random_security_event():
 
 def get_random_port_numa_affinity_policy():
     return random.choice(constants.PORT_NUMA_POLICIES)
+
+
+def get_random_port_hardware_offload_type():
+    return random.choice(constants.VALID_HWOL_TYPES)

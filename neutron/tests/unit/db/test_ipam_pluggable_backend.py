@@ -26,6 +26,8 @@ from oslo_utils import netutils
 from oslo_utils import uuidutils
 import webob.exc
 
+from neutron.common.ovn import constants as ovn_const
+from neutron.conf import common as base_config
 from neutron.db import ipam_backend_mixin
 from neutron.db import ipam_pluggable_backend
 from neutron.ipam import exceptions as ipam_exc
@@ -33,14 +35,15 @@ from neutron.ipam import requests as ipam_req
 from neutron.objects import network as network_obj
 from neutron.objects import ports as port_obj
 from neutron.objects import subnet as obj_subnet
-from neutron.tests.unit.db import test_db_base_plugin_v2 as test_db_base
+from neutron.tests.common import test_db_base_plugin_v2 as test_db_base
 
 
-class UseIpamMixin(object):
+class UseIpamMixin:
 
     def setUp(self):
+        cfg.CONF.register_opts(base_config.core_opts)
         cfg.CONF.set_override("ipam_driver", 'internal')
-        super(UseIpamMixin, self).setUp()
+        super().setUp()
 
 
 class TestIpamHTTPResponse(UseIpamMixin, test_db_base.TestV2HTTPResponse):
@@ -67,9 +70,8 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
     def setUp(self, plugin=None):
         if not plugin:
             plugin = 'neutron.tests.unit.db.test_ipam_backend_mixin.TestPlugin'
-        super(TestDbBasePluginIpam, self).setUp(plugin=plugin)
+        super().setUp(plugin=plugin)
         cfg.CONF.set_override("ipam_driver", 'internal')
-        self.tenant_id = uuidutils.generate_uuid()
         self.subnet_id = uuidutils.generate_uuid()
         self.admin_context = ncontext.get_admin_context()
 
@@ -87,7 +89,7 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
                 'device_owner': constants.DEVICE_OWNER_COMPUTE_PREFIX + 'None'
             },
             'subnet_request': ipam_req.SpecificSubnetRequest(
-                self.tenant_id,
+                self._project_id,
                 self.subnet_id,
                 '10.0.0.0/24',
                 '10.0.0.1',
@@ -125,10 +127,8 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
             if isinstance(request, ipam_req.SpecificAddressRequest):
                 if request.address == netaddr.IPAddress(fail_ip):
                     raise exception
-                else:
-                    return str(request.address), subnet_id
-            else:
-                return auto_ip, subnet_id
+                return str(request.address), subnet_id
+            return auto_ip, subnet_id
 
         return allocate_mock
 
@@ -374,12 +374,14 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
         context = mock.Mock()
         pluggable_backend = ipam_pluggable_backend.IpamPluggableBackend()
         with self.subnet(cidr=constants.PROVISIONAL_IPV6_PD_PREFIX,
+                         subnetpool_id=constants.IPV6_PD_POOL_ID,
                          ip_version=constants.IP_VERSION_6) as subnet:
             subnet = subnet['subnet']
             fixed_ips = [{'subnet_id': subnet['id'],
                          'ip_address': '::1'}]
             filtered_ips = (pluggable_backend.
-                            _test_fixed_ips_for_port(context,
+                            _test_fixed_ips_for_port(
+                                context,
                                 subnet['network_id'],
                                 fixed_ips,
                                 constants.DEVICE_OWNER_ROUTER_INTF,
@@ -523,8 +525,9 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
             self.assertIsInstance(request, ipam_req.SpecificSubnetRequest)
             self.assertEqual(netaddr.IPNetwork(cidr), request.subnet_cidr)
 
-            ip_ranges = [netaddr.IPRange(p['start'],
-                p['end']) for p in data['subnet']['allocation_pools']]
+            ip_ranges = [
+                netaddr.IPRange(p['start'], p['end'])
+                for p in data['subnet']['allocation_pools']]
             self.assertEqual(ip_ranges, request.allocation_pools)
 
     @mock.patch('neutron.ipam.driver.Pool')
@@ -598,7 +601,7 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
                 net_id = network['network']['id']
                 data = {
                     'port': {'network_id': net_id,
-                             'tenant_id': network['network']['tenant_id']}}
+                             'project_id': network['network']['project_id']}}
                 port_req = self.new_create_request('ports', data)
                 res = port_req.get_response(self.api)
                 self.assertEqual(webob.exc.HTTPServerError.code,
@@ -751,11 +754,12 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
         mocks['ipam']._test_fixed_ips_for_port = fixed_ips_mock
         mocks['ipam']._update_ips_for_pd_subnet = mock.Mock(return_value=[])
 
+        uuid = uuidutils.generate_uuid()
         port_dict = {
             'device_owner': constants.DEVICE_OWNER_DISTRIBUTED,
-            'device_id': 'ovnmeta-%s' % uuidutils.generate_uuid(),
+            'device_id': ovn_const.OVN_METADATA_PREFIX + uuid,
             'mac_address': 'aa:bb:cc:dd:ee:ff',
-            'network_id': uuidutils.generate_uuid()}
+            'network_id': uuid}
 
         mocks['ipam']._update_ips_for_port(context, port_dict, None,
                                            original_ips, new_ips, mac)
@@ -936,7 +940,7 @@ class TestDbBasePluginIpam(test_db_base.NeutronDbPluginV2TestCase):
 class TestRollback(test_db_base.NeutronDbPluginV2TestCase):
     def setUp(self):
         cfg.CONF.set_override('ipam_driver', 'internal')
-        super(TestRollback, self).setUp()
+        super().setUp()
 
     def test_ipam_rollback_not_broken_on_session_rollback(self):
         """Triggers an error that calls rollback on session."""

@@ -15,6 +15,7 @@
 
 import sqlalchemy
 
+from neutron.db.migration.models import head
 from neutron.tests.functional import base
 
 
@@ -26,7 +27,7 @@ class TestDBCreation(base.BaseLoggingTestCase):
     """
 
     def setUp(self):
-        super(TestDBCreation, self).setUp()
+        super().setUp()
         self.engine = sqlalchemy.create_engine('sqlite://')
 
     def _test_creation(self, module):
@@ -34,5 +35,4 @@ class TestDBCreation(base.BaseLoggingTestCase):
         metadata.create_all(self.engine)
 
     def test_head_creation(self):
-        from neutron.db.migration.models import head
         self._test_creation(head)

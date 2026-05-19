@@ -1,0 +1,128 @@
+---
+default_language_version:
+  # force all unspecified python hooks to run python3
+  python: python3
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # whitespace
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: ['--fix', 'lf']
+        exclude: '.*\.(svg)$'
+      # file format and permissions
+      - id: fix-byte-order-marker
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: check-yaml
+        files: .*\.(yaml|yml)$
+        exclude: 'rally-jobs/task-neutron.yaml'
+      # git
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+        exclude: 'neutron/tests/var/.*|vagrant/ovn/provisioning/id_rsa'
+      # python
+      - id: debug-statements
+      - id: check-docstring-first
+        exclude: 'neutron/db/migration/alembic_migrations/.*|neutron/tests/unit/db/test_agents_db.py'
+  - repo: https://github.com/lucas-c/pre-commit-hooks
+    rev: v1.5.6
+    hooks:
+      - id: remove-tabs
+        exclude: '.*\.(svg)$'
+  - repo: https://opendev.org/openstack/bashate.git
+    rev: 2.1.1
+    hooks:
+      - id: bashate
+        # E005 file does not begin with #! or have a .sh prefix
+        # E006 check for lines longer than 79 columns
+        # E042 local declaration hides errors
+        # E043 Arithmetic compound has inconsistent return semantics
+        args: ['-v', '-iE006', '-iE005,E042,E043']
+        files: .*\.sh
+        exclude: '.tox/.*'
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff-check
+        args: ['--fix', '--unsafe-fixes']
+  - repo: https://github.com/hhatto/autopep8
+    rev: v2.3.2
+    hooks:
+      - id: autopep8
+        files: '^.*\.py$'
+  # Run hacking after autopep8 so that if it can fix
+  # it, it will. Note it will still fail in CI because
+  # fixing an issue changes the code and that should
+  # not happen in CI.
+  - repo: https://opendev.org/openstack/hacking
+    rev: 8.0.0
+    hooks:
+      - id: hacking
+        additional_dependencies:
+          - neutron-lib>=3.24.0
+          - flake8-import-order~=0.19.2
+        exclude: '^(doc|releasenotes|tools)/.*$'
+  - repo: https://github.com/sphinx-contrib/sphinx-lint
+    rev: v1.0.2
+    hooks:
+      - id: sphinx-lint
+        args: []
+        files: ^doc|releasenotes
+        types: [rst]
+  - repo: https://github.com/PyCQA/doc8
+    rev: v2.0.0
+    hooks:
+      - id: doc8
+        exclude: |
+          (?x)(
+            doc/source/admin/config-qos-min-pps.rst
+            | doc/source/admin/deploy-provider-verifynetworkoperation.txt
+            | doc/source/admin/deploy-selfservice-verifynetworkoperation.txt
+            | doc/source/admin/shared/deploy-ha-vrrp-initialnetworks.txt
+            | doc/source/admin/shared/deploy-ha-vrrp-verifynetworkoperation.txt
+            | doc/source/admin/shared/deploy-provider-initialnetworks.txt
+            | doc/source/configuration/metering-agent.rst
+            | doc/source/contributor/internals/images
+            | doc/source/contributor/policies/bugs.rst
+          )
+        files: |
+          (?x)(
+            doc/source/.*
+            | neutron/.*
+            | CONTRIBUTING.rst
+            | README.rst
+            | TESTING.rst
+          )
+  - repo: local
+    hooks:
+      - id: misc-sanity-checks
+        name: misc sanity checks
+        language: script
+        require_serial: true
+        pass_filenames: false
+        entry: './tools/misc-sanity-checks.sh'
+        files: '^.*\.py$'
+        exclude: '^(doc|releasenotes|tools)/.*$'
+  - repo: local
+    hooks:
+      - id: check-unit-test-structure
+        name: check unit test structure
+        language: script
+        require_serial: true
+        pass_filenames: false
+        entry: './tools/check_unit_test_structure.sh'
+        files: '^.*\.py$'
+        exclude: '^(doc|releasenotes|tools)/.*$'
+# todo(slaweq): enable pylint check once all issues in the current code will
+# be solved
+#     - id: pylint
+#       name: pylint
+#       entry: .tox/pep8/bin/pylint
+#       files: ^neutron/
+#       language: system
+#       types: [python]
+#       args: ['-j0 --rcfile=.pylintrc', '--output-format=colorized']

@@ -58,7 +58,7 @@ def enforce_port_deletion_rules(resource, event, trigger, payload=None):
                                                trunk_id=trunk_obj.id)
 
 
-class TrunkPortValidator(object):
+class TrunkPortValidator:
 
     def __init__(self, port_id):
         self.port_id = port_id
@@ -134,8 +134,7 @@ class TrunkPortValidator(object):
             raise trunk_exc.TrunkPluginDriverConflict()
         if len(drivers) == 1:
             return drivers[0].can_trunk_bound_port
-        else:
-            return False
+        return False
 
     def check_not_in_use(self, context):
         """Raises PortInUse for ports assigned for device purposes."""
@@ -150,7 +149,7 @@ class TrunkPortValidator(object):
                                   device_id=self._port['device_id'])
 
 
-class SubPortsValidator(object):
+class SubPortsValidator:
 
     def __init__(self, segmentation_types, subports, trunk_port_id=None):
         self._segmentation_types = segmentation_types
@@ -167,13 +166,13 @@ class SubPortsValidator(object):
             if msg:
                 raise n_exc.InvalidInput(error_message=msg)
 
-        if trunk_validation:
-            trunk_port_mtu = self._get_port_mtu(context, self.trunk_port_id)
-            subport_mtus = self._prepare_subports(context)
-            return [self._validate(context, s, trunk_port_mtu, subport_mtus)
-                    for s in self.subports]
-        else:
+        if not trunk_validation:
             return self.subports
+
+        trunk_port_mtu = self._get_port_mtu(context, self.trunk_port_id)
+        subport_mtus = self._prepare_subports(context)
+        return [self._validate(context, s, trunk_port_mtu, subport_mtus)
+                for s in self.subports]
 
     def _prepare_subports(self, context):
         """Utility method to parse subports in the request

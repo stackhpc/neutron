@@ -22,7 +22,7 @@ must create a database, service credentials, and API endpoints.
 
      .. code-block:: console
 
-        MariaDB [(none)] CREATE DATABASE neutron;
+        MariaDB [(none)]> CREATE DATABASE neutron;
 
      .. end
 
@@ -249,8 +249,8 @@ Configure the Compute service to use the Networking service
        # ...
        auth_url = http://controller:5000
        auth_type = password
-       project_domain_name = default
-       user_domain_name = default
+       project_domain_name = Default
+       user_domain_name = Default
        region_name = RegionOne
        project_name = service
        username = neutron
@@ -315,10 +315,10 @@ Finalize installation
    .. code-block:: console
 
       # systemctl enable neutron-server.service \
-        neutron-linuxbridge-agent.service neutron-dhcp-agent.service \
+        neutron-openvswitch-agent.service neutron-dhcp-agent.service \
         neutron-metadata-agent.service
       # systemctl start neutron-server.service \
-        neutron-linuxbridge-agent.service neutron-dhcp-agent.service \
+        neutron-openvswitch-agent.service neutron-dhcp-agent.service \
         neutron-metadata-agent.service
 
    .. end

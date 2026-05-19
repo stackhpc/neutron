@@ -1,0 +1,6 @@
+---
+other:
+  - |
+    The ``[ovn]fdb_age_threshold`` configuration parameter is now set
+    to a default value of 300. If the aging value is not set, the ``FDB``
+    table can grow indefinitely, which constitutes a cluster stability problem.

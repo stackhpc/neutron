@@ -16,19 +16,21 @@ from unittest import mock
 
 from neutron_lib import constants as n_const
 from neutron_lib.plugins import constants as plugins_constants
+from oslo_utils import uuidutils
 
-from neutron.common.ovn import constants as ovn_const
 from neutron.common import utils as common_utils
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions \
     import placement as placement_extension
 from neutron.tests.functional import base
+from neutron.tests.functional.plugins.ml2.drivers.ovn.mech_driver.ovsdb \
+    import test_ovsdb_monitor
 
 
-class TestOVNClientQosExtension(base.TestOVNFunctionalBase):
+class TestOVNClientPlacementExtension(base.TestOVNFunctionalBase):
 
     EMPTY_CHASSIS = {n_const.RP_BANDWIDTHS: {},
                      n_const.RP_INVENTORY_DEFAULTS: {},
-                     ovn_const.RP_HYPERVISORS: {}}
+                     n_const.RP_HYPERVISORS: {}}
 
     RP_BANDWIDTHS_1 = {'br-provider0': {'egress': 1000, 'ingress': 2000}}
     RP_INVENTORY_DEFAULTS_1 = {'allocation_ratio': 1.0, 'min_unit': 2}
@@ -37,7 +39,7 @@ class TestOVNClientQosExtension(base.TestOVNFunctionalBase):
         'chassis1': {
             n_const.RP_BANDWIDTHS: RP_BANDWIDTHS_1,
             n_const.RP_INVENTORY_DEFAULTS: RP_INVENTORY_DEFAULTS_1,
-            ovn_const.RP_HYPERVISORS: RP_HYPERVISORS_1
+            n_const.RP_HYPERVISORS: RP_HYPERVISORS_1
         }
     }
     RP_BANDWIDTHS_2 = {'br-provider0': {'egress': 3000, 'ingress': 4000}}
@@ -47,7 +49,7 @@ class TestOVNClientQosExtension(base.TestOVNFunctionalBase):
         'chassis2': {
             n_const.RP_BANDWIDTHS: RP_BANDWIDTHS_2,
             n_const.RP_INVENTORY_DEFAULTS: RP_INVENTORY_DEFAULTS_2,
-            ovn_const.RP_HYPERVISORS: RP_HYPERVISORS_2
+            n_const.RP_HYPERVISORS: RP_HYPERVISORS_2
         }
     }
 
@@ -57,7 +59,7 @@ class TestOVNClientQosExtension(base.TestOVNFunctionalBase):
         'chassis2': {
             n_const.RP_BANDWIDTHS: RP_BANDWIDTHS_3,
             n_const.RP_INVENTORY_DEFAULTS: RP_INVENTORY_DEFAULTS_3,
-            ovn_const.RP_HYPERVISORS: RP_HYPERVISORS_2
+            n_const.RP_HYPERVISORS: RP_HYPERVISORS_2
         }
     }
 
@@ -66,11 +68,15 @@ class TestOVNClientQosExtension(base.TestOVNFunctionalBase):
         super().setUp(maintenance_worker=maintenance_worker,
                       service_plugins=service_plugins)
         self.ovn_client = self.mech_driver._ovn_client
-        self.placement_ext = self.ovn_client.placement_extension
+        self.ovn_client.placement_extension._reset(self.ovn_client)
         self.mock_name2uuid = mock.patch.object(
-            self.placement_ext, 'name2uuid').start()
+            self.ovn_client.placement_extension, 'name2uuid').start()
         self.mock_send_batch = mock.patch.object(
             placement_extension, '_send_deferred_batch').start()
+        self.addCleanup(self._reset_placement_singleton)
+
+    def _reset_placement_singleton(self):
+        del self.ovn_client.placement_extension
 
     def _build_other_config(self, bandwidths, inventory_defaults, hypervisors):
         options = []
@@ -80,7 +86,7 @@ class TestOVNClientQosExtension(base.TestOVNFunctionalBase):
             options.append(n_const.RP_INVENTORY_DEFAULTS + '=' +
                            inventory_defaults)
         if hypervisors:
-            options.append(ovn_const.RP_HYPERVISORS + '=' + hypervisors)
+            options.append(n_const.RP_HYPERVISORS + '=' + hypervisors)
         return {'ovn-cms-options': ','.join(options)}
 
     def _create_chassis(self, host, name, physical_nets=None, bandwidths=None,
@@ -103,7 +109,8 @@ class TestOVNClientQosExtension(base.TestOVNFunctionalBase):
 
         def check_chassis():
             nonlocal current_chassis
-            current_chassis = self.placement_ext.get_chassis_config()
+            current_chassis = (
+                self.ovn_client.placement_extension.get_chassis_config())
             current_chassis = {
                 chassis_name: placement_extension.dict_chassis_config(state)
                 for chassis_name, state in current_chassis.items()}
@@ -186,3 +193,69 @@ class TestOVNClientQosExtension(base.TestOVNFunctionalBase):
             inventory_defaults='allocation_ratio:1.1;min_unit:1',
             hypervisors='br-provider0:host2')
         self._check_placement_config({**self.CHASSIS1, **self.CHASSIS2_B})
+
+    @mock.patch.object(placement_extension, '_send_deferred_batch')
+    def test_chassis_bandwidth_config_event(self, mock_send_placement):
+        ch_host = 'fake-chassis-host'
+        ch_name = uuidutils.generate_uuid()
+        ch_event = test_ovsdb_monitor.WaitForChassisPrivateCreateEvent(ch_name)
+        self.mech_driver.sb_ovn.idl.notify_handler.watch_event(ch_event)
+        self.chassis_name = self.add_fake_chassis(ch_host, name=ch_name)
+        self.assertTrue(ch_event.wait())
+        common_utils.wait_until_true(lambda: mock_send_placement.called,
+                                     timeout=2)
+        mock_send_placement.reset_mock()
+
+        # Once the chassis registger has been created, this new event will
+        # catch any chassis BW update.
+        self._update_chassis(
+            ch_name,
+            bandwidths='br-provider0:3000:4000',
+            inventory_defaults='allocation_ratio:3.0;min_unit:1',
+            hypervisors='br-provider0:host2')
+        common_utils.wait_until_true(lambda: mock_send_placement.called,
+                                     timeout=2)
+        mock_send_placement.reset_mock()
+
+        # The chassis BW information is written again without any change.
+        # That should not trigger the placement update.
+        self._update_chassis(
+            ch_name,
+            bandwidths='br-provider0:3000:4000',
+            inventory_defaults='allocation_ratio:3.0;min_unit:1',
+            hypervisors='br-provider0:host2')
+        self.assertRaises(common_utils.WaitTimeout,
+                          common_utils.wait_until_true,
+                          lambda: mock_send_placement.called,
+                          timeout=2)
+
+    @mock.patch.object(placement_extension, '_send_deferred_batch')
+    def test_chassis_bandwidth_initial_config_event(self, mock_send_placement):
+        ch_name = uuidutils.generate_uuid()
+        rp_uuid = uuidutils.generate_uuid()
+        ch_event = test_ovsdb_monitor.WaitForChassisPrivateCreateEvent(ch_name)
+        self.mech_driver.sb_ovn.idl.notify_handler.watch_event(ch_event)
+        self.mock_name2uuid.return_value = {'host1': rp_uuid}
+        self._create_chassis(
+            'host1', ch_name, physical_nets=['phys1'],
+            bandwidths='br-provider0:1000:2000',
+            inventory_defaults='allocation_ratio:1.0;min_unit:2',
+            hypervisors='br-provider0:host1')
+        self.assertTrue(ch_event.wait())
+        common_utils.wait_until_true(lambda: mock_send_placement.called,
+                                     timeout=2)
+        mock_send_placement.assert_called_once()
+        placement_state = mock_send_placement.call_args[0][0]
+
+        device_mappings = {'phys1': ['br-provider0']}
+        self.assertEqual(placement_state._device_mappings, device_mappings)
+
+        hypervisor_rps = {'br-provider0': {'name': 'host1', 'uuid': rp_uuid}}
+        self.assertEqual(placement_state._hypervisor_rps, hypervisor_rps)
+
+        rp_bandwidths = {'br-provider0': {'egress': 1000, 'ingress': 2000}}
+        self.assertEqual(placement_state._rp_bandwidths, rp_bandwidths)
+
+        rp_inventory_defaults = {'allocation_ratio': 1.0, 'min_unit': 2}
+        self.assertEqual(placement_state._rp_inventory_defaults,
+                         rp_inventory_defaults)

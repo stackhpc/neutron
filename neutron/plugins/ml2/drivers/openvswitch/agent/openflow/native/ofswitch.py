@@ -15,20 +15,17 @@
 #    under the License.
 
 import functools
-import random
+import queue
+import secrets
+import threading
 
-import debtcollector
-import eventlet
 import netaddr
 from neutron_lib import exceptions
 import os_ken.app.ofctl.api as ofctl_api
 from os_ken.app.ofctl import exception as ofctl_exc
 import os_ken.exception as os_ken_exc
-from os_ken.lib import ofctl_string
-from os_ken.ofproto import ofproto_parser
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_utils import excutils
 from oslo_utils import timeutils
 import tenacity
 
@@ -45,7 +42,7 @@ class ActiveBundleRunning(exceptions.NeutronException):
     message = _("Another active bundle 0x%(bundle_id)x is running")
 
 
-class OpenFlowSwitchMixin(object):
+class OpenFlowSwitchMixin:
     """Mixin to provide common convenient routines for an openflow switch.
 
     NOTE(yamamoto): super() points to ovs_lib.OVSBridge.
@@ -62,7 +59,7 @@ class OpenFlowSwitchMixin(object):
     def __init__(self, *args, **kwargs):
         self._app = kwargs.pop('os_ken_app')
         self.active_bundles = set()
-        super(OpenFlowSwitchMixin, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def _get_dp_by_dpid(self, dpid_int):
         """Get os-ken datapath object for the switch."""
@@ -93,14 +90,42 @@ class OpenFlowSwitchMixin(object):
     def _send_msg(self, msg, reply_cls=None, reply_multi=False,
                   active_bundle=None):
         timeout_sec = cfg.CONF.OVS.of_request_timeout
-        timeout = eventlet.Timeout(seconds=timeout_sec)
-        if active_bundle is not None:
-            (dp, ofp, ofpp) = self._get_dp()
-            msg = ofpp.ONFBundleAddMsg(dp, active_bundle['id'],
-                                       active_bundle['bundle_flags'], msg, [])
+        qresult = queue.Queue()
+
+        class _TimeoutException(exceptions.NeutronException):
+            pass
+
+        def worker():
+            try:
+                if active_bundle is not None:
+                    (dp, ofp, ofpp) = self._get_dp()
+                    bundle_msg = ofpp.ONFBundleAddMsg(
+                        dp, active_bundle['id'],
+                        active_bundle['bundle_flags'], msg, [])
+                else:
+                    bundle_msg = msg
+
+                result = self._send_msg_retry(
+                    self._app, bundle_msg, reply_cls, reply_multi)
+                qresult.put(result)
+
+                return True
+            except Exception as e:
+                qresult.put(e)
+
+        def timeout_handler():
+            qresult.put(_TimeoutException())
+
+        worker_thread = threading.Thread(target=worker)
+        worker_thread.start()
+
+        timer = threading.Timer(timeout_sec, timeout_handler)
+        timer.start()
+
         try:
-            result = self._send_msg_retry(self._app, msg, reply_cls,
-                                          reply_multi)
+            result = qresult.get()
+            if isinstance(result, Exception):
+                raise result
         except os_ken_exc.OSKenException as e:
             m = _("ofctl request %(request)s error %(error)s") % {
                 "request": msg,
@@ -109,18 +134,17 @@ class OpenFlowSwitchMixin(object):
             LOG.error(m)
             # NOTE(yamamoto): use RuntimeError for compat with ovs_lib
             raise RuntimeError(m)
-        except eventlet.Timeout as e:
-            with excutils.save_and_reraise_exception() as ctx:
-                if e is timeout:
-                    ctx.reraise = False
-                    m = _("ofctl request %(request)s timed out") % {
-                        "request": msg,
-                    }
-                    LOG.error(m)
-                    # NOTE(yamamoto): use RuntimeError for compat with ovs_lib
-                    raise RuntimeError(m)
+        except _TimeoutException:
+            m = _("ofctl request %(request)s timed out") % {
+                "request": msg,
+            }
+            LOG.error(m)
+            # NOTE(yamamoto): use RuntimeError for compat with ovs_lib
+            raise RuntimeError(m)
         finally:
-            timeout.cancel()
+            timer.cancel()
+            worker_thread.join()
+
         LOG.debug("ofctl request %(request)s result %(result)s",
                   {"request": msg, "result": result})
         return result
@@ -178,12 +202,13 @@ class OpenFlowSwitchMixin(object):
         return flows
 
     def _dump_and_clean(self, table_id=None):
-        cookies = set([f.cookie for f in self.dump_flows(table_id)]) - \
+        cookies = {f.cookie for f in self.dump_flows(table_id)} - \
                       self.reserved_cookies
         for c in cookies:
             LOG.warning("Deleting flow with cookie 0x%(cookie)x",
                         {'cookie': c})
-            self.uninstall_flows(cookie=c, cookie_mask=ovs_lib.UINT64_BITMASK)
+            self.uninstall_flows(table_id=table_id,
+                                 cookie=c, cookie_mask=ovs_lib.UINT64_BITMASK)
 
     def cleanup_flows(self):
         LOG.info("Reserved cookies for %s: %s", self.br_name,
@@ -230,13 +255,6 @@ class OpenFlowSwitchMixin(object):
                              match=None, active_bundle=None, **match_kwargs):
         (dp, ofp, ofpp) = self._get_dp()
         match = self._match(ofp, ofpp, match, **match_kwargs)
-        if isinstance(instructions, str):
-            debtcollector.deprecate("Use of string instruction is "
-                "deprecated", removal_version='U')
-            jsonlist = ofctl_string.ofp_instruction_from_str(
-                ofp, instructions)
-            instructions = ofproto_parser.ofp_instruction_from_jsondict(
-                dp, jsonlist)
         msg = ofpp.OFPFlowMod(dp,
                               table_id=table_id,
                               cookie=self.default_cookie,
@@ -262,7 +280,7 @@ class OpenFlowSwitchMixin(object):
         return BundledOpenFlowBridge(self, atomic, ordered)
 
 
-class BundledOpenFlowBridge(object):
+class BundledOpenFlowBridge:
     def __init__(self, br, atomic, ordered):
         self.br = br
         self.active_bundle = None
@@ -289,7 +307,8 @@ class BundledOpenFlowBridge(object):
         if self.active_bundle is not None:
             raise ActiveBundleRunning(bundle_id=self.active_bundle)
         while True:
-            self.active_bundle = random.randrange(BUNDLE_ID_WIDTH)
+            self.active_bundle = secrets.SystemRandom().randrange(
+                BUNDLE_ID_WIDTH)
             if self.active_bundle not in self.br.active_bundles:
                 self.br.active_bundles.add(self.active_bundle)
                 break

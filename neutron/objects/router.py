@@ -10,8 +10,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import itertools
-
 import netaddr
 
 from neutron_lib.api.definitions import availability_zone as az_def
@@ -23,6 +21,8 @@ from neutron_lib.utils import net as net_utils
 from oslo_utils import versionutils
 from oslo_versionedobjects import fields as obj_fields
 from sqlalchemy import func
+from sqlalchemy import or_
+from sqlalchemy import sql
 
 from neutron.db.models import dvr as dvr_models
 from neutron.db.models import l3
@@ -31,6 +31,7 @@ from neutron.db.models import l3agent as rb_model
 from neutron.db import models_v2
 from neutron.objects import base
 from neutron.objects.qos import binding as qos_binding
+from neutron.plugins.ml2 import models as ml2_models
 
 
 @base.NeutronObjectRegistry.register
@@ -51,7 +52,7 @@ class RouterRoute(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        result = super(RouterRoute, cls).modify_fields_from_db(db_obj)
+        result = super().modify_fields_from_db(db_obj)
         if 'destination' in result:
             result['destination'] = net_utils.AuthenticIPNetwork(
                 result['destination'])
@@ -61,7 +62,7 @@ class RouterRoute(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(RouterRoute, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'destination' in result:
             result['destination'] = cls.filter_to_str(result['destination'])
         if 'nexthop' in result:
@@ -72,7 +73,8 @@ class RouterRoute(base.NeutronDbObject):
 @base.NeutronObjectRegistry.register
 class RouterExtraAttributes(base.NeutronDbObject):
     # Version 1.0: Initial version
-    VERSION = '1.0'
+    # Version 1.1: Added ECMP and BFD attributes
+    VERSION = '1.1'
 
     db_model = l3_attrs.RouterExtraAttributes
 
@@ -82,7 +84,10 @@ class RouterExtraAttributes(base.NeutronDbObject):
         'service_router': obj_fields.BooleanField(default=False),
         'ha': obj_fields.BooleanField(default=False),
         'ha_vr_id': obj_fields.IntegerField(nullable=True),
-        'availability_zone_hints': obj_fields.ListOfStringsField(nullable=True)
+        'availability_zone_hints': obj_fields.ListOfStringsField(
+            nullable=True),
+        'enable_default_route_bfd': obj_fields.BooleanField(default=False),
+        'enable_default_route_ecmp': obj_fields.BooleanField(default=False),
     }
 
     primary_keys = ['router_id']
@@ -91,7 +96,7 @@ class RouterExtraAttributes(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        result = super(RouterExtraAttributes, cls).modify_fields_from_db(
+        result = super().modify_fields_from_db(
             db_obj)
         if az_def.AZ_HINTS in result:
             result[az_def.AZ_HINTS] = (
@@ -101,7 +106,7 @@ class RouterExtraAttributes(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(RouterExtraAttributes, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if az_def.AZ_HINTS in result:
             result[az_def.AZ_HINTS] = (
                 az_validator.convert_az_list_to_string(
@@ -110,7 +115,7 @@ class RouterExtraAttributes(base.NeutronDbObject):
 
     @classmethod
     @db_api.CONTEXT_READER
-    def get_router_agents_count(cls, context):
+    def get_router_agents_count(cls, context, ha=False, less_than=0):
         # TODO(sshank): This is pulled out from l3_agentschedulers_db.py
         # until a way to handle joins is figured out.
         binding_model = rb_model.RouterL3AgentBinding
@@ -122,11 +127,27 @@ class RouterExtraAttributes(base.NeutronDbObject):
                           l3_attrs.RouterExtraAttributes.router_id).
                      join(l3.Router).
                      group_by(binding_model.router_id).subquery())
-
-        query = (context.session.query(l3.Router, sub_query.c.count).
-                 outerjoin(sub_query))
+        # pylint: disable=assignment-from-no-return
+        count = func.coalesce(sub_query.c.count, 0)
+        query = (context.session.query(l3.Router, count).
+                 outerjoin(sub_query).join(l3_attrs.RouterExtraAttributes).
+                 filter(l3_attrs.RouterExtraAttributes.ha == ha))
+        if less_than > 0:
+            query = query.filter(count < less_than)
 
         return list(query)
+
+    @classmethod
+    @db_api.CONTEXT_WRITER
+    def update_distributed_flag(cls, context, distributed):
+        query = context.session.query(cls.db_model)
+        query.update({'distributed': distributed})
+
+    def obj_make_compatible(self, primitive, target_version):
+        _target_version = versionutils.convert_version_to_tuple(target_version)
+        if _target_version < (1, 1):
+            primitive.pop('enable_default_route_bfd', None)
+            primitive.pop('enable_default_route_ecmp', None)
 
 
 @base.NeutronObjectRegistry.register
@@ -161,6 +182,15 @@ class RouterPort(base.NeutronDbObject):
         query = query.distinct()
         return [r[0] for r in query]
 
+    @classmethod
+    @db_api.CONTEXT_READER
+    def get_gw_port_ids_by_router_id(cls, context, router_id):
+        query = context.session.query(l3.RouterPort)
+        query = query.filter(
+            l3.RouterPort.router_id == router_id,
+            l3.RouterPort.port_type == n_const.DEVICE_OWNER_ROUTER_GW)
+        return [rp.port_id for rp in query]
+
 
 @base.NeutronObjectRegistry.register
 class DVRMacAddress(base.NeutronDbObject):
@@ -178,7 +208,7 @@ class DVRMacAddress(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        fields = super(DVRMacAddress, cls).modify_fields_from_db(db_obj)
+        fields = super().modify_fields_from_db(db_obj)
         if 'mac_address' in fields:
             # NOTE(tonytan4ever): Here uses AuthenticEUI to retain the format
             # passed from API.
@@ -188,7 +218,7 @@ class DVRMacAddress(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(DVRMacAddress, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'mac_address' in fields:
             result['mac_address'] = cls.filter_to_str(result['mac_address'])
         return result
@@ -236,7 +266,7 @@ class Router(base.NeutronDbObject):
         query = query.filter(
             ~l3.Router.project_id.in_(projects))
 
-        return bool(query.count())
+        return query.first() is not None
 
     def _attach_qos_policy(self, qos_policy_id):
         qos_binding.QosPolicyRouterGatewayIPBinding.delete_objects(
@@ -273,10 +303,15 @@ class Router(base.NeutronDbObject):
 
         self.obj_reset_changes(fields_to_change)
 
-    def obj_make_compatible(self, primitive, target_version):
-        _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 1):
-            primitive.pop('qos_policy_id', None)
+    @staticmethod
+    @db_api.CONTEXT_READER
+    def get_router_ids_without_router_std_attrs(context):
+        r_attrs = l3_attrs.RouterExtraAttributes
+        query = context.session.query(l3.Router)
+        query = query.join(r_attrs, r_attrs.router_id == l3.Router.id,
+                           isouter=True)
+        query = query.filter(r_attrs.router_id == sql.null())
+        return [r.id for r in query.all()]
 
 
 @base.NeutronObjectRegistry.register
@@ -313,7 +348,7 @@ class FloatingIP(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        result = super(FloatingIP, cls).modify_fields_from_db(db_obj)
+        result = super().modify_fields_from_db(db_obj)
         if 'fixed_ip_address' in result:
             result['fixed_ip_address'] = netaddr.IPAddress(
                 result['fixed_ip_address'])
@@ -324,7 +359,7 @@ class FloatingIP(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(FloatingIP, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'fixed_ip_address' in result:
             if result['fixed_ip_address'] is not None:
                 result['fixed_ip_address'] = cls.filter_to_str(
@@ -349,19 +384,19 @@ class FloatingIP(base.NeutronDbObject):
         fields = self.obj_get_changes()
         with self.db_context_writer(self.obj_context):
             qos_policy_id = self.qos_policy_id
-            super(FloatingIP, self).create()
+            super().create()
             if 'qos_policy_id' in fields:
                 self._attach_qos_policy(qos_policy_id)
 
     def update(self):
         fields = self.obj_get_changes()
         with self.db_context_writer(self.obj_context):
-            super(FloatingIP, self).update()
+            super().update()
             if 'qos_policy_id' in fields:
                 self._attach_qos_policy(fields['qos_policy_id'])
 
     def from_db_object(self, db_obj):
-        super(FloatingIP, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
         fields_to_change = []
         if db_obj.get('qos_policy_binding'):
             self.qos_policy_id = db_obj.qos_policy_binding.policy_id
@@ -372,16 +407,9 @@ class FloatingIP(base.NeutronDbObject):
             fields_to_change.append('qos_network_policy_binding')
         self.obj_reset_changes(fields_to_change)
 
-    def obj_make_compatible(self, primitive, target_version):
-        _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 1):
-            primitive.pop('qos_policy_id', None)
-        if _target_version < (1, 2):
-            primitive.pop('qos_network_policy_id', None)
-
     @classmethod
     @db_api.CONTEXT_READER
-    def get_scoped_floating_ips(cls, context, router_ids):
+    def get_scoped_floating_ips(cls, context, router_ids, host=None):
         query = context.session.query(l3.FloatingIP,
                                       models_v2.SubnetPool.address_scope_id)
         query = query.join(
@@ -398,20 +426,28 @@ class FloatingIP(base.NeutronDbObject):
 
         # Filter out on router_ids
         query = query.filter(l3.FloatingIP.router_id.in_(router_ids))
-        return cls._unique_floatingip_iterator(context, query)
 
-    @classmethod
-    def _unique_floatingip_iterator(cls, context, query):
-        """Iterates over only one row per floating ip. Ignores others."""
-        # Group rows by fip id. They must be sorted by same.
-        q = query.order_by(l3.FloatingIP.id)
-        keyfunc = lambda row: row[0]['id']
-        group_iterator = itertools.groupby(q, keyfunc)
+        # If a host value is provided, filter output to a specific host
+        if host is not None:
+            query = query.outerjoin(
+                ml2_models.PortBinding,
+                models_v2.Port.id == ml2_models.PortBinding.port_id)
+            # Also filter for ports with migrating_to as they may be relevant
+            # to this host but might not yet have the 'host' column updated
+            # if the migration is in a pre-live migration state
+            query = query.filter(or_(
+                ml2_models.PortBinding.host == host,
+                ml2_models.PortBinding.profile.like('%migrating_to%'),
+            ))
 
-        # Just hit the first row of each group
-        for key, value in group_iterator:
-            # pylint: disable=stop-iteration-return
-            row = list(next(value))
+        # Remove duplicate rows based on FIP IDs and the subnet pool address
+        # scope. Only one subnet pool (per IP version, 4 in this case) can
+        # be assigned to a subnet. The subnet pool address scope for a FIP is
+        # unique.
+        query = query.group_by(l3.FloatingIP.id,
+                               models_v2.SubnetPool.address_scope_id)
+
+        for row in query:
             yield (cls._load_object(context, row[0]), row[1])
 
     @classmethod

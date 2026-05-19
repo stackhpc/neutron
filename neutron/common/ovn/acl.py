@@ -19,6 +19,7 @@ from oslo_config import cfg
 from neutron._i18n import _
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
+from neutron.objects import securitygroup as sg_obj
 
 
 # Convert the protocol number from integer to strings because that's
@@ -63,8 +64,8 @@ def acl_direction(r, port=None, port_group=None):
         portdir = 'inport'
 
     if port:
-        return '%s == "%s"' % (portdir, port['id'])
-    return '%s == @%s' % (portdir, port_group)
+        return '{} == "{}"'.format(portdir, port['id'])
+    return f'{portdir} == @{port_group}'
 
 
 def acl_ethertype(r):
@@ -86,7 +87,7 @@ def acl_remote_ip_prefix(r, ip_version):
     if not r['normalized_cidr']:
         return ''
     src_or_dst = 'src' if r['direction'] == const.INGRESS_DIRECTION else 'dst'
-    return ' && %s.%s == %s' % (
+    return ' && {}.{} == {}'.format(
         ip_version, src_or_dst, r['normalized_cidr'])
 
 
@@ -148,7 +149,8 @@ def add_acls_for_drop_port_group(pg_name):
                "name": [],
                "severity": [],
                "direction": direction,
-               "match": '%s == @%s && ip' % (p, pg_name)}
+               "match": f'{p} == @{pg_name} && ip',
+               "meter": []}
         acl_list.append(acl)
     return acl_list
 
@@ -166,7 +168,8 @@ def drop_all_ip_traffic_for_port(port):
                "name": [],
                "severity": [],
                "direction": direction,
-               "match": '%s == "%s" && ip' % (p, port['id']),
+               "match": '{} == "{}" && ip'.format(p, port['id']),
+               "meter": [],
                "external_ids": {'neutron:lport': port['id']}}
         acl_list.append(acl)
     return acl_list
@@ -187,6 +190,7 @@ def add_sg_rule_acl_for_port_group(port_group, r, stateful, match):
            "severity": [],
            "direction": dir_map[r['direction']],
            "match": match,
+           "meter": [],
            ovn_const.OVN_SG_RULE_EXT_ID_KEY: r['id']}
     return acl
 
@@ -194,33 +198,29 @@ def add_sg_rule_acl_for_port_group(port_group, r, stateful, match):
 def _get_subnet_from_cache(plugin, admin_context, subnet_cache, subnet_id):
     if subnet_id in subnet_cache:
         return subnet_cache[subnet_id]
-    else:
-        subnet = plugin.get_subnet(admin_context, subnet_id)
-        if subnet:
-            subnet_cache[subnet_id] = subnet
-        return subnet
+    subnet = plugin.get_subnet(admin_context, subnet_id)
+    if subnet:
+        subnet_cache[subnet_id] = subnet
+    return subnet
 
 
 def _get_sg_ports_from_cache(plugin, admin_context, sg_ports_cache, sg_id):
     if sg_id in sg_ports_cache:
         return sg_ports_cache[sg_id]
-    else:
-        filters = {'security_group_id': [sg_id]}
-        sg_ports = plugin._get_port_security_group_bindings(
-            admin_context, filters)
-        if sg_ports:
-            sg_ports_cache[sg_id] = sg_ports
-        return sg_ports
+    filters = {'security_group_id': [sg_id]}
+    sg_ports = plugin._get_port_security_group_bindings(admin_context, filters)
+    if sg_ports:
+        sg_ports_cache[sg_id] = sg_ports
+    return sg_ports
 
 
 def _get_sg_from_cache(plugin, admin_context, sg_cache, sg_id):
     if sg_id in sg_cache:
         return sg_cache[sg_id]
-    else:
-        sg = plugin.get_security_group(admin_context, sg_id)
-        if sg:
-            sg_cache[sg_id] = sg
-        return sg
+    sg = plugin.get_security_group(admin_context, sg_id)
+    if sg:
+        sg_cache[sg_id] = sg
+    return sg
 
 
 def acl_remote_group_id(r, ip_version):
@@ -230,7 +230,17 @@ def acl_remote_group_id(r, ip_version):
     src_or_dst = 'src' if r['direction'] == const.INGRESS_DIRECTION else 'dst'
     addrset_name = utils.ovn_pg_addrset_name(r['remote_group_id'],
                                              ip_version)
-    return ' && %s.%s == $%s' % (ip_version, src_or_dst, addrset_name)
+    return f' && {ip_version}.{src_or_dst} == ${addrset_name}'
+
+
+def acl_remote_address_group_id(r, ip_version):
+    if not r.get('remote_address_group_id'):
+        return ''
+
+    src_or_dst = 'src' if r['direction'] == const.INGRESS_DIRECTION else 'dst'
+    addrset_name = utils.ovn_ag_addrset_name(r['remote_address_group_id'],
+                                             ip_version)
+    return ' && {}.{} == ${}'.format(ip_version, src_or_dst, addrset_name)
 
 
 def _add_sg_rule_acl_for_port_group(port_group, stateful, r):
@@ -248,6 +258,9 @@ def _add_sg_rule_acl_for_port_group(port_group, stateful, r):
     # Update the match if remote group id was specified.
     match += acl_remote_group_id(r, ip_version)
 
+    # Update the match if remote address group id was specified.
+    match += acl_remote_address_group_id(r, ip_version)
+
     # Update the match for the protocol (tcp, udp, icmp) and port/type
     # range if specified.
     match += acl_protocol_and_ports(r, icmp)
@@ -261,15 +274,12 @@ def _acl_columns_name_severity_supported(nb_idl):
     return ('name' in columns) and ('severity' in columns)
 
 
-def is_sg_stateful(sg, stateless_supported):
-    if stateless_supported:
-        return sg.get("stateful", True)
-    return True
+def is_sg_stateful(sg):
+    return sg.get("stateful", True)
 
 
-def add_acls_for_sg_port_group(ovn, security_group, txn,
-                               stateless_supported=True):
-    stateful = is_sg_stateful(security_group, stateless_supported)
+def add_acls_for_sg_port_group(ovn, security_group, txn):
+    stateful = is_sg_stateful(security_group)
     for r in security_group['security_group_rules']:
         acl = _add_sg_rule_acl_for_port_group(
             utils.ovn_port_group_name(security_group['id']), stateful, r)
@@ -282,31 +292,44 @@ def update_acls_for_security_group(plugin,
                                    security_group_id,
                                    security_group_rule,
                                    is_add_acl=True,
-                                   stateless_supported=True):
+                                   txn=None):
 
     # Skip ACLs if security groups aren't enabled
     if not is_sg_enabled():
         return
 
+    # It's possible to have a security group created on one controller and
+    # then a security group rule created on a different controller quickly
+    # enough that the second controller does not yet see that security group
+    # in its local cache of the OVN northbound database. Check if the port
+    # group is present or not in the idl's local copy of the database before
+    # creating the security group rule.
+    pg_name = utils.ovn_port_group_name(security_group_id)
+    ovn.check_for_row_by_value_and_retry('Port_Group', 'name', pg_name)
+
     # Check if ACL log name and severity supported or not
     keep_name_severity = _acl_columns_name_severity_supported(ovn)
 
-    sg = plugin.get_security_group(admin_context, security_group_id)
-    stateful = is_sg_stateful(sg, stateless_supported)
+    sg_stateful = sg_obj.SecurityGroup.get_sgs_stateful_flag(
+        admin_context, [security_group_id])
+    stateful = bool(sg_stateful[security_group_id])
 
     acl = _add_sg_rule_acl_for_port_group(
-        utils.ovn_port_group_name(security_group_id),
-        stateful, security_group_rule)
+        pg_name, stateful, security_group_rule)
     # Remove ACL log name and severity if not supported
     if is_add_acl:
         if not keep_name_severity:
             acl.pop('name')
             acl.pop('severity')
-        ovn.pg_acl_add(**acl, may_exist=True).execute(check_error=True)
+        cmd = ovn.pg_acl_add(**acl, may_exist=True)
     else:
-        ovn.pg_acl_del(acl['port_group'], acl['direction'],
-                       acl['priority'], acl['match']).execute(
-            check_error=True)
+        cmd = ovn.pg_acl_del(acl['port_group'], acl['direction'],
+                             acl['priority'], acl['match'])
+
+    if txn is not None:
+        txn.add(cmd)
+    else:
+        cmd.execute(check_error=True)
 
 
 def filter_acl_dict(acl, extra_fields=None):

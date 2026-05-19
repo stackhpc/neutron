@@ -534,8 +534,8 @@ one segment to a routed one.
       +------------+--------------------------------------+
 
 
-Routed provider networks as external networks for tenant routed networks
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Routed provider networks as external networks for project routed networks
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. note::
 
@@ -547,17 +547,17 @@ operation. The communication (routing) between segments is done using the
 underlying network infrastructure, not managed by Neutron.
 
 Could be the case that the user needs to split the communication between
-several hosts. It is possible to create tenant networks and connect them using
+several hosts. It is possible to create project networks and connect them using
 a router. To access to the routed provider network, it should be connected
 as router gateway.
 
 .. code-block:: bash
 
-   Tenant net1  ┌─────────────────────┐
+   Project net1 ┌─────────────────────┐
    ─────────────┤                     │
                 │                     │ Routed provided network
                 │             GW port ├────────────────────────
-   Tenant net2  │                     │
+   Project net2 │                     │
    ─────────────┤                     │
                 └─────────────────────┘
 
@@ -584,7 +584,7 @@ that belong to the host segment:
 
 For example, let's consider the following configuration:
 
-* Two tenant networks with CIDRs 10.1.0.0/24 and 10.2.0.0/24.
+* Two project networks with CIDRs 10.1.0.0/24 and 10.2.0.0/24.
 * A RPN with two segments; each segment with two subnets: segment 1 with
   10.51.0.0/24 and 10.52.0.0/24, segment 2 with 10.53.0.0/24 and 10.54.0.0/24.
 * The router is connected to the first segment and the gateway port has an IP
@@ -598,8 +598,8 @@ is the routing table set in the router namespace:
 
    $ ip netns exec $r ip r
    default via 10.51.0.1 dev qg-gwport proto static
-   10.1.0.0/24 dev qr-tenant1 proto kernel scope link src 10.1.0.1
-   10.2.0.0/24 dev qr-tenant2 proto kernel scope link src 10.2.0.1
+   10.1.0.0/24 dev qr-project1 proto kernel scope link src 10.1.0.1
+   10.2.0.0/24 dev qr-project2 proto kernel scope link src 10.2.0.1
    10.51.0.0/24 dev qg-gwport proto kernel scope link src 10.100.0.15
    10.52.0.0/24 dev qg-gwport proto static scope link
    10.53.0.0/24 dev qg-gwport proto static scope link  <-- should be removed, belongs to segment 2
@@ -616,3 +616,68 @@ subnets L3 agent when:
 * The "segments" plugin is enabled; this plugin is needed for routed provided
   networks.
 * The network is connected to a segment.
+
+
+Multiple routed provider segments per host
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Starting with 2023.1 (Antelope), the support of routed provider networks has
+been enhanced to handle multiple segments per host. The main
+consequence will be for an operator to extend the IP pool without
+creating multiple networks and/or increasing broadcast domain.
+
+.. note::
+
+   The present support is only available for OVS agent at this point.
+
+#. On a given provider network, create a second segment. In this
+   example, the second segment uses the ``provider1`` physical network
+   with VLAN ID 2020.
+
+   .. code-block:: console
+
+      $ openstack network segment create --physical-network provider1 \
+        --network-type vlan --segment 2020 --network multisegment1 segment1-2
+      +------------------+--------------------------------------+
+      | Field            | Value                                |
+      +------------------+--------------------------------------+
+      | description      | None                                 |
+      | headers          |                                      |
+      | id               | 333b7925-9a89-4489-9992-e164c8cc8764 |
+      | name             | segment1-2                           |
+      | network_id       | 6ab19caa-dda9-4b3d-abc4-5b8f435b98d9 |
+      | network_type     | vlan                                 |
+      | physical_network | provider1                            |
+      | revision_number  | 1                                    |
+      | segmentation_id  | 2020                                 |
+      | tags             | []                                   |
+      +------------------+--------------------------------------+
+
+#. Create subnets on the ``segment1-2`` segment. In this example, the IPv4
+   subnet uses 203.0.114.0/24.
+
+   .. code-block:: console
+
+       $ openstack subnet create \
+        --network multisegment1 --network-segment segment1-2 \
+        --ip-version 4 --subnet-range 203.0.114.0/24 \
+        multisegment1-segment1-2
+      +-------------------+--------------------------------------+
+      | Field             | Value                                |
+      +-------------------+--------------------------------------+
+      | allocation_pools  | 203.0.114.2-203.0.114.254            |
+      | cidr              | 203.0.114.0/24                       |
+      | enable_dhcp       | True                                 |
+      | gateway_ip        | 203.0.114.1                          |
+      | id                | c428797a-6f8e-4cb1-b394-c404318a2762 |
+      | ip_version        | 4                                    |
+      | name              | multisegment1-segment1-2             |
+      | network_id        | 6ab19caa-dda9-4b3d-abc4-5b8f435b98d9 |
+      | revision_number   | 1                                    |
+      | segment_id        | 333b7925-9a89-4489-9992-e164c8cc8764 |
+      | tags              | []                                   |
+      +-------------------+--------------------------------------+
+
+Considering that, for a subnet of the given provider network
+``provider1`` running out of available IP, Neutron will automatically
+switch to the subnet ``multisegment1-segment1-2``.

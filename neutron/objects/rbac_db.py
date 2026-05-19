@@ -20,7 +20,7 @@ from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib.db import api as db_api
 from neutron_lib import exceptions
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 
 from neutron._i18n import _
 from neutron.common import utils
@@ -68,11 +68,12 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
         # NOTE(korzen) This method enables to query within already started
         # session
         rbac_db_model = rbac_db_cls.db_model
-        return (db_utils.model_query(context, rbac_db_model).filter(
+        query = db_utils.model_query(context, rbac_db_model).filter(
             and_(rbac_db_model.object_id == obj_id,
                  rbac_db_model.action == models.ACCESS_SHARED,
                  rbac_db_model.target_project.in_(
-                     ['*', project_id]))).count() != 0)
+                     ['*', project_id])))
+        return query.with_entities(func.count()).scalar() != 0
 
     @classmethod
     def is_shared_with_project(cls, context, obj_id, project_id):
@@ -83,8 +84,7 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
 
     @classmethod
     def is_accessible(cls, context, db_obj):
-        return (super(
-            RbacNeutronDbObjectMixin, cls).is_accessible(context, db_obj) or
+        return (super().is_accessible(context, db_obj) or
                 cls.is_shared_with_project(context, db_obj.id,
                                            context.project_id))
 
@@ -116,14 +116,14 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
         def raise_policy_in_use():
             raise ext_rbac.RbacPolicyInUse(
                 object_id=obj_id,
-                details='project_id={}'.format(target_project))
+                details=f'project_id={target_project}')
 
         if target_project != '*':
             # if there is a wildcard rule, we can return early because it
             # shares the object globally
             wildcard_sharing_entries = db_obj_sharing_entries.filter(
                 rb_model.target_project == '*')
-            if wildcard_sharing_entries.count():
+            if wildcard_sharing_entries.first() is not None:
                 return
             if target_project in bound_project_ids:
                 raise_policy_in_use()
@@ -250,12 +250,12 @@ class RbacNeutronDbObjectMixin(rbac_db_mixin.RbacPluginMixin,
 
     def from_db_object(self, db_obj):
         self._load_shared(db_obj)
-        super(RbacNeutronDbObjectMixin, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
 
     def obj_load_attr(self, attrname):
         if attrname == 'shared':
             return self._load_shared()
-        super(RbacNeutronDbObjectMixin, self).obj_load_attr(attrname)
+        super().obj_load_attr(attrname)
 
     def _load_shared(self, db_obj=None):
         # Do not override 'shared' attribute on create() or update()

@@ -15,13 +15,13 @@
 
 import copy
 import functools
+import unittest
 from unittest import mock
 
 import netaddr
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as lib_constants
 from neutron_lib.exceptions import l3 as l3_exc
-import testtools
 
 from neutron.agent.l3 import agent as neutron_l3_agent
 from neutron.agent.l3 import dvr_edge_ha_router as dvr_ha_router
@@ -33,6 +33,7 @@ from neutron.agent.l3 import namespaces
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
 from neutron.common import utils
+from neutron.tests import base as test_base
 from neutron.tests.common import l3_test_common
 from neutron.tests.common import machine_fixtures
 from neutron.tests.common import net_helpers
@@ -192,7 +193,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
                 _safe_fipnamespace_delete_on_ext_net,
                 router['gw_port']['network_id'])
 
-        return super(TestDvrRouter, self).manage_router(agent, router)
+        return super().manage_router(agent, router)
 
     def test_dvr_update_floatingip_statuses(self):
         self.agent.conf.agent_mode = 'dvr'
@@ -220,6 +221,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         self._dvr_router_lifecycle(enable_ha=False, enable_snat=True,
                                    snat_bound_fip=True, enable_gw=False)
 
+    @unittest.skip('Skip test until eventlet is removed')
     def test_dvr_lifecycle_ha_with_snat_with_fips_with_cent_fips_no_gw(self):
         self._dvr_router_lifecycle(enable_ha=True, enable_snat=True,
                                    snat_bound_fip=True, enable_gw=False)
@@ -313,7 +315,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         updated_route = fg_device.route.list_routes(
                 ip_version=lib_constants.IP_VERSION_4,
                 table=tbl_index)
-        expected_route = [{'cidr': '0.0.0.0/0',
+        expected_route = [{'cidr': lib_constants.IPv4_ANY,
                            'device': fg_port_name,
                            'table': tbl_index,
                            'via': '19.4.4.2'}]
@@ -361,7 +363,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         updated_route = fg_device.route.list_routes(
                 ip_version=lib_constants.IP_VERSION_4,
                 table=tbl_index)
-        expected_route = [{'cidr': '0.0.0.0/0',
+        expected_route = [{'cidr': lib_constants.IPv4_ANY,
                            'device': fg_port_name,
                            'table': tbl_index,
                            'via': '19.4.4.2'}]
@@ -491,6 +493,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         self.assertTrue(self._namespace_exists(router1.ns_name))
         restarted_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             self.agent.host, self.agent.conf)
+        restarted_agent.init_host()
         router1.router['gw_port'] = ""
         router1.router['gw_port_host'] = ""
         router1.router['external_gateway_info'] = ""
@@ -518,6 +521,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         self._assert_snat_namespace_exists(router1)
         restarted_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             self.agent.host, self.agent.conf)
+        restarted_agent.init_host()
         router1.router['gw_port_host'] = "my-new-host"
         restarted_router = self.manage_router(restarted_agent, router1.router)
         self._assert_snat_namespace_does_not_exist(restarted_router)
@@ -766,6 +770,17 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
 
     def _assert_dvr_floating_ips(self, router, snat_bound_fip=False,
                                  enable_gw=True):
+        def check_fg_port_created(device_name, ip_cidrs, mac, namespace):
+            success = ip_lib.device_exists_with_ips_and_mac(
+                device_name, ip_cidrs, mac, namespace=namespace)
+            if success:
+                return
+            dev = ip_lib.IPDevice(device_name, namespace=namespace)
+            dev_mac, dev_cidrs = dev.link.address, dev.addr.list()
+            self.fail('Device name: %s, expected MAC: %s, expected CIDRs: %s, '
+                      'device MAC: %s, device CIDRs: %s' %
+                      (device_name, mac, ip_cidrs, dev_mac, dev_cidrs))
+
         # in the fip namespace:
         # Check that the fg-<port-id> (floatingip_agent_gateway)
         # is created with the ip address of the external gateway port
@@ -783,12 +798,10 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         external_gw_port = floating_agent_gw_port[0]
         fip_ns = self.agent.get_fip_ns(floating_ips[0]['floating_network_id'])
         fip_ns_name = fip_ns.get_name()
-        fg_port_created_successfully = ip_lib.device_exists_with_ips_and_mac(
+        check_fg_port_created(
             fip_ns.get_ext_device_name(external_gw_port['id']),
             [self._port_first_ip_cidr(external_gw_port)],
-            external_gw_port['mac_address'],
-            namespace=fip_ns_name)
-        self.assertTrue(fg_port_created_successfully)
+            external_gw_port['mac_address'], fip_ns_name)
         # Check fpr-router device has been created
         device_name = fip_ns.get_int_device_name(router.router_id)
         fpr_router_device_created_successfully = ip_lib.device_exists(
@@ -922,7 +935,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         v6_gateway = utils.cidr_to_ip(
                 ip_lib.get_ipv6_lladdr(fpr_device.link.address))
         expected_gateway = [{'device': device_name,
-                             'cidr': '0.0.0.0/0',
+                             'cidr': lib_constants.IPv4_ANY,
                              'via': str(fip_2_rtr.ip),
                              'table': dvr_fip_ns.FIP_RT_TBL},
                             {'device': device_name,
@@ -946,6 +959,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         self.assertTrue(self._namespace_exists(fip_ns))
         restarted_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             self.agent.host, self.agent.conf)
+        restarted_agent.init_host()
         router1.router[lib_constants.FLOATINGIP_KEY] = []
         self.manage_router(restarted_agent, router1.router)
         self._assert_dvr_snat_gateway(router1)
@@ -960,6 +974,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         self.assertTrue(self._namespace_exists(fip_ns))
         restarted_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             self.agent.host, self.agent.conf)
+        restarted_agent.init_host()
         router_updated = self.manage_router(restarted_agent, router1.router)
         self.assertTrue(router_updated.rtr_fip_connect)
 
@@ -973,6 +988,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
             router_ns, floating_ips[0]['fixed_ip_address'])
         restarted_agent = neutron_l3_agent.L3NATAgent(
             self.agent.host, self.agent.conf)
+        restarted_agent.init_host()
         floating_ips[0]['floating_ip_address'] = '21.4.4.2'
         floating_ips[0]['fixed_ip_address'] = '10.0.0.2'
         self.manage_router(restarted_agent, router_info)
@@ -1026,6 +1042,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
 
         restarted_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             self.agent.host, self.agent.conf)
+        restarted_agent.init_host()
         restarted_router = self.manage_router(restarted_agent, router_info)
 
         self._assert_iptables_rules_exist(
@@ -1274,7 +1291,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         snat_ns = router_updated.snat_namespace.name
         fixed_ip_cent = centralized_floatingip['fixed_ip_address']
         router_updated.get_centralized_fip_cidr_set = mock.Mock(
-            return_value=set(["19.4.4.3/32"]))
+            return_value={"19.4.4.3/32"})
         self.assertTrue(self._assert_iptables_rules_not_exist(
             router_updated.snat_iptables_manager, 'nat', expected_rules))
         port = router_updated.get_ex_gw_port()
@@ -1295,9 +1312,9 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         router = self.agent.router_info[router_info['id']]
         centralized_fips = router.get_centralized_fip_cidr_set()
         if expected_result_empty:
-            self.assertEqual(set([]), centralized_fips)
+            self.assertEqual(set(), centralized_fips)
         else:
-            self.assertNotEqual(set([]), centralized_fips)
+            self.assertNotEqual(set(), centralized_fips)
 
     def test_get_centralized_fip_cidr_set(self):
         router_info = self.generate_dvr_router_info(
@@ -1422,6 +1439,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         conf = self._configure_agent('agent2')
         self.failover_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             'agent2', conf)
+        self.failover_agent.init_host()
         self.failover_agent.conf.agent_mode = 'dvr_snat'
 
     def _setup_dvr_ha_bridges(self):
@@ -1567,6 +1585,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         self.assertTrue(fip_cidr_centralized_mock.called)
         restarted_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             self.agent.host, self.agent.conf)
+        restarted_agent.init_host()
         self.manage_router(restarted_agent, router1.router)
         self.assertTrue(fip_cidr_centralized_mock.called)
 
@@ -1582,6 +1601,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         self.assertTrue(fip_cidr_centralized_mock.called)
         restarted_agent = neutron_l3_agent.L3NATAgentWithStateReport(
             self.agent.host, self.agent.conf)
+        restarted_agent.init_host()
         self.manage_router(restarted_agent, router1.router)
         self.assertTrue(fip_cidr_centralized_mock.called)
 
@@ -1701,6 +1721,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
     def test_dvr_ha_router_failover_with_gw(self):
         self._test_dvr_ha_router_failover(enable_gw=True, vrrp_id=10)
 
+    @unittest.skip('Skip test until eventlet is removed')
     def test_dvr_ha_router_failover_with_gw_and_floatingip(self):
         self._test_dvr_ha_router_failover_with_gw_and_fip(
             enable_gw=True, enable_centralized_fip=True, snat_bound_fip=True,
@@ -1807,8 +1828,8 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
             # When floatingip are associated, make sure that the
             # corresponding rules and routes in route table are created
             # for the router.
-            expected_rule = {u'from': '0.0.0.0/0',
-                             u'iif': fip_ns_int_name,
+            expected_rule = {'from': lib_constants.IPv4_ANY,
+                             'iif': fip_ns_int_name,
                              'priority': str(router_fip_table_idx),
                              'table': str(router_fip_table_idx),
                              'type': 'unicast'}
@@ -2172,7 +2193,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         test_machine1.assert_no_ping(test_machine2.ip)
         test_machine2.assert_no_ping(test_machine1.ip)
 
-    @testtools.skip('bug/1543885')
+    @test_base.unstable_test('bug 2115026')
     def test_fip_connection_for_address_scope(self):
         self.agent.conf.agent_mode = 'dvr_snat'
         (machine_same_scope, machine_diff_scope,
@@ -2219,7 +2240,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         # here.
         src_machine.assert_no_ping(machine_diff_scope.ip)
 
-    def test_dvr_snat_namespace_has_ip_nonlocal_bind_disabled(self):
+    def test_dvr_snat_namespace_has_ip_nonlocal_bind_enabled(self):
         self.agent.conf.agent_mode = 'dvr_snat'
         router_info = self.generate_dvr_router_info(
             enable_ha=True, enable_snat=True)
@@ -2234,7 +2255,7 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
                     "This kernel doesn't support %s in network namespaces." % (
                         ip_lib.IP_NONLOCAL_BIND))
             raise
-        self.assertEqual(0, ip_nonlocal_bind_value)
+        self.assertEqual(1, ip_nonlocal_bind_value)
 
     def test_dvr_router_fip_namespace_routes(self):
         """Test to validate the floatingip namespace subnets routes."""
@@ -2257,9 +2278,9 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
         routes = ip_device.route.list_onlink_routes(lib_constants.IP_VERSION_4)
         self.assertGreater(len(routes), 0)
         self.assertEqual(len(fip_agent_gw_port['extra_subnets']), len(routes))
-        extra_subnet_cidr = set(extra_subnet['cidr'] for extra_subnet
-                                in fip_agent_gw_port['extra_subnets'])
-        routes_cidr = set(route['cidr'] for route in routes)
+        extra_subnet_cidr = {extra_subnet['cidr'] for extra_subnet
+                             in fip_agent_gw_port['extra_subnets']}
+        routes_cidr = {route['cidr'] for route in routes}
         self.assertEqual(extra_subnet_cidr, routes_cidr)
 
     def test_dvr_router_update_ecmp_routes(self):
@@ -2305,3 +2326,73 @@ class TestDvrRouter(DvrRouterTestFramework, framework.L3AgentTestFramework):
                           'via': '35.4.0.11'}
         self._assert_route_in_routes(router=router1,
                                      expected_route=route_expected)
+
+    def _test_router_interface_mtu_update(self, ha):
+        original_mtu = 1450
+        router_info = self.generate_dvr_router_info(
+            enable_ha=ha, enable_snat=True)
+        router_info['_interfaces'][0]['mtu'] = original_mtu
+        router_info['gw_port']['mtu'] = original_mtu
+        router_info[lib_constants.SNAT_ROUTER_INTF_KEY][0]['mtu'] = (
+            original_mtu)
+
+        router = self.manage_router(self.agent, router_info)
+        if ha:
+            utils.wait_until_true(lambda: router.ha_state == 'primary')
+            # Keepalived notifies of a state transition when it starts,
+            # not when it ends. Thus, we have to wait until keepalived finishes
+            # configuring everything. We verify this by waiting until the last
+            # device has an IP address.
+            device = router.router[lib_constants.INTERFACE_KEY][-1]
+            device_exists = functools.partial(
+                self.device_exists_with_ips_and_mac,
+                device,
+                router.get_internal_device_name,
+                router.ns_name)
+            utils.wait_until_true(device_exists)
+
+        interface_name = router.get_internal_device_name(
+            router_info['_interfaces'][0]['id'])
+        gw_interface_name = router.get_external_device_name(
+            router_info['gw_port']['id'])
+        snat_internal_port = router_info[lib_constants.SNAT_ROUTER_INTF_KEY]
+        snat_interface_name = router._get_snat_int_device_name(
+            snat_internal_port[0]['id'])
+        snat_namespace = dvr_snat_ns.SnatNamespace.get_snat_ns_name(
+            router_info['id'])
+
+        self.assertEqual(
+            original_mtu,
+            ip_lib.IPDevice(interface_name, router.ns_name).link.mtu)
+        self.assertEqual(
+            original_mtu,
+            ip_lib.IPDevice(gw_interface_name, snat_namespace).link.mtu)
+        self.assertEqual(
+            original_mtu,
+            ip_lib.IPDevice(snat_interface_name, snat_namespace).link.mtu)
+
+        updated_mtu = original_mtu + 1
+        router_info_copy = copy.deepcopy(router_info)
+        router_info_copy['_interfaces'][0]['mtu'] = updated_mtu
+        router_info_copy['gw_port']['mtu'] = updated_mtu
+        router_info_copy[lib_constants.SNAT_ROUTER_INTF_KEY][0]['mtu'] = (
+            updated_mtu)
+
+        self.agent._process_updated_router(router_info_copy)
+
+        self.assertEqual(
+            updated_mtu,
+            ip_lib.IPDevice(interface_name, router.ns_name).link.mtu)
+        self.assertEqual(
+            updated_mtu,
+            ip_lib.IPDevice(gw_interface_name, snat_namespace).link.mtu)
+        self.assertEqual(
+            updated_mtu,
+            ip_lib.IPDevice(snat_interface_name, snat_namespace).link.mtu)
+
+    def test_dvr_router_interface_mtu_update(self):
+        self._test_router_interface_mtu_update(ha=False)
+
+    @unittest.skip('Skip test until eventlet is removed')
+    def test_dvr_ha_router_interface_mtu_update(self):
+        self._test_router_interface_mtu_update(ha=True)

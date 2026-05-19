@@ -12,9 +12,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import collections
+import datetime
+import random
+import time
+import unittest
 from unittest import mock
 
-import eventlet
+from oslo_utils import timeutils
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.plugins.ml2.drivers.ovn.agent import neutron_agent
@@ -28,42 +33,285 @@ class AgentCacheTestCase(base.BaseTestCase):
         super().setUp()
         self.agent_cache = neutron_agent.AgentCache(driver=mock.ANY)
         self.addCleanup(self._clean_agent_cache)
-        self.names_ref = []
-        for i in range(10):  # Add 10 agents.
+        self.agents = {}
+        self.num_agents = 10  # Add 10 agents.
+        for i in range(self.num_agents):
+            agent_type = random.choice(ovn_const.OVN_AGENT_TYPES)
+            other_config = {}
+            if agent_type == ovn_const.OVN_CONTROLLER_GW_AGENT:
+                # 'enable-chassis-as-gw' is mandatory if the controller is
+                # a gateway chassis; if not, it will default to
+                # 'OVN Controller agent'. Check ``ControllerGatewayAgent``
+                # class.
+                other_config = {'ovn-cms-options': 'enable-chassis-as-gw'}
+            chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+                attrs={'other_config': other_config,
+                       'hostname': f'host{i:d}',
+                       })
+            ext_ids = {}
+            if agent_type == ovn_const.OVN_METADATA_AGENT:
+                ext_ids = {
+                    ovn_const.OVN_AGENT_METADATA_ID_KEY: 'chassis' + str(i)}
+            elif agent_type == ovn_const.OVN_NEUTRON_AGENT:
+                ext_ids = {
+                    ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'chassis' + str(i)}
             chassis_private = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-                attrs={'name': 'chassis' + str(i), 'other_config': {}})
-            self.agent_cache.update(ovn_const.OVN_CONTROLLER_AGENT,
-                                    chassis_private)
-            self.names_ref.append('chassis' + str(i))
+                attrs={'name': 'chassis' + str(i),
+                       'other_config': {},
+                       'chassis': [chassis],
+                       'nb_cfg_timestamp': timeutils.utcnow_ts() * 1000,
+                       'external_ids': ext_ids,
+                       })
+            self.agent_cache.update(agent_type, chassis_private)
+            self.agents['chassis' + str(i)] = agent_type
+
+        self.assertEqual(self.num_agents, len(list(self.agent_cache)))
+        for agent_class in (neutron_agent.NeutronAgent,
+                            neutron_agent.MetadataAgent,
+                            neutron_agent.OVNNeutronAgent):
+            mock.patch.object(agent_class, 'alive', return_value=True).start()
 
     def _clean_agent_cache(self):
-        self.agent_cache.agents = {}
+        del self.agent_cache
 
     def _list_agents(self):
         self.names_read = []
         for idx, agent in enumerate(self.agent_cache):
             self.names_read.append(agent.agent_id)
             if idx == 5:  # Swap to "_add_and_delete_agents" thread.
-                eventlet.sleep(0)
+                time.sleep(0)
 
     def _add_and_delete_agents(self):
-        del self.agent_cache['chassis8']
+        self.agent_cache.delete('chassis8')
+        chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'other_config': {}})
         chassis_private = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'chassis10'})
+            attrs={'name': 'chassis10',
+                   'chassis': [chassis],
+                   'nb_cfg_timestamp': timeutils.utcnow_ts() * 1000})
         self.agent_cache.update(ovn_const.OVN_CONTROLLER_AGENT,
                                 chassis_private)
 
+    # TODO(ralonsoh): refactor this test to make it compatible after the
+    # eventlet removal.
+    @unittest.skip('This test is skipped after the eventlet removal and '
+                   'needs to be refactored')
     def test_update_while_iterating_agents(self):
-        pool = eventlet.GreenPool(2)
-        pool.spawn(self._list_agents)
-        pool.spawn(self._add_and_delete_agents)
-        pool.waitall()
-        self.assertEqual(self.names_ref, self.names_read)
+        # NOTE(ralonsoh): I'm keeping the old code commented in order to
+        # refactor it. It is commented because eventlet library is removed.
+        # pool = eventlet.GreenPool(2)
+        # pool.spawn(self._list_agents)
+        # pool.spawn(self._add_and_delete_agents)
+        # pool.waitall()
+        # self.assertEqual(list(self.agents.keys()), self.names_read)
+        pass
 
     def test_agents_by_chassis_private(self):
+        ext_ids = {ovn_const.OVN_AGENT_METADATA_ID_KEY: 'chassis5'}
         chassis_private = fakes.FakeOvsdbRow.create_one_ovsdb_row(
-            attrs={'name': 'chassis5'})
+            attrs={'name': 'chassis5',
+                   'external_ids': ext_ids})
         agents = self.agent_cache.agents_by_chassis_private(chassis_private)
         agents = list(agents)
         self.assertEqual(1, len(agents))
         self.assertEqual('chassis5', agents[0].agent_id)
+
+    def test_heartbeat_timestamp_format(self):
+        chassis_private = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'chassis5'})
+        agents = self.agent_cache.agents_by_chassis_private(chassis_private)
+        agent = list(agents)[0]
+        agent.chassis.hostname = 'fake-hostname'
+        agent.updated_at = datetime.datetime(
+            year=2023, month=2, day=23, hour=1, minute=2, second=3,
+            microsecond=456789).replace(tzinfo=datetime.UTC)
+
+        # Verify that both microseconds and timezone are dropped
+        self.assertEqual(str(agent.as_dict()['heartbeat_timestamp']),
+                         '2023-02-23 01:02:03')
+
+    def test_list_agents_filtering_host_same_type(self):
+        for idx in range(len(self.agents)):
+            host = f'host{idx:d}'
+            agents = self.agent_cache.get_agents(filters={'host': host})
+            self.assertEqual(1, len(agents))
+            self.assertEqual(host, agents[0].as_dict()['host'])
+
+    def test_list_agents_filtering_host_as_iterable(self):
+        hosts = []
+        for idx in range(len(self.agents)):
+            hosts.append(f'host{idx:d}')
+
+        agents = self.agent_cache.get_agents(filters={'host': hosts})
+        self.assertEqual(len(self.agents), len(agents))
+
+    def test_list_agents_filtering_agent_type_same_type(self):
+        agent_types = collections.defaultdict(int)
+        for _type in self.agents.values():
+            agent_types[_type] = agent_types[_type] + 1
+
+        for _type in agent_types:
+            agents = self.agent_cache.get_agents(
+                filters={'agent_type': _type})
+            self.assertEqual(agent_types[_type], len(agents))
+            self.assertEqual(_type, agents[0].as_dict()['agent_type'])
+
+    def test_list_agents_filtering_agent_type_as_iterable(self):
+        agents = self.agent_cache.get_agents(
+            filters={'agent_type': ovn_const.OVN_AGENT_TYPES})
+        self.assertEqual(self.num_agents, len(agents))
+
+    @mock.patch.object(neutron_agent, 'LOG')
+    def test_list_agents_filtering_wrong_type(self, mock_log):
+        agents = self.agent_cache.get_agents(filters={'host': 111})
+        self.assertEqual(0, len(agents))
+        mock_log.info.assert_called_once()
+
+    def test_list_agents_filtering_same_string_in_filter(self):
+        # As reported in LP#2110094, if two registers have the same substring,
+        # the filter didn't work.
+        # Chassis 1, hostname: compute-0
+        chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'other_config': {},
+                   'hostname': 'compute-0'})
+        chassis_private = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'chassis1',
+                   'other_config': {},
+                   'chassis': [chassis],
+                   'nb_cfg_timestamp': timeutils.utcnow_ts() * 1000,
+                   'external_ids': {}})
+        self.agent_cache.update(ovn_const.OVN_CONTROLLER_AGENT,
+                                chassis_private)
+
+        # Chassis 2, hostname: dcn1-compute-0
+        chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'other_config': {},
+                   'hostname': 'dcn1-compute-0'})
+        chassis_private = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': 'chassis2',
+                   'other_config': {},
+                   'chassis': [chassis],
+                   'nb_cfg_timestamp': timeutils.utcnow_ts() * 1000,
+                   'external_ids': {}})
+        self.agent_cache.update(ovn_const.OVN_CONTROLLER_AGENT,
+                                chassis_private)
+
+        agents = self.agent_cache.get_agents(
+            filters={'host': 'compute-0'})
+        self.assertEqual(1, len(agents))
+
+        agents = self.agent_cache.get_agents(
+            filters={'host': 'dcn1-compute-0'})
+        self.assertEqual(1, len(agents))
+
+        agents = self.agent_cache.get_agents(
+            filters={'host': ['compute-0', 'dcn1-compute-0']})
+        self.assertEqual(2, len(agents))
+
+
+class AgentCachePopulateTestCase(base.BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.agent_cache = neutron_agent.AgentCache(driver=mock.ANY)
+        self.addCleanup(self._clean_agent_cache)
+        for agent_class in (neutron_agent.NeutronAgent,
+                            neutron_agent.MetadataAgent,
+                            neutron_agent.OVNNeutronAgent):
+            mock.patch.object(agent_class, 'alive', return_value=True).start()
+
+    def _clean_agent_cache(self):
+        del self.agent_cache
+
+    def _make_chassis_private(self, name, external_ids=None,
+                              gw_chassis=False, with_chassis=True):
+        other_config = {}
+        if gw_chassis:
+            other_config = {'ovn-cms-options': 'enable-chassis-as-gw'}
+        chassis = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'other_config': other_config,
+                   'hostname': name + '-host'})
+        return fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': name,
+                   'chassis': [chassis] if with_chassis else [],
+                   'nb_cfg_timestamp': timeutils.utcnow_ts() * 1000,
+                   'external_ids': external_ids or {}})
+
+    def _mock_sb_idl(self, chassis_private_rows):
+        sb_idl = mock.Mock()
+        sb_idl.db_list_rows.return_value.execute.return_value = (
+            chassis_private_rows)
+        return sb_idl
+
+    def test_populate_controller_agents(self):
+        rows = [self._make_chassis_private('ch0'),
+                self._make_chassis_private('ch1')]
+        self.agent_cache.driver.sb_ovn = self._mock_sb_idl(rows)
+
+        self.agent_cache.populate()
+
+        self.agent_cache.driver.sb_ovn.db_list_rows.assert_called_once_with(
+            'Chassis_Private')
+        agents = self.agent_cache.get_agents(
+            filters={'agent_type': ovn_const.OVN_CONTROLLER_TYPES})
+        self.assertEqual(2, len(agents))
+        self.assertTrue(all(
+            isinstance(a, neutron_agent.ControllerAgent) for a in agents))
+
+    def test_populate_gateway_agents(self):
+        rows = [self._make_chassis_private('ch0', gw_chassis=True),
+                self._make_chassis_private('ch1')]
+        self.agent_cache.driver.sb_ovn = self._mock_sb_idl(rows)
+
+        self.agent_cache.populate()
+
+        agents = self.agent_cache.get_agents(
+            filters={'agent_type': ovn_const.OVN_CONTROLLER_GW_AGENT})
+        self.assertEqual(1, len(agents))
+        agents = self.agent_cache.get_agents(
+            filters={'agent_type': ovn_const.OVN_CONTROLLER_AGENT})
+        self.assertEqual(1, len(agents))
+
+    def test_populate_metadata_agents(self):
+        ext_ids = {ovn_const.OVN_AGENT_METADATA_ID_KEY: 'meta-id-0'}
+        rows = [self._make_chassis_private('ch0', external_ids=ext_ids)]
+        self.agent_cache.driver.sb_ovn = self._mock_sb_idl(rows)
+
+        self.agent_cache.populate()
+
+        # One controller + one metadata agent
+        self.assertEqual(2, len(list(self.agent_cache)))
+        agents = self.agent_cache.get_agents(
+            filters={'agent_type': ovn_const.OVN_METADATA_AGENT})
+        self.assertEqual(1, len(agents))
+
+    def test_populate_neutron_agents(self):
+        ext_ids = {ovn_const.OVN_AGENT_NEUTRON_ID_KEY: 'neutron-id-0'}
+        rows = [self._make_chassis_private('ch0', external_ids=ext_ids)]
+        self.agent_cache.driver.sb_ovn = self._mock_sb_idl(rows)
+
+        self.agent_cache.populate()
+
+        # One controller + one neutron agent
+        self.assertEqual(2, len(list(self.agent_cache)))
+        agents = self.agent_cache.get_agents(
+            filters={'agent_type': ovn_const.OVN_NEUTRON_AGENT})
+        self.assertEqual(1, len(agents))
+
+    def test_populate_skips_chassis_private_without_chassis(self):
+        rows = [self._make_chassis_private('ch0', with_chassis=False),
+                self._make_chassis_private('ch1')]
+        self.agent_cache.driver.sb_ovn = self._mock_sb_idl(rows)
+
+        self.agent_cache.populate()
+
+        self.assertEqual(1, len(list(self.agent_cache)))
+
+    def test_populate_idempotent(self):
+        rows = [self._make_chassis_private('ch0')]
+        self.agent_cache.driver.sb_ovn = self._mock_sb_idl(rows)
+
+        self.agent_cache.populate()
+        self.agent_cache.populate()
+
+        self.assertEqual(1, len(list(self.agent_cache)))

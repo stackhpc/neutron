@@ -35,7 +35,7 @@ ONE_SEC_AFTER_2000 = dhcp_ipv6.TIME_FIRST_DAY_2000 + 1
 class DHCPIPv6ResponderTestCase(dhcp_test_base.DHCPResponderBaseTestCase):
 
     def setUp(self):
-        super(DHCPIPv6ResponderTestCase, self).setUp()
+        super().setUp()
         self.dhcp6_responer = dhcp_ipv6.DHCPIPv6Responder(self.agent_api,
                                                           self.ext_api)
         self.dhcp6_responer.int_br = self.int_br
@@ -114,14 +114,27 @@ class DHCPIPv6ResponderTestCase(dhcp_test_base.DHCPResponderBaseTestCase):
         self.assertEqual(expect_status_code, status_code)
 
     def test_get_dhcp_options(self):
-        self._test_get_dhcp_options()
+        self._test_get_dhcp_options(self.port_info, has_gateway_ip=True)
 
     def test_get_dhcp_options_zero_time(self):
-        self._test_get_dhcp_options(zero_time=True)
+        self._test_get_dhcp_options(
+            self.port_info, has_gateway_ip=True, zero_time=True
+        )
 
-    def _test_get_dhcp_options(self, zero_time=False):
-        ip_info = self.dhcp6_responer.get_port_ip(self.port_info, ip_version=6)
-        mac = self.port_info['mac_address']
+    def test_get_dhcp_options_no_gateway(self):
+        self._test_get_dhcp_options(
+            self.no_gateway_port_info, has_gateway_ip=False
+        )
+
+    def test_get_dhcp_options_zero_time_no_gateway(self):
+        self._test_get_dhcp_options(
+            self.no_gateway_port_info, has_gateway_ip=False, zero_time=True
+        )
+
+    def _test_get_dhcp_options(self, port_info, has_gateway_ip=False,
+                               zero_time=False):
+        ip_info = self.dhcp6_responer.get_port_ip(port_info, ip_version=6)
+        mac = port_info['mac_address']
 
         option_list = [
             dhcp6.option(
@@ -133,13 +146,8 @@ class DHCPIPv6ResponderTestCase(dhcp_test_base.DHCPResponderBaseTestCase):
                 data=b'\x00\x01\x00\x01\x00\x00\x00\x01\xfa\x16>\x00\x00\x00',
                 length=14),
             dhcp6.option(code=13,
-                data=b'\x00\x00success',
-                length=9),
-            dhcp6.option(
-                code=23,
-                data=(b'\xfd\xa7\xa5\xcc4`\x00\x01\x00'
-                      b'\x00\x00\x00\x00\x00\x00\x01'),
-                length=16),
+                         data=b'\x00\x00success',
+                         length=9),
             dhcp6.option(
                 code=24,
                 data=b'\x0eopenstacklocal\x00',
@@ -148,20 +156,44 @@ class DHCPIPv6ResponderTestCase(dhcp_test_base.DHCPResponderBaseTestCase):
                 code=39,
                 data=b'\x03(host-fda7-a5cc-3460-1--bf.openstacklocal',
                 length=42)]
-        if zero_time:
-            option_list.append(dhcp6.option(code=3,
-                data=(b'\x00\x00\x00\x01\x00\x01Q\x80\x00\x01Q'
-                      b'\x80\x00\x05\x00\x18\xfd\xa7\xa5\xcc4`'
-                      b'\x00\x01\x00\x00\x00\x00\x00\x00\x00'
-                      b'\xbf\x00\x01Q\x80\x00\x01Q\x80'),
-                length=40))
+
+        if has_gateway_ip:
+            option_list.append(
+                dhcp6.option(
+                    code=23,
+                    data=(b'\xfd\xa7\xa5\xcc4`\x00\x01\x00'
+                        b'\x00\x00\x00\x00\x00\x00\x01'),
+                    length=16
+                )
+            )
         else:
-            option_list.append(dhcp6.option(code=3,
-                data=(b'\x01\x02\x03\x04\x05\x06\x07\x08\n\x0b\x0c\r'
-                      b'\x00\x05\x00\x18\xfd\xa7\xa5\xcc4`'
-                      b'\x00\x01\x00\x00\x00\x00\x00\x00\x00'
-                      b'\xbf\x05\x06\x07\x08\n\x0b\x0c\r'),
-                length=40))
+            option_list.append(
+                dhcp6.option(
+                    code=23,
+                    data=(b'\xfe\x80\x00\x00\x00\x00\x00'
+                        b'\x00\x00\x00\x00\x00\xa9\xfe\xa9\xfe'),
+                    length=16
+                )
+            )
+
+        if zero_time:
+            option_list.append(
+                dhcp6.option(
+                    code=3,
+                    data=(b'\x00\x00\x00\x01\x00\x01Q\x80\x00\x01Q'
+                          b'\x80\x00\x05\x00\x18\xfd\xa7\xa5\xcc4`'
+                          b'\x00\x01\x00\x00\x00\x00\x00\x00\x00'
+                          b'\xbf\x00\x01Q\x80\x00\x01Q\x80'),
+                    length=40))
+        else:
+            option_list.append(
+                dhcp6.option(
+                    code=3,
+                    data=(b'\x01\x02\x03\x04\x05\x06\x07\x08\n\x0b\x0c\r'
+                          b'\x00\x05\x00\x18\xfd\xa7\xa5\xcc4`'
+                          b'\x00\x01\x00\x00\x00\x00\x00\x00\x00'
+                          b'\xbf\x05\x06\x07\x08\n\x0b\x0c\r'),
+                    length=40))
 
         test_options = dhcp6.options(
             option_list=option_list,

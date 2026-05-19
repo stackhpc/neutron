@@ -30,7 +30,7 @@ from neutron.db import l3_fip_qos
 from neutron.extensions import floating_ip_port_forwarding as pf_ext
 from neutron.extensions import l3
 from neutron.objects.qos import policy
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
 from neutron.tests.unit.extensions import test_l3
 
 
@@ -61,7 +61,7 @@ def _get_expected(ref):
     return expect
 
 
-class ExtendFipPortForwardingExtensionManager(object):
+class ExtendFipPortForwardingExtensionManager:
 
     def get_resources(self):
         return (l3.L3.get_resources() +
@@ -84,7 +84,7 @@ class TestExtendFipPortForwardingExtension(
         svc_plugins = (PF_PLUGIN_NAME, L3_PLUGIN,
                        'neutron.services.qos.qos_plugin.QoSPlugin')
         ext_mgr = ExtendFipPortForwardingExtensionManager()
-        super(TestExtendFipPortForwardingExtension, self).setUp(
+        super().setUp(
             plugin=CORE_PLUGIN, ext_mgr=ext_mgr, service_plugins=svc_plugins)
         self.l3_plugin = directory.get_plugin(plugin_constants.L3)
         self.pf_plugin = directory.get_plugin(plugin_constants.PORTFORWARDING)
@@ -112,7 +112,8 @@ class TestExtendFipPortForwardingExtension(
         ctx = context.get_admin_context()
         kwargs = {'arg_list': (extnet_apidef.EXTERNAL,),
                   extnet_apidef.EXTERNAL: True}
-        with self.network(**kwargs) as extnet, self.network() as innet:
+        with self.network(as_admin=True, **kwargs) as extnet, \
+                self.network() as innet:
             with self.subnet(network=extnet, cidr='200.0.0.0/22'), \
                  self.subnet(network=innet, cidr='10.0.0.0/24') as insub, \
                     self.router() as router:
@@ -148,7 +149,8 @@ class TestExtendFipPortForwardingExtension(
         ctx = context.get_admin_context()
         kwargs = {'arg_list': (extnet_apidef.EXTERNAL,),
                   extnet_apidef.EXTERNAL: True}
-        with self.network(**kwargs) as extnet, self.network() as innet:
+        with self.network(as_admin=True, **kwargs) as extnet,\
+                self.network() as innet:
             with self.subnet(network=extnet, cidr='200.0.0.0/22'),\
                     self.subnet(network=innet, cidr='10.0.0.0/24') as insub,\
                     self.router() as router:
@@ -241,8 +243,10 @@ class TestExtendFipPortForwardingExtension(
         ctx = context.get_admin_context()
         kwargs = {'arg_list': (extnet_apidef.EXTERNAL,),
                   extnet_apidef.EXTERNAL: True}
-        with self.network(**kwargs) as extnet, self.network() as innet:
-            with self.subnet(network=extnet, cidr='200.0.0.0/22'),\
+        with self.network(as_admin=True, **kwargs) as extnet,\
+                self.network() as innet:
+            with self.subnet(network=extnet, cidr='200.0.0.0/22',
+                             as_admin=True),\
                     self.subnet(network=innet, cidr='10.0.0.0/24') as insub,\
                     self.subnet(network=innet, cidr='10.0.8.0/24') as insub2,\
                     self.subnet(network=innet, cidr='10.0.9.0/24') as insub3,\
@@ -259,8 +263,9 @@ class TestExtendFipPortForwardingExtension(
                 self._router_interface_action('add', router['router']['id'],
                                               insub3['subnet']['id'], None)
 
-                with self.port(subnet=insub) as port1,\
-                        self.port(subnet=insub) as port2:
+                fixed_ips = [{'subnet_id': insub['subnet']['id']}]
+                with self.port(subnet=insub, fixed_ips=fixed_ips) as port1,\
+                        self.port(subnet=insub, fixed_ips=fixed_ips) as port2:
                     update_dict1 = {
                         apidef.INTERNAL_PORT_ID: port1['port']['id'],
                         apidef.INTERNAL_IP_ADDRESS:
@@ -317,10 +322,11 @@ class TestExtendFipPortForwardingExtension(
         ctx = context.get_admin_context()
         kwargs = {'arg_list': (extnet_apidef.EXTERNAL,),
                   extnet_apidef.EXTERNAL: True}
-        with self.network(**kwargs) as extnet, self.network() as innet:
+        with self.network(as_admin=True, **kwargs) as extnet,\
+                self.network() as innet:
             with self.subnet(network=extnet, cidr='200.0.0.0/22'),\
                     self.subnet(network=innet, cidr='10.0.0.0/24') as insub,\
-                    self.router(distributed=True) as router:
+                    self.router(distributed=True, as_admin=True) as router:
                 fip = self._make_floatingip(self.fmt, extnet['network']['id'])
                 # check the floatingip response contains port_forwarding field
                 self.assertIn(apidef.COLLECTION_NAME, fip['floatingip'])

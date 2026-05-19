@@ -19,6 +19,7 @@ import uuid
 from neutron_lib import constants as n_const
 from oslo_config import cfg
 from oslo_config import fixture as config_fixture
+from oslo_utils import netutils
 from oslo_utils import uuidutils
 
 from neutron.agent.linux import ip_lib
@@ -26,8 +27,11 @@ from neutron.agent.linux.ip_lib import IpAddrCommand as ip_addr
 from neutron.agent.linux.ip_lib import IpLinkCommand as ip_link
 from neutron.agent.linux.ip_lib import IpNetnsCommand as ip_netns
 from neutron.agent.linux.ip_lib import IPWrapper as ip_wrap
+from neutron.agent.linux import utils as linux_utils
 from neutron.agent.ovn.metadata import agent
 from neutron.agent.ovn.metadata import driver
+from neutron.common.ovn import constants as ovn_const
+from neutron.common import utils
 from neutron.conf.agent.metadata import config as meta_conf
 from neutron.conf.agent.ovn.metadata import config as ovn_meta_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
@@ -36,7 +40,15 @@ from neutron.tests import base
 
 OvnPortInfo = collections.namedtuple(
     'OvnPortInfo', ['datapath', 'type', 'mac', 'external_ids', 'logical_port'])
-DatapathInfo = collections.namedtuple('DatapathInfo', ['uuid', 'external_ids'])
+
+
+class DatapathInfo:
+    def __init__(self, uuid, external_ids):
+        self.uuid = uuid
+        self.external_ids = external_ids
+
+    def __hash__(self):
+        return hash(self.uuid)
 
 
 def makePort(datapath=None, type='', mac=None, external_ids=None,
@@ -46,7 +58,7 @@ def makePort(datapath=None, type='', mac=None, external_ids=None,
 
 class ConfFixture(config_fixture.Config):
     def setUp(self):
-        super(ConfFixture, self).setUp()
+        super().setUp()
         ovn_meta_conf.register_meta_conf_opts(meta_conf.SHARED_OPTS, self.conf)
         ovn_meta_conf.register_meta_conf_opts(
             meta_conf.UNIX_DOMAIN_METADATA_PROXY_OPTS, self.conf)
@@ -62,119 +74,124 @@ class TestMetadataAgent(base.BaseTestCase):
     fake_conf_fixture = ConfFixture(fake_conf)
 
     def setUp(self):
-        super(TestMetadataAgent, self).setUp()
+        super().setUp()
         self.useFixture(self.fake_conf_fixture)
         self.log_p = mock.patch.object(agent, 'LOG')
         self.log = self.log_p.start()
+        cfg.CONF.set_override('check_child_processes_interval', 0.1,
+                              group='AGENT')
         self.agent = agent.MetadataAgent(self.fake_conf)
         self.agent.sb_idl = mock.Mock()
         self.agent.ovs_idl = mock.Mock()
         self.agent.ovs_idl.transaction = mock.MagicMock()
-        self.agent.chassis = 'chassis'
-        self.agent.ovn_bridge = 'br-int'
+        self.agent._chassis = 'chassis'
+        self.agent._ovn_bridge = 'br-int'
+        self.ipv6_p = mock.patch.object(netutils, 'is_ipv6_enabled')
+        self.ipv6 = self.ipv6_p.start()
+        self.ipv6.return_value = True
+
+        self.ports = []
+        for i in range(0, 3):
+            self.ports.append(makePort(
+                datapath=DatapathInfo(
+                    uuid=str(uuid.uuid4()),
+                    external_ids={'name': 'neutron-%d' % i})))
+        self.agent.sb_idl.get_ports_on_chassis.return_value = self.ports
 
     def test_sync(self):
+
         with mock.patch.object(
-                self.agent, 'ensure_all_networks_provisioned') as enp,\
+                self.agent, 'provision_datapath') as pdp,\
                 mock.patch.object(
                     ip_lib, 'list_network_namespaces') as lnn,\
                 mock.patch.object(
                     self.agent, 'teardown_datapath') as tdp:
-            enp.return_value = ['ovnmeta-1', 'ovnmeta-2']
-            lnn.return_value = ['ovnmeta-1', 'ovnmeta-2']
+            lnn.return_value = [ovn_const.OVN_METADATA_PREFIX + '1',
+                                ovn_const.OVN_METADATA_PREFIX + '2']
 
             self.agent.sync()
 
-            enp.assert_called_once_with()
+            pdp.assert_has_calls([mock.call(p) for p in self.ports],
+                                 any_order=True)
             lnn.assert_called_once_with()
             tdp.assert_not_called()
 
     def test_sync_teardown_namespace(self):
         """Test that sync tears down unneeded metadata namespaces."""
         with mock.patch.object(
-                self.agent, 'ensure_all_networks_provisioned') as enp,\
+                self.agent, 'provision_datapath') as pdp,\
                 mock.patch.object(
                     ip_lib, 'list_network_namespaces') as lnn,\
                 mock.patch.object(
                     self.agent, 'teardown_datapath') as tdp:
-            enp.return_value = ['ovnmeta-1', 'ovnmeta-2']
-            lnn.return_value = ['ovnmeta-1', 'ovnmeta-2', 'ovnmeta-3',
+            lnn.return_value = [ovn_const.OVN_METADATA_PREFIX + '1',
+                                ovn_const.OVN_METADATA_PREFIX + '2',
+                                ovn_const.OVN_METADATA_PREFIX + '3',
                                 'ns1', 'ns2']
 
             self.agent.sync()
 
-            enp.assert_called_once_with()
+            pdp.assert_has_calls([mock.call(p) for p in self.ports],
+                                 any_order=True)
             lnn.assert_called_once_with()
             tdp.assert_called_once_with('3')
 
-    def test_ensure_all_networks_provisioned(self):
-        """Test networks are provisioned.
+    def test_sync_teardown_namespace_does_not_crash_on_error(self):
+        """Test that sync tears down unneeded metadata namespaces.
+        Even if that fails it continues to provision other datapaths
+        """
+        with mock.patch.object(
+                self.agent, 'provision_datapath') as pdp,\
+                mock.patch.object(
+                    ip_lib, 'list_network_namespaces',
+                    return_value=['ovnmeta-1', 'ovnmeta-2', 'ovnmeta-3',
+                                  'ns1', 'ns2']) as lnn,\
+                mock.patch.object(
+                    self.agent, 'teardown_datapath',
+                    side_effect=Exception()) as tdp:
+            self.agent.sync()
 
+            pdp.assert_has_calls([mock.call(p) for p in self.ports],
+                                 any_order=True)
+            lnn.assert_called_once_with()
+            tdp.assert_called_once_with('3')
+
+    def test_get_networks_port_bindings(self):
+        """Test get_networks_port_bindings returns only the port binding
+        objects for ports with VIF type empty ('') or 'external'.
         This test simulates that this chassis has the following ports:
-            * datapath '0': 1 port
-            * datapath '1': 2 ports
-            * datapath '2': 1 port
-            * datapath '3': 1 port with type 'external'
-            * datapath '5': 1 port with type 'unknown'
+            * port0: datapath 1, type ''
+            * port1: datapath 1, type 'external'
+            * port2: datapath 1, type 'unknown'
+            * port3: datapath 2, type ''
+            * port4: datapath 3, type 'external'
+            * port5: datapath 4, type 'unknown'
 
-        It is expected that only datapaths '0', '1' and '2' are provisioned
-        once.
+        Only port bindings from ports 0, 1, 3, and 4 are expected.
         """
 
-        ports = []
-        for i in range(0, 3):
-            ports.append(makePort(datapath=DatapathInfo(uuid=str(i),
-                external_ids={'name': 'neutron-%d' % i})))
-        ports.append(makePort(datapath=DatapathInfo(uuid='1',
-            external_ids={'name': 'neutron-1'})))
-        ports.append(makePort(datapath=DatapathInfo(uuid='3',
-            external_ids={'name': 'neutron-3'}), type='external'))
-        ports.append(makePort(datapath=DatapathInfo(uuid='5',
-            external_ids={'name': 'neutron-5'}), type='unknown'))
+        datapath_1 = DatapathInfo(uuid='uuid1',
+                                  external_ids={'name': 'neutron-1'})
+        datapath_2 = DatapathInfo(uuid='uuid2',
+                                  external_ids={'name': 'neutron-2'})
+        datapath_3 = DatapathInfo(uuid='uuid3',
+                                  external_ids={'name': 'neutron-3'})
+        datapath_4 = DatapathInfo(uuid='uuid4',
+                                  external_ids={'name': 'neutron-4'})
 
-        with mock.patch.object(self.agent, 'provision_datapath',
-                               return_value=None) as pdp,\
-                mock.patch.object(self.agent.sb_idl, 'get_ports_on_chassis',
-                                  return_value=ports):
-            self.agent.ensure_all_networks_provisioned()
+        ports = [
+            makePort(datapath_1, type=''),
+            makePort(datapath_1, type='external'),
+            makePort(datapath_1, type='unknown'),
+            makePort(datapath_2, type=''),
+            makePort(datapath_3, type='external'),
+            makePort(datapath_4, type='unknown')
+        ]
 
-            expected_calls = [mock.call(str(i), str(i)) for i in range(0, 4)]
-            self.assertEqual(sorted(expected_calls),
-                             sorted(pdp.call_args_list))
-
-    def test_update_datapath_provision(self):
-        ports = []
-        for i in range(0, 3):
-            ports.append(makePort(datapath=DatapathInfo(uuid=str(i),
-                external_ids={'name': 'neutron-%d' % i})))
-        ports.append(makePort(datapath=DatapathInfo(uuid='3',
-            external_ids={'name': 'neutron-3'}), type='external'))
-
-        with mock.patch.object(self.agent, 'provision_datapath',
-                               return_value=None) as pdp,\
-                mock.patch.object(self.agent, 'teardown_datapath') as tdp,\
-                mock.patch.object(self.agent.sb_idl, 'get_ports_on_chassis',
-                                  return_value=ports):
-            self.agent.update_datapath('1', 'a')
-            self.agent.update_datapath('3', 'b')
-            expected_calls = [mock.call('1', 'a'), mock.call('3', 'b')]
-            pdp.assert_has_calls(expected_calls)
-            tdp.assert_not_called()
-
-    def test_update_datapath_teardown(self):
-        ports = []
-        for i in range(0, 3):
-            ports.append(makePort(datapath=DatapathInfo(uuid=str(i),
-                external_ids={'name': 'neutron-%d' % i})))
-
-        with mock.patch.object(self.agent, 'provision_datapath',
-                               return_value=None) as pdp,\
-                mock.patch.object(self.agent, 'teardown_datapath') as tdp,\
-                mock.patch.object(self.agent.sb_idl, 'get_ports_on_chassis',
-                                  return_value=ports):
-            self.agent.update_datapath('5', 'a')
-            tdp.assert_called_once_with('a')
-            pdp.assert_not_called()
+        with mock.patch.object(self.agent.sb_idl, 'get_ports_on_chassis',
+                               return_value=ports):
+            self.assertEqual([ports[0], ports[1], ports[3], ports[4]],
+                             self.agent.get_networks_port_bindings())
 
     def test_teardown_datapath(self):
         """Test teardown datapath.
@@ -198,28 +215,349 @@ class TestMetadataAgent(base.BaseTestCase):
             self.agent.teardown_datapath('1')
 
             destroy_mdp.assert_called_once_with(
-                mock.ANY, '1', mock.ANY, 'ovnmeta-1')
+                mock.ANY, '1', mock.ANY, ovn_const.OVN_METADATA_PREFIX + '1')
             self.agent.ovs_idl.del_port.assert_called_once_with('veth_0')
             del_veth.assert_called_once_with('veth_0')
             garbage_collect.assert_called_once_with()
 
-    def test_provision_datapath(self):
+    def _test__process_cidrs_when_current_namespace_empty(self, ipv6_enabled):
+        """Current namespace contains no cidrs, it is missing required cidrs.
+        """
+        self.ipv6.return_value = ipv6_enabled
+        current_namespace_cidrs = set()
+        datapath_port_ips = ['10.0.0.2', '10.0.0.3', '10.0.1.5']
+        metadaport_subnet_cidrs = ['10.0.0.0/30', '10.0.1.0/28', '11.0.1.2/24']
+        lla = 'fe80::f816:3eff:fe63:8dc5/64'
+
+        expected_cidrs_to_add = {'10.0.0.0/30', '10.0.1.0/28',
+                                 n_const.METADATA_CIDR}
+        expected_cidrs_to_delete = set()
+
+        if ipv6_enabled:
+            datapath_port_ips.extend(['2001:db8::2'])
+            metadaport_subnet_cidrs.extend(['2001:db8::2/64'])
+            expected_cidrs_to_add.add('2001:db8::2/64')
+            expected_cidrs_to_add.add(n_const.METADATA_V6_CIDR)
+            expected_cidrs_to_add.add(lla)
+
+        actual_result = self.agent._process_cidrs(current_namespace_cidrs,
+                                                  datapath_port_ips,
+                                                  metadaport_subnet_cidrs,
+                                                  lla)
+        actual_cidrs_to_add, actual_cidrs_to_delete = actual_result
+
+        self.assertSetEqual(actual_cidrs_to_add, expected_cidrs_to_add)
+        self.assertSetEqual(actual_cidrs_to_delete, expected_cidrs_to_delete)
+
+    def test__process_cidrs_when_current_namespace_empty_ipv6(self):
+        self._test__process_cidrs_when_current_namespace_empty(True)
+
+    def test__process_cidrs_when_current_namespace_empty_no_ipv6(self):
+        self._test__process_cidrs_when_current_namespace_empty(False)
+
+    def _test__process_cidrs_current_ns_only_contains_meta_cidr(self,
+                                                                ipv6_enabled):
+        """Current namespace cidrs only contains IPv4 metadata cidr,
+        and it is missing new required cidrs.
+        """
+        self.ipv6.return_value = ipv6_enabled
+        current_namespace_cidrs = {n_const.METADATA_CIDR}
+        datapath_port_ips = ['10.0.0.2', '10.0.0.3', '10.0.1.5']
+        metadaport_subnet_cidrs = ['10.0.0.0/30', '10.0.1.0/28', '11.0.1.2/24']
+        lla = 'fe80::f816:3eff:fe63:8dc5/64'
+
+        expected_cidrs_to_add = {'10.0.0.0/30', '10.0.1.0/28'}
+        expected_cidrs_to_delete = set()
+
+        if ipv6_enabled:
+            datapath_port_ips.extend(['2001:db8::2'])
+            metadaport_subnet_cidrs.extend(['2001:db8::2/64'])
+            expected_cidrs_to_add.add('2001:db8::2/64')
+            expected_cidrs_to_add.add(n_const.METADATA_V6_CIDR)
+            expected_cidrs_to_add.add(lla)
+
+        actual_result = self.agent._process_cidrs(current_namespace_cidrs,
+                                                  datapath_port_ips,
+                                                  metadaport_subnet_cidrs,
+                                                  lla)
+        actual_cidrs_to_add, actual_cidrs_to_delete = actual_result
+
+        self.assertSetEqual(actual_cidrs_to_add, expected_cidrs_to_add)
+        self.assertSetEqual(actual_cidrs_to_delete, expected_cidrs_to_delete)
+
+    def test__process_cidrs_current_ns_only_contains_meta_cidr_ipv6(self):
+        self._test__process_cidrs_current_ns_only_contains_meta_cidr(True)
+
+    def test__process_cidrs_current_ns_only_contains_meta_cidr_no_ipv6(self):
+        self._test__process_cidrs_current_ns_only_contains_meta_cidr(False)
+
+    def _test__process_cidrs_current_ns_contains_stale_cidr(self,
+                                                            ipv6_enabled):
+        """Current namespace cidrs contains stale cidrs, including lla,
+        and it is missing new required cidrs.
+        """
+        self.ipv6.return_value = ipv6_enabled
+        lla = 'fe80::f816:3eff:fe63:8dc5/64'
+        current_namespace_cidrs = {n_const.METADATA_CIDR, '10.0.1.0/31',
+                                   lla}
+        datapath_port_ips = ['10.0.0.2', '10.0.0.3', '10.0.1.5']
+        metadaport_subnet_cidrs = ['10.0.0.0/30', '10.0.1.0/28', '11.0.1.2/24']
+
+        expected_cidrs_to_add = {'10.0.0.0/30', '10.0.1.0/28'}
+        expected_cidrs_to_delete = {'10.0.1.0/31'}
+        # If IPv6 is enabled, the IPv6 metadata address will be added as the
+        # LLA is already present in the namespace, else the LLA will be removed
+        # as there are no IPv6 subnets configured.
+        if ipv6_enabled:
+            expected_cidrs_to_add.add(n_const.METADATA_V6_CIDR)
+        else:
+            expected_cidrs_to_delete.add(lla)
+            # Do not pass the LLA to _process_cidrs(), indicating it should
+            # not be configured
+            lla = None
+
+        actual_result = self.agent._process_cidrs(current_namespace_cidrs,
+                                                  datapath_port_ips,
+                                                  metadaport_subnet_cidrs,
+                                                  lla)
+        actual_cidrs_to_add, actual_cidrs_to_delete = actual_result
+
+        self.assertSetEqual(actual_cidrs_to_add, expected_cidrs_to_add)
+        self.assertSetEqual(actual_cidrs_to_delete, expected_cidrs_to_delete)
+
+    def test__process_cidrs_current_ns_contains_stale_cidr_ipv6(self):
+        self._test__process_cidrs_current_ns_contains_stale_cidr(True)
+
+    def test__process_cidrs_current_ns_contains_stale_cidr_no_ipv6(self):
+        self._test__process_cidrs_current_ns_contains_stale_cidr(False)
+
+    def _test__process_cidrs_current_namespace_contains_mix_cidrs(self,
+            ipv6_enabled):
+        """Current namespace cidrs contains stale cidrs and it is missing
+        new required cidrs.
+        """
+        self.ipv6.return_value = ipv6_enabled
+        lla = 'fe80::f816:3eff:fe63:8dc5/64'
+        current_namespace_cidrs = {n_const.METADATA_CIDR,
+                                   '10.0.1.0/31',
+                                   '10.0.1.0/28',
+                                   'fe77::/64',
+                                   '2001:db8::2/64',
+                                   lla}
+        datapath_port_ips = ['10.0.0.2', '10.0.1.5']
+        metadaport_subnet_cidrs = ['10.0.0.0/30', '10.0.1.0/28', '11.0.1.2/24']
+        expected_cidrs_to_add = {'10.0.0.0/30'}
+        expected_cidrs_to_delete = {'10.0.1.0/31', 'fe77::/64'}
+
+        if ipv6_enabled:
+            datapath_port_ips.extend(['2001:db8::2'])
+            metadaport_subnet_cidrs.extend(['2001:db8::2/64'])
+            expected_cidrs_to_add.add(n_const.METADATA_V6_CIDR)
+        else:
+            expected_cidrs_to_delete.add('2001:db8::2/64')
+            expected_cidrs_to_delete.add(lla)
+
+        actual_result = self.agent._process_cidrs(current_namespace_cidrs,
+                                                  datapath_port_ips,
+                                                  metadaport_subnet_cidrs,
+                                                  lla)
+        actual_cidrs_to_add, actual_cidrs_to_delete = actual_result
+
+        self.assertSetEqual(actual_cidrs_to_add, expected_cidrs_to_add)
+        self.assertSetEqual(actual_cidrs_to_delete, expected_cidrs_to_delete)
+
+    def test__process_cidrs_current_namespace_contains_mix_cidrs_ipv6(self):
+        self._test__process_cidrs_current_namespace_contains_mix_cidrs(True)
+
+    def test__process_cidrs_current_namespace_contains_mix_cidrs_no_ipv6(self):
+        self._test__process_cidrs_current_namespace_contains_mix_cidrs(False)
+
+    def test__get_provision_params_returns_none_when_metadata_port_is_missing(
+            self):
+        """Should return None when there is no metadata port in datapath and
+        call teardown datapath.
+        """
+        network_id = '1'
+        datapath = DatapathInfo(uuid='test123',
+                                external_ids={'name': f'neutron-{network_id}'})
+
+        with mock.patch.object(
+                self.agent.sb_idl, 'get_metadata_port',
+                return_value=None),\
+            mock.patch.object(
+                self.agent, 'teardown_datapath') as tdp:
+            self.assertIsNone(self.agent._get_provision_params(datapath))
+            tdp.assert_called_once_with(network_id)
+
+    def test__get_provision_params_returns_none_when_metadata_port_missing_mac(
+            self):
+        """Should return None when metadata port is missing MAC and
+        call teardown datapath.
+        """
+        network_id = '1'
+        datapath = DatapathInfo(uuid='test123',
+                                external_ids={'name': f'neutron-{network_id}'})
+        metadadata_port = makePort(datapath,
+                                   mac=['NO_MAC_HERE 1.2.3.4'],
+                                   external_ids={'neutron:cidrs':
+                                                 '10.204.0.10/29'})
+
+        with mock.patch.object(
+                self.agent.sb_idl, 'get_metadata_port',
+                return_value=metadadata_port),\
+            mock.patch.object(
+                self.agent, 'teardown_datapath') as tdp:
+            self.assertIsNone(self.agent._get_provision_params(datapath))
+            tdp.assert_called_once_with(network_id)
+
+    def test__get_provision_params_returns_none_when_no_vif_ports(self):
+        """Should return None when there are no datapath ports with type
+        "external" or ""(blank) and call teardown datapath.
+        """
+        network_id = '1'
+        datapath = DatapathInfo(uuid='test123',
+                                external_ids={'name': f'neutron-{network_id}'})
+        datapath_ports = [makePort(datapath, type='not_vif_type')]
+        metadadata_port = makePort(datapath,
+                                   mac=['fa:16:3e:22:65:18 1.2.3.4'],
+                                   external_ids={'neutron:cidrs':
+                                                 '10.204.0.10/29'})
+
+        with mock.patch.object(self.agent.sb_idl, 'get_metadata_port',
+                               return_value=metadadata_port),\
+                mock.patch.object(self.agent.sb_idl, 'get_ports_on_chassis',
+                                  return_value=datapath_ports),\
+                mock.patch.object(self.agent, 'teardown_datapath') as tdp:
+            self.assertIsNone(self.agent._get_provision_params(datapath))
+            tdp.assert_called_once_with(network_id)
+
+    def _test__get_provision_params_returns_provision_parameters(self,
+                                                                 port_ip):
+        """The happy path when datapath has ports with "external" or ""(blank)
+        types and metadata port contains MAC and subnet CIDRs.
+        """
+        network_id = '1'
+        metada_port_mac = "fa:16:3e:22:65:18"
+        metada_port_subnet_cidr = "10.204.0.10/29"
+        metada_port_logical_port = "3b66c176-199b-48ec-8331-c1fd3f6e2b44"
+
+        datapath = DatapathInfo(uuid='test123',
+                                external_ids={'name': f'neutron-{network_id}'})
+        datapath_ports = [makePort(datapath,
+                                   mac=[f'fa:16:3e:e7:ac:ab {port_ip}'])]
+        metadadata_port = makePort(datapath,
+                                   mac=[
+                                       f'{metada_port_mac} 10.204.0.1'
+                                   ],
+                                   external_ids={'neutron:cidrs':
+                                                 metada_port_subnet_cidr},
+                                   logical_port=metada_port_logical_port)
+
+        with mock.patch.object(self.agent.sb_idl, 'get_metadata_port',
+                               return_value=metadadata_port),\
+            mock.patch.object(self.agent.sb_idl, 'get_ports_on_chassis',
+                              return_value=datapath_ports):
+            actual_params = self.agent._get_provision_params(datapath)
+
+        net_name, datapath_port_ips, any_ip6, metadata_port_info = (
+            actual_params)
+
+        self.assertEqual(network_id, net_name)
+
+        if utils.get_ip_version(port_ip) == n_const.IP_VERSION_4:
+            self.assertListEqual([port_ip], datapath_port_ips)
+            self.assertFalse(any_ip6)
+        else:
+            self.assertTrue(any_ip6)
+        self.assertEqual(metada_port_mac, metadata_port_info.mac)
+        self.assertSetEqual({metada_port_subnet_cidr},
+                            metadata_port_info.ip_addresses)
+        self.assertEqual(metada_port_logical_port,
+                         metadata_port_info.logical_port)
+
+    def test__get_provision_params_returns_provision_parameters(self):
+        self._test__get_provision_params_returns_provision_parameters(
+            '1.2.3.4')
+
+    def test__get_provision_params_returns_provision_parameters_ipv6(self):
+        self._test__get_provision_params_returns_provision_parameters(
+            'fe80::f816:3eff:feb6:c0c0')
+
+    def test__get_provision_params_skips_port_with_unknown_mac(self):
+        """Should skip ports with mac=['unknown'] and return valid ports."""
+        network_id = '1'
+        datapath = DatapathInfo(uuid='test123',
+                                external_ids={'name': f'neutron-{network_id}'})
+        valid_port = makePort(datapath,
+                              mac=['fa:16:3e:e7:ac:ab 1.2.3.4'])
+        unknown_mac_port = mock.Mock()
+        unknown_mac_port.type = ''
+        unknown_mac_port.mac = [ovn_const.UNKNOWN_ADDR]
+        unknown_mac_port.datapath = datapath
+        unknown_mac_port.uuid = 'fake-uuid'
+        metadadata_port = makePort(
+            datapath,
+            mac=['fa:16:3e:22:65:18 10.204.0.1'],
+            external_ids={'neutron:cidrs': '10.204.0.10/29'},
+            logical_port='3b66c176-199b-48ec-8331-c1fd3f6e2b44')
+
+        with mock.patch.object(self.agent.sb_idl, 'get_metadata_port',
+                               return_value=metadadata_port),\
+            mock.patch.object(self.agent.sb_idl, 'get_ports_on_chassis',
+                              return_value=[valid_port, unknown_mac_port]):
+            actual_params = self.agent._get_provision_params(datapath)
+
+        net_name, datapath_port_ips, any_ip6, metadata_port_info = (
+            actual_params)
+        self.assertEqual(network_id, net_name)
+        self.assertListEqual(['1.2.3.4'], datapath_port_ips)
+        self.assertFalse(any_ip6)
+
+    def test__get_port_ip4_ips_and_ip6_flag_empty_mac(self):
+        """Should return empty IPs for ports with empty MAC column."""
+        port = mock.Mock()
+        port.mac = []
+        port.uuid = 'fake-uuid'
+        ip4_ips, any_ip6 = self.agent._get_port_ip4_ips_and_ip6_flag(port)
+        self.assertEqual([], ip4_ips)
+        self.assertFalse(any_ip6)
+
+    def test__get_port_ip4_ips_and_ip6_flag_unknown_mac(self):
+        """Should return empty IPs for ports with mac=['unknown']."""
+        port = mock.Mock()
+        port.mac = [ovn_const.UNKNOWN_ADDR]
+        port.uuid = 'fake-uuid'
+        ip4_ips, any_ip6 = self.agent._get_port_ip4_ips_and_ip6_flag(port)
+        self.assertEqual([], ip4_ips)
+        self.assertFalse(any_ip6)
+
+    def _test_provision_datapath(self, ipv6_enabled):
         """Test datapath provisioning.
 
         Check that the VETH pair, OVS port and namespace associated to this
         namespace are created, that the interface is properly configured with
         the right IP addresses and that the metadata proxy is spawned.
         """
+        self.ipv6.return_value = ipv6_enabled
+        net_name = '123'
+        metadaport_logical_port = '123-abc-456'
+        datapath_ports_ips = ['10.0.0.1', '10.0.0.2']
+        metada_port_info = agent.MetadataPortInfo(
+            mac='aa:bb:cc:dd:ee:ff',
+            ip_addresses=['10.0.0.1/23',
+                          '2001:470:9:1224:5595:dd51:6ba2:e788/64'],
+            logical_port=metadaport_logical_port
+        )
+        provision_params = (net_name, datapath_ports_ips, ipv6_enabled,
+                            metada_port_info,)
+        namespace_name = 'namespace'
 
-        metadata_port = makePort(mac=['aa:bb:cc:dd:ee:ff'],
-                                 external_ids={
-                                     'neutron:cidrs': '10.0.0.1/23 '
-                                     '2001:470:9:1224:5595:dd51:6ba2:e788/64'},
-                                 logical_port='port')
+        if ipv6_enabled:
+            datapath_ports_ips.extend(['2001:470:9:1224:5595:dd51:6ba2:e788'])
 
-        with mock.patch.object(self.agent.sb_idl,
-                               'get_metadata_port_network',
-                               return_value=metadata_port),\
+        with mock.patch.object(self.agent,
+                               '_get_provision_params',
+                               return_value=provision_params),\
                 mock.patch.object(
                     ip_lib, 'device_exists', return_value=False),\
                 mock.patch.object(
@@ -227,15 +565,18 @@ class TestMetadataAgent(base.BaseTestCase):
                 mock.patch.object(agent.MetadataAgent, '_get_veth_name',
                                   return_value=['veth_0', 'veth_1']),\
                 mock.patch.object(agent.MetadataAgent, '_get_namespace_name',
-                                  return_value='namespace'),\
+                                  return_value=namespace_name),\
                 mock.patch.object(ip_link, 'set_up') as link_set_up,\
-                mock.patch.object(ip_link, 'set_address') as link_set_addr,\
+                mock.patch.object(ip_link, 'set_address') as link_set_addr, \
+                mock.patch.object(ip_link, 'set_mtu') as link_set_mtu, \
                 mock.patch.object(ip_addr, 'list', return_value=[]),\
-                mock.patch.object(ip_addr, 'add') as ip_addr_add,\
+                mock.patch.object(
+                    ip_addr, 'add_multiple') as ip_addr_add_multiple,\
                 mock.patch.object(
                     ip_wrap, 'add_veth',
                     return_value=[ip_lib.IPDevice('ip1'),
                                   ip_lib.IPDevice('ip2')]) as add_veth,\
+                mock.patch.object(linux_utils, 'delete_if_exists'), \
                 mock.patch.object(
                     driver.MetadataDriver,
                     'spawn_monitored_metadata_proxy') as spawn_mdp, \
@@ -246,32 +587,53 @@ class TestMetadataAgent(base.BaseTestCase):
             # We need to assert that it was deleted first.
             self.agent.ovs_idl.list_br.return_value.execute.return_value = (
                 ['br-int', 'br-fake'])
-            self.agent.provision_datapath('1', '1')
+            mtu = 1500
+            port_binding = mock.Mock(
+                datapath='fake_datapath',
+                external_ids={ovn_const.OVN_NETWORK_MTU_EXT_ID_KEY: str(mtu)})
+            self.agent.provision_datapath(port_binding)
 
             # Check that the port was deleted from br-fake
             self.agent.ovs_idl.del_port.assert_called_once_with(
                 'veth_0', bridge='br-fake', if_exists=True)
             # Check that the VETH pair is created
-            add_veth.assert_called_once_with('veth_0', 'veth_1', 'namespace')
+            add_veth.assert_called_once_with('veth_0', 'veth_1',
+                                             namespace_name)
             # Make sure that the two ends of the VETH pair have been set as up.
             self.assertEqual(2, link_set_up.call_count)
+            link_set_mtu.assert_has_calls([mock.call(mtu), mock.call(mtu)])
             link_set_addr.assert_called_once_with('aa:bb:cc:dd:ee:ff')
             # Make sure that the port has been added to OVS.
             self.agent.ovs_idl.add_port.assert_called_once_with(
                 'br-int', 'veth_0')
             self.agent.ovs_idl.db_set.assert_called_once_with(
-                'Interface', 'veth_0', ('external_ids', {'iface-id': 'port'}))
+                'Interface', 'veth_0',
+                ('external_ids', {'iface-id': metadaport_logical_port}))
             # Check that the metadata port has the IP addresses properly
             # configured and that IPv6 address has been skipped.
-            expected_calls = [mock.call('10.0.0.1/23'),
-                              mock.call(n_const.METADATA_CIDR)]
-            self.assertEqual(sorted(expected_calls),
-                             sorted(ip_addr_add.call_args_list))
+            expected_call = [n_const.METADATA_CIDR, '10.0.0.1/23']
+            bind_address_v6 = None
+            if ipv6_enabled:
+                expected_call.extend(
+                    ['2001:470:9:1224:5595:dd51:6ba2:e788/64',
+                     n_const.METADATA_V6_CIDR,
+                     ip_lib.get_ipv6_lladdr('aa:bb:cc:dd:ee:ff')])
+                bind_address_v6 = n_const.METADATA_V6_IP
+            self.assertCountEqual(expected_call,
+                                  ip_addr_add_multiple.call_args.args[0])
             # Check that metadata proxy has been spawned
             spawn_mdp.assert_called_once_with(
-                mock.ANY, 'namespace', 80, mock.ANY,
-                bind_address=n_const.METADATA_V4_IP, network_id='1')
-            mock_checksum.assert_called_once_with('namespace')
+                mock.ANY, namespace_name, 80, mock.ANY,
+                bind_address=n_const.METADATA_V4_IP, network_id=net_name,
+                bind_address_v6=bind_address_v6,
+                bind_interface='veth_1')
+            mock_checksum.assert_called_once_with(namespace_name)
+
+    def test_provision_datapath_ipv6(self):
+        self._test_provision_datapath(True)
+
+    def test_provision_datapath_no_ipv6(self):
+        self._test_provision_datapath(False)
 
     def test__load_config(self):
         # Chassis name UUID formatted string. OVN bridge "br-ovn".

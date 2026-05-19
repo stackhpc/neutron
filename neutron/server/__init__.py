@@ -13,9 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-# If ../neutron/__init__.py exists, add ../ to Python search path, so that
-# it will override what happens to be installed in /usr/(local/)lib/python...
-
+import logging as sys_logging
 import os
 import sys
 
@@ -62,7 +60,19 @@ def _init_configuration():
 
 
 def boot_server(server_func):
+    # During the call to gmr.TextGuruMeditation.setup_autorun(), Guru
+    # Meditation Report tries to start logging.
+    # Set a handler here to accommodate this.
+    # NOTE(amorin) This was introduced to mitigate bug #1532053 which seems
+    # not triggered anymore.
+    # But, while fixing bug #2021814 we decided to be conservative and keep
+    # this to avoid any further side effect.
+    logger = sys_logging.getLogger(None)
+    if not logger.handlers:
+        logger.addHandler(sys_logging.StreamHandler())
+
     _init_configuration()
+    config.setup_gmr()
     try:
         return server_func()
     except KeyboardInterrupt:

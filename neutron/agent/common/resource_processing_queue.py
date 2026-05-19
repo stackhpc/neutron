@@ -21,7 +21,7 @@ from oslo_utils import timeutils
 from oslo_utils import uuidutils
 
 
-class ResourceUpdate(object):
+class ResourceUpdate:
     """Encapsulates a resource update
 
     An instance of this object carries the information necessary to prioritize
@@ -30,6 +30,7 @@ class ResourceUpdate(object):
     Priority values are ordered from higher (0) to lower (>0) by the caller,
     and are therefore not defined here, but must be done by the consumer.
     """
+
     def __init__(self, id, priority,
                  action=None, resource=None, timestamp=None, tries=5):
         self.priority = priority
@@ -79,7 +80,7 @@ class ResourceUpdate(object):
         return self.tries < 0
 
 
-class ExclusiveResourceProcessor(object):
+class ExclusiveResourceProcessor:
     """Manager for access to a resource for processing
 
     This class controls access to a resource in a non-blocking way.  The first
@@ -123,6 +124,7 @@ class ExclusiveResourceProcessor(object):
     def __exit__(self, type, value, traceback):
         if self._i_am_primary():
             del self._primaries[self._id]
+            self._resource_timestamps.pop(self._id, None)
 
     def _get_resource_data_timestamp(self):
         return self._resource_timestamps.get(self._id,
@@ -159,10 +161,17 @@ class ExclusiveResourceProcessor(object):
                 yield update
 
 
-class ResourceProcessingQueue(object):
+class ResourceProcessingQueue:
     """Manager of the queue of resources to process."""
+
     def __init__(self):
         self._queue = queue.PriorityQueue()
+        self._run = True
+
+    @property
+    def qsize(self):
+        """Returns the number of elements stored in the PriorityQueue"""
+        return self._queue.qsize()
 
     def add(self, update):
         update.tries -= 1
@@ -174,6 +183,8 @@ class ResourceProcessingQueue(object):
         This method uses a for loop to process the resource repeatedly until
         updates stop bubbling to the front of the queue.
         """
+        if not self._run:
+            yield None, None
         next_update = self._queue.get()
 
         with ExclusiveResourceProcessor(next_update.id) as rp:

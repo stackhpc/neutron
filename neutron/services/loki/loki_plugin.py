@@ -11,7 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import random
+import secrets
 import time
 
 from neutron_lib.db import api as db_api
@@ -27,18 +27,20 @@ class LokiPlugin(service_base.ServicePluginBase):
     """Loki brings us the gift of sporadic database failures and delays."""
 
     def __init__(self):
-        super(LokiPlugin, self).__init__()
+        super().__init__()
         db_api.sqla_listen(se.Session, 'before_flush', self.random_deadlock)
         db_api.sqla_listen(se.Session, 'loaded_as_persistent',
                            self.random_delay)
 
     def random_deadlock(self, session, flush_context, instances):
-        if random.randrange(0, 51) > 49:  # 1/50 probability
+        if secrets.SystemRandom().randrange(0, 51) > 49:  # 1/50 probability
+            LOG.info("Loki has raised a DBDeadlock exception, instances %s",
+                     instances)
             raise db_exc.DBDeadlock()
 
     def random_delay(self, session, instance):
-        if random.randrange(0, 201) > 199:  # 1/200 probability
-            LOG.debug("Loki has delayed loading of instance %s", instance)
+        if secrets.SystemRandom().randrange(0, 201) > 199:  # 1/200 probability
+            LOG.info("Loki has delayed loading of instance %s", instance)
             time.sleep(1)
 
     def get_plugin_type(self):

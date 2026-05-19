@@ -19,7 +19,6 @@ from webob import exc
 
 from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.api.definitions import l3_conntrack_helper as l3_ct
-from neutron_lib import context
 from oslo_utils import uuidutils
 
 from neutron.extensions import l3
@@ -34,7 +33,7 @@ class TestL3ConntrackHelperServicePlugin(test_l3.TestL3NatServicePlugin):
     supported_extension_aliases = [l3_apidef.ALIAS, l3_ct.ALIAS]
 
 
-class ExtendL3ConntrackHelperExtensionManager(object):
+class ExtendL3ConntrackHelperExtensionManager:
 
     def get_resources(self):
         return (l3.L3.get_resources() +
@@ -49,7 +48,6 @@ class ExtendL3ConntrackHelperExtensionManager(object):
 
 class L3NConntrackHelperTestCase(test_l3.L3BaseForIntTests,
                                  test_l3.L3NatTestCaseMixin):
-    tenant_id = _uuid()
     fmt = "json"
 
     def setUp(self):
@@ -61,25 +59,22 @@ class L3NConntrackHelperTestCase(test_l3.L3BaseForIntTests,
                        'TestL3ConntrackHelperServicePlugin')
         plugin = ('neutron.tests.unit.extensions.test_l3.TestL3NatIntPlugin')
         ext_mgr = ExtendL3ConntrackHelperExtensionManager()
-        super(L3NConntrackHelperTestCase, self).setUp(
+        super().setUp(
               ext_mgr=ext_mgr, service_plugins=svc_plugins, plugin=plugin)
         self.ext_api = test_extensions.setup_extensions_middleware(ext_mgr)
 
     def _create_router_conntrack_helper(self, fmt, router_id,
                                         protocol, port, helper):
-        tenant_id = self.tenant_id or _uuid()
         data = {'conntrack_helper': {
             "protocol": protocol,
             "port": port,
             "helper": helper}
         }
-        router_ct_req = self._req(
-            'POST', 'routers', data,
+        router_ct_req = self.new_create_request(
+            'routers', data,
             fmt or self.fmt, id=router_id,
-            subresource='conntrack_helpers')
-
-        router_ct_req.environ['neutron.context'] = context.Context(
-            '', tenant_id, is_admin=True)
+            subresource='conntrack_helpers',
+            as_admin=True)
 
         return router_ct_req.get_response(self.ext_api)
 
@@ -90,11 +85,10 @@ class L3NConntrackHelperTestCase(test_l3.L3BaseForIntTests,
             conntrack_helper[k] = v
         data = {'conntrack_helper': conntrack_helper}
 
-        router_ct_req = self._req(
-            'PUT', 'routers', data,
-            fmt or self.fmt, id=router_id,
-            sub_id=conntrack_helper_id,
-            subresource='conntrack_helpers')
+        router_ct_req = self.new_update_request(
+            'routers', data, router_id,
+            fmt or self.fmt, sub_id=conntrack_helper_id,
+            subresource='conntrack_helpers', as_admin=True)
         return router_ct_req.get_response(self.ext_api)
 
     def test_create_ct_with_duplicate_entry(self):

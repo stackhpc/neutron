@@ -1,0 +1,60 @@
+# Copyright 2025 Red Hat, Inc.
+# All Rights Reserved.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+import enum
+
+BGP_ROUTER_REDISTRIBUTE = 'connected-as-host,nat'
+OVN_DYNAMIC_ROUTING_PORT_MAPPING = 'dynamic-routing-port-mapping'
+
+LRP_OPTIONS_PORT_NAME = 'dynamic-routing-port-name'
+LRP_OPTIONS_DYNAMIC_ROUTING_MAINTAIN_VRF = 'dynamic-routing-maintain-vrf'
+LRP_NETWORK_NAME_EXT_ID_KEY = 'neutron-bgp-network-name'
+
+LR_OPTIONS_DYNAMIC_ROUTING = 'dynamic-routing'
+LR_OPTIONS_DYNAMIC_ROUTING_REDISTRIBUTE = 'dynamic-routing-redistribute'
+LR_OPTIONS_DYNAMIC_ROUTING_VRF_ID = 'dynamic-routing-vrf-id'
+LR_OPTIONS_DYNAMIC_ROUTING_REDISTRIBUTE_LOCAL = (
+    'dynamic-routing-redistribute-local-only')
+
+LR_BGP_TO_CHASSIS_POLICY_PRIORITY = 10
+
+HA_CHASSIS_GROUP_PRIORITY = 10
+
+CHASSIS_BGP_BRIDGES_EXT_ID_KEY = 'neutron-bgp-bridges'
+
+AGENT_BGP_PEER_BRIDGES = 'neutron-bgp-peer-bridges'
+AGENT_BGP_EXT_NAME = 'ovn-bgp'
+
+BGP_BRIDGE_NIC_TYPES = ('', 'system')
+
+BGP_LRP_TO_CHASSIS = 'neutron-bgp-lrp-to-chassis-router'
+
+
+class Enum(enum.Enum):
+
+    def __str__(self):
+        return str(self.value)
+
+
+class Action(Enum):
+    RECONCILE = 'reconcile'
+    DELETE = 'delete'
+
+
+class BGPReconcilerResource(Enum):
+    CHASSIS = 'chassis'
+    CHASSIS_BGP_BRIDGES = 'bgp-bridges'
+    PROVIDER_SWITCH = 'provider-switch'
+    GATEWAY_IP = 'gateway-ip'

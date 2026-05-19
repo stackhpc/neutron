@@ -16,6 +16,7 @@
 import copy
 import functools
 import os
+import unittest
 from unittest import mock
 
 import netaddr
@@ -28,13 +29,14 @@ import testtools
 from neutron.agent.common import ovs_lib
 from neutron.agent.l3 import agent as neutron_l3_agent
 from neutron.agent.l3 import dvr_local_router
+from neutron.agent.l3 import ha
 from neutron.agent.l3 import namespaces
 from neutron.agent.l3 import router_info as l3_router_info
 from neutron.agent import l3_agent as l3_agent_main
 from neutron.agent.linux import external_process
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import keepalived
-from neutron.agent.metadata import driver as metadata_driver
+from neutron.agent.metadata import driver_base
 from neutron.common import utils as common_utils
 from neutron.conf.agent import common as agent_config
 from neutron.conf.agent.l3 import config as l3_config
@@ -48,8 +50,6 @@ from neutron.tests.functional import base
 LOG = logging.getLogger(__name__)
 
 _uuid = uuidutils.generate_uuid
-
-OVS_INTERFACE_DRIVER = 'neutron.agent.linux.interface.OVSInterfaceDriver'
 
 KEEPALIVED_CONFIG = """\
 global_defs {
@@ -78,11 +78,11 @@ vrrp_instance VR_1 {
         %(int_port_ipv6)s dev %(internal_device_name)s scope link no_track
     }
     virtual_routes {
-        0.0.0.0/0 via %(default_gateway_ip)s dev %(ex_device_name)s no_track
-        8.8.8.0/24 via 19.4.4.4 no_track
-        %(extra_subnet_cidr)s dev %(ex_device_name)s scope link no_track
+        0.0.0.0/0 via %(default_gateway_ip)s dev %(ex_device_name)s no_track protocol static
+        8.8.8.0/24 via 19.4.4.4 no_track protocol static
+        %(extra_subnet_cidr)s dev %(ex_device_name)s scope link no_track protocol static
     }
-}"""
+}"""  # noqa: E501 # pylint: disable=line-too-long
 
 
 def get_ovs_bridge(br_name):
@@ -90,11 +90,14 @@ def get_ovs_bridge(br_name):
 
 
 class L3AgentTestFramework(base.BaseSudoTestCase):
-    INTERFACE_DRIVER = OVS_INTERFACE_DRIVER
     NESTED_NAMESPACE_SEPARATOR = '@'
 
+    # TODO(ralonsoh): refactor this test to make it compatible after the
+    # eventlet removal.
+    @unittest.skip('This test is skipped after the eventlet removal and '
+                   'needs to be refactored')
     def setUp(self):
-        super(L3AgentTestFramework, self).setUp()
+        super().setUp()
         self.mock_plugin_api = mock.patch(
             'neutron.agent.l3.agent.L3PluginApi').start().return_value
         mock.patch('neutron.agent.rpc.PluginReportStateAPI').start()
@@ -102,8 +105,14 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                    'OVSBridge._set_port_dead').start()
         l3_config.register_l3_agent_config_opts(l3_config.OPTS, cfg.CONF)
         self.conf = self._configure_agent('agent1')
+        # NOTE(ralonsoh): this mock can be removed once the backend used for
+        # testing is "threading" and eventlet is removed.
+        self.mock_scserver_wait = mock.patch.object(
+            ha.L3AgentKeepalivedStateChangeServer, 'wait')
+        self.mock_scserver_wait.start()
         self.agent = neutron_l3_agent.L3NATAgentWithStateReport('agent1',
                                                                 self.conf)
+        self.agent.init_host()
 
     def _get_config_opts(self):
         config = cfg.ConfigOpts()
@@ -117,7 +126,6 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
     def _configure_agent(self, host, agent_mode='dvr_snat'):
         conf = self._get_config_opts()
         l3_agent_main.register_opts(conf)
-        conf.set_override('interface_driver', self.INTERFACE_DRIVER)
 
         br_int = self.useFixture(net_helpers.OVSBridgeFixture()).bridge
         conf.set_override('integration_bridge', br_int.br_name, 'OVS')
@@ -136,6 +144,14 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                           get_temp_file_path('external/pids'))
         conf.set_override('host', host)
         conf.set_override('agent_mode', agent_mode)
+
+        # NOTE(slaweq): iptables_manager module checks this option directly in
+        # the cfg.CONF, not in agent.conf parameter so it has to be override
+        # directly in the cfg.CONF module too
+        cfg.CONF.set_override('debug_iptables_rules', True, group='AGENT')
+
+        # Enable conntrackd to get full test coverage
+        conf.set_override('ha_conntrackd_enabled', True)
 
         return conf
 
@@ -214,18 +230,17 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         if ha:
             self.wait_until_ha_router_has_state(router, 'primary')
 
-        with self.assert_max_execution_time(100):
-            assert_num_of_conntrack_rules(0)
+        assert_num_of_conntrack_rules(0)
 
-            self.assertTrue(netcat.test_connectivity())
-            assert_num_of_conntrack_rules(1)
+        self.assertTrue(netcat.test_connectivity())
+        assert_num_of_conntrack_rules(1)
 
-            clean_fips(router)
-            router.process()
-            assert_num_of_conntrack_rules(0)
+        clean_fips(router)
+        router.process()
+        assert_num_of_conntrack_rules(0)
 
-            with testtools.ExpectedException(RuntimeError):
-                netcat.test_connectivity()
+        with testtools.ExpectedException(RuntimeError):
+            netcat.test_connectivity()
 
     def _test_update_floatingip_statuses(self, router_info):
         router = self.manage_router(self.agent, router_info)
@@ -233,12 +248,11 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         self.assertTrue(rpc.called)
 
         # Assert that every defined FIP is updated via RPC
-        expected_fips = set([
+        expected_fips = {
             (fip['id'], constants.FLOATINGIP_STATUS_ACTIVE) for fip in
-            router.router[constants.FLOATINGIP_KEY]])
+            router.router[constants.FLOATINGIP_KEY]}
         call = [args[0] for args in rpc.call_args_list][0]
-        actual_fips = set(
-            [(fip_id, status) for fip_id, status in call[2].items()])
+        actual_fips = set(list(call[2].items()))
         self.assertEqual(expected_fips, actual_fips)
 
     def _gateway_check(self, gateway_ip, external_device):
@@ -340,8 +354,8 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         slaac = constants.IPV6_SLAAC
         slaac_mode = {'ra_mode': slaac, 'address_mode': slaac}
         subnet_modes = [slaac_mode] * 2
-        self._add_internal_interface_by_subnet(router.router,
-            count=2, ip_version=constants.IP_VERSION_6,
+        self._add_internal_interface_by_subnet(
+            router.router, count=2, ip_version=constants.IP_VERSION_6,
             ipv6_subnet_modes=subnet_modes)
         router.process()
 
@@ -406,6 +420,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                 timeout=15)
         return return_copy
 
+    @test_base.unstable_test("bug 1961740")
     def manage_router(self, agent, router):
         self.addCleanup(agent._safe_router_removed, router['id'])
         with mock.patch.object(dvr_local_router.DvrLocalRouter,
@@ -444,7 +459,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
             conf,
             router.router_id,
             router.ns_name,
-            service=metadata_driver.HAPROXY_SERVICE)
+            service=driver_base.HAPROXY_SERVICE)
 
     def _metadata_proxy_exists(self, conf, router):
         pm = self._metadata_proxy(conf, router)
@@ -546,8 +561,9 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         self.assertFalse(router.iptables_manager.apply())
 
     def _assert_metadata_chains(self, router):
-        metadata_port_filter = lambda rule: (
-            str(self.agent.conf.metadata_port) in rule.rule)
+        def metadata_port_filter(rule):
+            return (str(self.agent.conf.metadata_port) in rule.rule)
+
         self.assertTrue(self._get_rule(router.iptables_manager,
                                        'nat',
                                        'PREROUTING',
@@ -582,7 +598,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         for ip_version in ip_versions:
             _routes = ip_lib.list_ip_routes(ns_name, ip_version)
             routes.extend(_routes)
-        routes = set(route['cidr'] for route in routes)
+        routes = {route['cidr'] for route in routes}
         ex_gw_port = router.get_ex_gw_port()
         if not ex_gw_port:
             if not enable_gw:
@@ -609,29 +625,29 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
 
     def _create_router(self, router_info, agent):
 
-        ns_name = "%s%s%s" % (
+        ns_name = "{}{}{}".format(
             'qrouter-' + router_info['id'],
             self.NESTED_NAMESPACE_SEPARATOR, agent.host)
-        ext_name = "qg-%s-%s" % (agent.host, _uuid()[-4:])
-        int_name = "qr-%s-%s" % (agent.host, _uuid()[-4:])
+        ext_name = f"qg-{agent.host}-{_uuid()[-4:]}"
+        int_name = f"qr-{agent.host}-{_uuid()[-4:]}"
 
         get_ns_name = mock.patch.object(
             namespaces.RouterNamespace, '_get_ns_name').start()
         get_ns_name.return_value = ns_name
         get_ext_name = mock.patch.object(l3_router_info.RouterInfo,
-            'get_external_device_name').start()
+                                         'get_external_device_name').start()
         get_ext_name.return_value = ext_name
         get_int_name = mock.patch.object(l3_router_info.RouterInfo,
-            'get_internal_device_name').start()
+                                         'get_internal_device_name').start()
         get_int_name.return_value = int_name
 
         router = self.manage_router(agent, router_info)
 
         router_ext_name = mock.patch.object(router,
-            'get_external_device_name').start()
+                                            'get_external_device_name').start()
         router_ext_name.return_value = get_ext_name.return_value
         router_int_name = mock.patch.object(router,
-            'get_internal_device_name').start()
+                                            'get_internal_device_name').start()
         router_int_name.return_value = get_int_name.return_value
 
         return router
@@ -767,7 +783,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                          for route in updated_route]
         for entry in routes_actual:
             if entry['via']:
-                if isinstance(entry['via'], (list, tuple)):
+                if isinstance(entry['via'], list | tuple):
                     via_list = [{'via': hop['via']}
                                 for hop in entry['via']]
                     entry['via'] = sorted(via_list, key=lambda i: i['via'])

@@ -15,6 +15,7 @@
 #    under the License.
 
 from neutron_lib.api.definitions import constants as api_const
+from neutron_lib.api.definitions import external_net as external_net_apidef
 from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.api.definitions import network as net_def
 from neutron_lib.callbacks import events
@@ -53,7 +54,12 @@ def _ensure_external_network_default_value_callback(
     def _do_ensure_external_network_default_value_callback(
             context, request, orig, network):
         is_default = request.get(api_const.IS_DEFAULT)
-        if is_default is None:
+        # the update request might not have external set to True, so
+        # verify by looking at the network
+        req_external = request.get(external_net_apidef.EXTERNAL)
+        net_external = network[external_net_apidef.EXTERNAL]
+        is_external = req_external is not None or net_external
+        if is_default is None or not is_external:
             return
         if is_default:
             # ensure only one default external network at any given time
@@ -80,20 +86,20 @@ def _ensure_external_network_default_value_callback(
 
 
 @resource_extend.has_resource_extenders
-class AutoAllocatedTopologyMixin(object):
+class AutoAllocatedTopologyMixin:
 
     def __new__(cls, *args, **kwargs):
         # NOTE(kevinbenton): we subscribe on object construction because
         # the tests blow away the callback manager for each run
-        new = super(AutoAllocatedTopologyMixin, cls).__new__(cls, *args,
-                                                             **kwargs)
+        new = super().__new__(cls, *args,
+                              **kwargs)
         registry.subscribe(_ensure_external_network_default_value_callback,
                            resources.NETWORK, events.PRECOMMIT_UPDATE)
         registry.subscribe(_ensure_external_network_default_value_callback,
                            resources.NETWORK, events.PRECOMMIT_CREATE)
         return new
 
-    # TODO(armax): if a tenant modifies auto allocated resources under
+    # TODO(armax): if a project modifies auto allocated resources under
     # the hood the behavior of the get_auto_allocated_topology API is
     # undetermined. Consider adding callbacks to deal with the following
     # situations:
@@ -123,26 +129,26 @@ class AutoAllocatedTopologyMixin(object):
             net_res[api_const.IS_DEFAULT] = net_db.external.is_default
         return net_res
 
-    def get_auto_allocated_topology(self, context, tenant_id, fields=None):
-        """Return tenant's network associated to auto-allocated topology.
+    def get_auto_allocated_topology(self, context, project_id, fields=None):
+        """Return project's network associated to auto-allocated topology.
 
         The topology will be provisioned upon return, if network is missing.
         """
         fields = fields or []
-        tenant_id = self._validate(context, tenant_id)
+        project_id = self._validate(context, project_id)
         if CHECK_REQUIREMENTS in fields:
             # for dry-run requests, simply validates that subsequent
             # requests can be fulfilled based on a set of requirements
             # such as existence of default networks, pools, etc.
-            return self._check_requirements(context, tenant_id)
-        elif fields:
+            return self._check_requirements(context, project_id)
+        if fields:
             raise n_exc.BadRequest(resource='auto_allocate',
                                    msg=_("Unrecognized field"))
 
         # Check for an existent topology
-        network_id = self._get_auto_allocated_network(context, tenant_id)
+        network_id = self._get_auto_allocated_network(context, project_id)
         if network_id:
-            return self._response(network_id, tenant_id, fields=fields)
+            return self._response(network_id, project_id, fields=fields)
         # See if we indeed have an external network to connect to, otherwise
         # we will fail fast
         default_external_network = self._get_default_external_network(
@@ -150,12 +156,12 @@ class AutoAllocatedTopologyMixin(object):
 
         # If we reach this point, then we got some work to do!
         network_id = self._build_topology(
-            context, tenant_id, default_external_network)
-        return self._response(network_id, tenant_id, fields=fields)
+            context, project_id, default_external_network)
+        return self._response(network_id, project_id, fields=fields)
 
-    def delete_auto_allocated_topology(self, context, tenant_id):
-        tenant_id = self._validate(context, tenant_id)
-        topology = self._get_auto_allocated_topology(context, tenant_id)
+    def delete_auto_allocated_topology(self, context, project_id):
+        project_id = self._validate(context, project_id)
+        topology = self._get_auto_allocated_topology(context, project_id)
         if topology:
             subnets = self.core_plugin.get_subnets(
                 context,
@@ -164,29 +170,29 @@ class AutoAllocatedTopologyMixin(object):
                 context, network_id=topology['network_id'],
                 router_id=topology['router_id'], subnets=subnets)
 
-    def _build_topology(self, context, tenant_id, default_external_network):
+    def _build_topology(self, context, project_id, default_external_network):
         """Build the network topology and returns its network UUID."""
         try:
-            subnets = self._provision_tenant_private_network(
-                context, tenant_id)
+            subnets = self._provision_project_private_network(
+                context, project_id)
             network_id = subnets[0]['network_id']
             router = self._provision_external_connectivity(
-                context, default_external_network, subnets, tenant_id)
+                context, default_external_network, subnets, project_id)
             network_id = self._save(
-                context, tenant_id, network_id, router['id'], subnets)
+                context, project_id, network_id, router['id'], subnets)
             return network_id
         except exceptions.UnknownProvisioningError as e:
             # Clean partially provisioned topologies, and reraise the
             # error. If it can be retried, so be it.
             LOG.error("Unknown error while provisioning topology for "
-                      "tenant %(tenant_id)s. Reason: %(reason)s",
-                      {'tenant_id': tenant_id, 'reason': e})
+                      "project %(project_id)s. Reason: %(reason)s",
+                      {'project_id': project_id, 'reason': e})
             self._cleanup(
                 context, network_id=e.network_id,
                 router_id=e.router_id, subnets=e.subnets)
             raise e.error
 
-    def _check_requirements(self, context, tenant_id):
+    def _check_requirements(self, context, project_id):
         """Raise if requirements are not met."""
         self._get_default_external_network(context)
         try:
@@ -194,38 +200,39 @@ class AutoAllocatedTopologyMixin(object):
         except n_exc.NotFound:
             raise exceptions.AutoAllocationFailure(
                 reason=_("No default subnetpools defined"))
-        return {'id': 'dry-run=pass', 'tenant_id': tenant_id}
+        return {'id': 'dry-run=pass',
+                'project_id': project_id}
 
-    def _validate(self, context, tenant_id):
-        """Validate and return the tenant to be associated to the topology."""
-        if tenant_id == 'None':
+    def _validate(self, context, project_id):
+        """Validate and return the project to be associated to the topology."""
+        if project_id == 'None':
             # NOTE(HenryG): the client might be sending us astray by
-            # passing no tenant; this is really meant to be the tenant
+            # passing no project; this is really meant to be the project
             # issuing the request, therefore let's get it from the context
-            tenant_id = context.tenant_id
+            project_id = context.project_id
 
-        if not context.is_admin and tenant_id != context.tenant_id:
+        if not context.is_admin and project_id != context.project_id:
             raise n_exc.NotAuthorized()
 
-        return tenant_id
+        return project_id
 
-    def _get_auto_allocated_topology(self, context, tenant_id):
+    def _get_auto_allocated_topology(self, context, project_id):
         """Return the auto allocated topology record if present or None."""
         return auto_allocate_obj.AutoAllocatedTopology.get_object(
-            context, project_id=tenant_id)
+            context, project_id=project_id)
 
-    def _get_auto_allocated_network(self, context, tenant_id):
-        """Get the auto allocated network for the tenant."""
-        network = self._get_auto_allocated_topology(context, tenant_id)
+    def _get_auto_allocated_network(self, context, project_id):
+        """Get the auto allocated network for the project."""
+        network = self._get_auto_allocated_topology(context, project_id)
         if network:
             return network['network_id']
 
     @staticmethod
-    def _response(network_id, tenant_id, fields=None):
+    def _response(network_id, project_id, fields=None):
         """Build response for auto-allocated network."""
         res = {
             'id': network_id,
-            'tenant_id': tenant_id
+            'project_id': project_id
         }
         return db_utils.resource_fields(res, fields)
 
@@ -262,14 +269,14 @@ class AutoAllocatedTopologyMixin(object):
 
         return available_pools
 
-    def _provision_tenant_private_network(self, context, tenant_id):
-        """Create a tenant private network/subnets."""
+    def _provision_project_private_network(self, context, project_id):
+        """Create a project private network/subnets."""
         network = None
         try:
             network_args = {
                 'name': 'auto_allocated_network',
                 'admin_state_up': False,
-                'tenant_id': tenant_id,
+                'project_id': project_id,
                 'shared': False
             }
             network = p_utils.create_network(
@@ -279,7 +286,7 @@ class AutoAllocatedTopologyMixin(object):
                 subnet_args = {
                     'name': 'auto_allocated_subnet_v%s' % pool['ip_version'],
                     'network_id': network['id'],
-                    'tenant_id': tenant_id,
+                    'project_id': project_id,
                     'ip_version': pool['ip_version'],
                     'subnetpool_id': pool['id'],
                 }
@@ -288,27 +295,27 @@ class AutoAllocatedTopologyMixin(object):
             return subnets
         except (n_exc.SubnetAllocationError, ValueError,
                 n_exc.BadRequest, n_exc.NotFound) as e:
-            LOG.error("Unable to auto allocate topology for tenant "
-                      "%(tenant_id)s due to missing or unmet "
+            LOG.error("Unable to auto allocate topology for project "
+                      "%(project_id)s due to missing or unmet "
                       "requirements. Reason: %(reason)s",
-                      {'tenant_id': tenant_id, 'reason': e})
+                      {'project_id': project_id, 'reason': e})
             if network:
                 self._cleanup(context, network['id'])
             raise exceptions.AutoAllocationFailure(
-                reason=_("Unable to provide tenant private network"))
+                reason=_("Unable to provide project private network"))
         except Exception as e:
             network_id = network['id'] if network else None
             raise exceptions.UnknownProvisioningError(e, network_id=network_id)
 
     def _provision_external_connectivity(self, context,
                                          default_external_network, subnets,
-                                         tenant_id):
-        """Uplink tenant subnet(s) to external network."""
+                                         project_id):
+        """Uplink project subnet(s) to external network."""
         router_args = {
             'name': 'auto_allocated_router',
             l3_apidef.EXTERNAL_GW_INFO: {
                 'network_id': default_external_network},
-            'tenant_id': tenant_id,
+            'project_id': project_id,
             'admin_state_up': True
         }
         router = None
@@ -322,10 +329,10 @@ class AutoAllocatedTopologyMixin(object):
                 attached_subnets.append(subnet)
             return router
         except n_exc.BadRequest as e:
-            LOG.error("Unable to auto allocate topology for tenant "
-                      "%(tenant_id)s because of router errors. "
+            LOG.error("Unable to auto allocate topology for project "
+                      "%(project_id)s because of router errors. "
                       "Reason: %(reason)s",
-                      {'tenant_id': tenant_id, 'reason': e})
+                      {'project_id': project_id, 'reason': e})
             router_id = router['id'] if router else None
             self._cleanup(context,
                           network_id=subnets[0]['network_id'],
@@ -338,24 +345,24 @@ class AutoAllocatedTopologyMixin(object):
                 e, network_id=subnets[0]['network_id'],
                 router_id=router_id, subnets=subnets)
 
-    def _save(self, context, tenant_id, network_id, router_id, subnets):
+    def _save(self, context, project_id, network_id, router_id, subnets):
         """Save auto-allocated topology, or revert in case of DB errors."""
         try:
             auto_allocate_obj.AutoAllocatedTopology(
-                context, project_id=tenant_id, network_id=network_id,
+                context, project_id=project_id, network_id=network_id,
                 router_id=router_id).create()
             self.core_plugin.update_network(
                 context, network_id,
                 {'network': {'admin_state_up': True}})
         except obj_exc.NeutronDbObjectDuplicateEntry:
             LOG.debug("Multiple auto-allocated networks detected for "
-                      "tenant %s. Attempting clean up for network %s "
+                      "project %s. Attempting clean up for network %s "
                       "and router %s.",
-                      tenant_id, network_id, router_id)
+                      project_id, network_id, router_id)
             self._cleanup(
                 context, network_id=network_id,
                 router_id=router_id, subnets=subnets)
-            network_id = self._get_auto_allocated_network(context, tenant_id)
+            network_id = self._get_auto_allocated_network(context, project_id)
         except Exception as e:
             raise exceptions.UnknownProvisioningError(
                 e, network_id=network_id,

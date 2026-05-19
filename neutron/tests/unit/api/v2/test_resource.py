@@ -23,14 +23,14 @@ import webtest
 
 from neutron._i18n import _
 from neutron.api.v2 import resource as wsgi_resource
+from neutron.api import wsgi
 from neutron.common import utils
 from neutron.tests import base
-from neutron import wsgi
 
 
 class RequestTestCase(base.BaseTestCase):
     def setUp(self):
-        super(RequestTestCase, self).setUp()
+        super().setUp()
         self.req = wsgi_resource.Request({'foo': 'bar'})
 
     def test_content_type_missing(self):
@@ -91,7 +91,7 @@ class RequestTestCase(base.BaseTestCase):
         self.assertEqual("application/json", result)
 
     def test_context_with_neutron_context(self):
-        ctxt = context.Context('fake_user', 'fake_tenant')
+        ctxt = context.Context('fake_user', 'fake_project')
         self.req.environ['neutron.context'] = ctxt
         self.assertEqual(self.req.context, ctxt)
 
@@ -253,11 +253,11 @@ class ResourceTestCase(base.BaseTestCase):
 
     def test_unhandled_error(self):
         expected_res = {'body': {'NeutronError':
-                                {'detail': '',
-                                 'message': _(
-                                     'Request Failed: internal server '
-                                     'error while processing your request.'),
-                                 'type': 'HTTPInternalServerError'}}}
+                                 {'detail': '',
+                                  'message': _(
+                                      'Request Failed: internal server '
+                                      'error while processing your request.'),
+                                  'type': 'HTTPInternalServerError'}}}
         res = self._make_request_with_side_effect(side_effect=Exception())
         self.assertEqual(exc.HTTPInternalServerError.code,
                          res.status_int)
@@ -266,12 +266,12 @@ class ResourceTestCase(base.BaseTestCase):
 
     def test_not_implemented_error(self):
         expected_res = {'body': {'NeutronError':
-                                {'detail': '',
-                                 'message': _(
-                                     'The server has either erred or is '
-                                     'incapable of performing the requested '
-                                     'operation.'),
-                                 'type': 'HTTPNotImplemented'}}}
+                                 {'detail': '',
+                                  'message': _(
+                                      'The server has either erred or is '
+                                      'incapable of performing the requested '
+                                      'operation.'),
+                                  'type': 'HTTPNotImplemented'}}}
 
         res = self._make_request_with_side_effect(exc.HTTPNotImplemented())
         self.assertEqual(exc.HTTPNotImplemented.code, res.status_int)

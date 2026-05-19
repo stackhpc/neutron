@@ -16,6 +16,7 @@ from concurrent import futures
 import itertools
 import os
 import random
+import time
 
 import netaddr
 from neutron_lib.tests import tools
@@ -48,8 +49,13 @@ class BaseFullStackTestCase(testlib_api.MySQLTestCaseMixin,
 
     BUILD_WITH_MIGRATIONS = True
 
+    # NOTE(slaweq): In fullstack tests there need to be new database created
+    # for every test, and one db shouldn't be really shared between tests
+    # running by the same worker
+    CLEAN_DB_AFTER_TEST = True
+
     def setUp(self, environment):
-        super(BaseFullStackTestCase, self).setUp()
+        super().setUp()
 
         tests_base.setup_test_logging(
             cfg.CONF, DEFAULT_LOG_DIR, '%s.txt' % self.get_name())
@@ -60,7 +66,9 @@ class BaseFullStackTestCase(testlib_api.MySQLTestCaseMixin,
         # neutron server against this database.
         _orig_db_url = cfg.CONF.database.connection
         cfg.CONF.set_override(
-            'connection', str(self.engine.url), group='database')
+            'connection',
+            self.engine.url.render_as_string(hide_password=False),
+            group='database')
         self.addCleanup(
             cfg.CONF.set_override,
             "connection", _orig_db_url, group="database"
@@ -84,7 +92,7 @@ class BaseFullStackTestCase(testlib_api.MySQLTestCaseMixin,
 
     def get_name(self):
         class_name, test_name = self.id().split(".")[-2:]
-        return "%s.%s" % (class_name, test_name)
+        return f"{class_name}.{test_name}"
 
     def _wait_until_agent_up(self, agent_id):
         def _agent_up():
@@ -96,12 +104,23 @@ class BaseFullStackTestCase(testlib_api.MySQLTestCaseMixin,
     def _wait_until_agent_down(self, agent_id):
         def _agent_down():
             agent = self.client.show_agent(agent_id)['agent']
+            if not agent.get('alive'):
+                # NOTE(slaweq): to avoid race between heartbeat written in the
+                # database and response to this API call, lets make sure that
+                # agent is really dead. See bug
+                # https://bugs.launchpad.net/neutron/+bug/2045757
+                # for details.
+                # 2 seconds delay should be more than enough to make sure that
+                # all pending heartbeats are already written in the Neutron
+                # database
+                time.sleep(2)
+                agent = self.client.show_agent(agent_id)['agent']
             return not agent.get('alive')
 
         common_utils.wait_until_true(_agent_down)
 
     def _assert_ping_during_agents_restart(
-            self, agents, src_namespace, ips, restart_timeout=10,
+            self, agents, src_namespace, ips, restart_timeout=30,
             ping_timeout=1, count=10):
         with net_helpers.async_ping(
                 src_namespace, ips, timeout=ping_timeout,
@@ -113,7 +132,7 @@ class BaseFullStackTestCase(testlib_api.MySQLTestCaseMixin,
 
             futures.wait(restarts, timeout=restart_timeout)
 
-            self.assertTrue(all([r.done() for r in restarts]))
+            self.assertTrue(all(r.done() for r in restarts))
             LOG.debug("Restarting agents - done")
 
             # It is necessary to give agents time to initialize
@@ -148,11 +167,12 @@ class BaseFullStackTestCase(testlib_api.MySQLTestCaseMixin,
         available_ips = itertools.islice(valid_ips, initial, initial + num)
         return [str(available_ip) for available_ip in available_ips]
 
-    def _create_external_vm(self, network, subnet):
+    def _create_external_vm(self, network, subnet, ip=None):
+        ip = ip or subnet['gateway_ip']
         vm = self.useFixture(
             machine_fixtures.FakeMachine(
                 self.environment.central_bridge,
-                common_utils.ip_to_cidr(subnet['gateway_ip'], 24)))
+                common_utils.ip_to_cidr(ip, 24)))
         # NOTE(slaweq): as ext_net is 'vlan' network type external_vm needs to
         # send packets with proper vlan also
         vm.bridge.set_db_attribute(

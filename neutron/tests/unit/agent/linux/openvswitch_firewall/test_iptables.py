@@ -15,6 +15,7 @@
 
 from unittest import mock
 
+from neutron.agent.linux import ip_conntrack
 from neutron.agent.linux import iptables_firewall
 from neutron.agent.linux.openvswitch_firewall import iptables
 from neutron.agent.linux import utils
@@ -23,7 +24,7 @@ from neutron.tests import base
 
 class TestHelper(base.BaseTestCase):
     def setUp(self):
-        super(TestHelper, self).setUp()
+        super().setUp()
         self.helper = iptables.Helper(mock.Mock())
         mock.patch.object(iptables_firewall, 'cfg').start()
         self.mock_execute = mock.patch.object(utils, 'execute',
@@ -74,13 +75,13 @@ class TestHelper(base.BaseTestCase):
             'tap1234', 'qvo-1234', 'tap9876', 'qvo-fghfhfh']
         self.helper.int_br.db_get_val.return_value = {'foo': 'bar'}
         with mock.patch.object(iptables_firewall.IptablesFirewallDriver,
-             '_check_netfilter_for_bridges'):
+                               '_check_netfilter_for_bridges'):
             self.helper.load_driver_if_needed()
             self.assertIsNotNone(self.helper.iptables_driver)
 
     def test_get_iptables_driver_instance_has_correct_instance(self):
         with mock.patch.object(iptables_firewall.IptablesFirewallDriver,
-             '_check_netfilter_for_bridges'):
+                               '_check_netfilter_for_bridges'):
             instance = iptables.get_iptables_driver_instance()
             self.assertIsInstance(
                 instance,
@@ -112,12 +113,15 @@ class TestHelper(base.BaseTestCase):
 class TestHybridIptablesHelper(base.BaseTestCase):
 
     def test_overloaded_remove_conntrack(self):
-        with mock.patch.object(iptables_firewall.IptablesFirewallDriver,
+        with mock.patch.object(
+                iptables_firewall.IptablesFirewallDriver,
                 '_remove_conntrack_entries_from_port_deleted') as rcefpd, \
                 mock.patch("neutron.agent.linux.ip_conntrack."
                            "IpConntrackManager._populate_initial_zone_map"), \
                 mock.patch.object(iptables_firewall.IptablesFirewallDriver,
-                                  '_check_netfilter_for_bridges'):
+                                  '_check_netfilter_for_bridges'), \
+                mock.patch.object(ip_conntrack.IpConntrackManager,
+                                  '_process_queue_worker'):
             firewall = iptables.get_iptables_driver_instance()
             firewall._remove_conntrack_entries_from_port_deleted(None)
             rcefpd.assert_not_called()

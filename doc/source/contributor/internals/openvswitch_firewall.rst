@@ -239,9 +239,9 @@ SLAAC, NDP) for egress traffic, and allows ARP replies. Also identifies not
 tracked connections which are processed later with information obtained from
 conntrack. Notice the ``zone=NXM_NX_REG6[0..15]`` in ``actions`` when obtaining
 information from conntrack. It says every port has its own conntrack zone
-defined by the value in ``register 6`` (OVSDB port tag identifying the network).
-It's there to avoid accepting established traffic that belongs to a different
-port with the same conntrack parameters.
+defined by the value in ``register 6`` (OVSDB port tag identifying the
+network). It's there to avoid accepting established traffic that belongs to a
+different port with the same conntrack parameters.
 
 The very first rule in |table_71| is a rule removing conntrack information for
 a use-case where a Neutron logical port is placed directly to the hypervisor.
@@ -525,6 +525,19 @@ will be:
   table=94, priority=10,reg6=0x284,dl_src=fa:16:3e:24:57:c7,dl_dst=00:00:00:00:00:00/01:00:00:00:00:00 actions=push_vlan:0x8100,set_field:0x1->vlan_vid,output:3
   table=94, priority=1 actions=NORMAL
 
+The OVS firewall will initialize a default goto table 94 flow
+on TRANSIENT_TABLE |table_60|, if ``explicitly_egress_direct``
+is set to True, which is mainly for ports without security groups
+and disabled port_security. For instance:
+
+::
+  table=60, priority=2 actions=resubmit(,94)
+
+Then for packets from the outside to VM without security functionalities
+(--disable-port-security --no-security-group)
+will go to table 94 and do the same direct actions.
+
+
 OVS firewall integration points
 -------------------------------
 
@@ -586,6 +599,14 @@ firewall rules and finally remove the drop rules for the instance.
 use the OVS firewall, and instances from other nodes can be live-migrated to
 it. Once the first node is evacuated, its firewall driver can be then be
 switched to the OVS driver.
+
+4) Once migration is complete, stale iptables rules should be cleaned-up on
+all nodes where the firewall driver was changed. They can be found by
+searching for the string 'neutron', for example:
+
+.. code-block:: bash
+
+    sudo iptables -S | grep neutron
 
 .. note::
 

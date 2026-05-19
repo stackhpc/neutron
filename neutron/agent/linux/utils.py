@@ -20,11 +20,11 @@ import os
 import pwd
 import shlex
 import socket
+import socketserver
+import subprocess
 import threading
 import time
 
-import eventlet
-from eventlet.green import subprocess
 from neutron_lib import exceptions
 from neutron_lib.utils import helpers
 from oslo_config import cfg
@@ -35,15 +35,14 @@ from oslo_utils import excutils
 from oslo_utils import fileutils
 import psutil
 
+from neutron.common import utils
 from neutron.conf.agent import common as config
 from neutron.privileged.agent.linux import utils as priv_utils
-from neutron import wsgi
-
 
 LOG = logging.getLogger(__name__)
 
 
-class RootwrapDaemonHelper(object):
+class RootwrapDaemonHelper:
     __client = None
     __lock = threading.Lock()
 
@@ -82,9 +81,14 @@ def create_process(cmd, run_as_root=False, addl_env=None):
         # execution is done.
         cmd = shlex.split(config.get_root_helper(cfg.CONF)) + cmd
     LOG.debug("Running command: %s", cmd)
-    obj = subprocess.Popen(cmd, shell=False, stdin=subprocess.PIPE,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
+    # pylint: disable=consider-using-with
+    obj = subprocess.Popen(  # noqa: S603
+        cmd,
+        shell=False,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
     return obj, cmd
 
 
@@ -144,11 +148,11 @@ def execute(cmd, process_input=None, addl_env=None,
                    "Stdin: %(stdin)s; "
                    "Stdout: %(stdout)s; "
                    "Stderr: %(stderr)s" % {
-                        'returncode': returncode,
-                        'cmd': cmd,
-                        'stdin': process_input or '',
-                        'stdout': _stdout,
-                        'stderr': _stderr})
+                       'returncode': returncode,
+                       'cmd': cmd,
+                       'stdin': process_input or '',
+                       'stdout': _stdout,
+                       'stderr': _stderr})
 
             if log_fail_as_error:
                 LOG.error(msg)
@@ -179,6 +183,22 @@ def find_child_pids(pid, recursive=False):
         for child in child_pids:
             child_pids += find_child_pids(child, recursive=True)
     return child_pids
+
+
+def pgrep(
+        command: str,
+        entire_command_line: bool = True
+) -> str | None:
+    cmd = ['pgrep']
+    if entire_command_line:
+        cmd += ['-f']
+    cmd += [command]
+    try:
+        result = execute(cmd).strip()
+    except exceptions.ProcessExecutionError:
+        return None
+
+    return result if result else None
 
 
 def find_parent_pid(pid):
@@ -237,18 +257,18 @@ def _get_conf_base(cfg_root, uuid, ensure_conf_dir):
 def get_conf_file_name(cfg_root, uuid, cfg_file, ensure_conf_dir=False):
     """Returns the file name for a given kind of config file."""
     conf_base = _get_conf_base(cfg_root, uuid, ensure_conf_dir)
-    return "%s.%s" % (conf_base, cfg_file)
+    return f"{conf_base}.{cfg_file}"
 
 
 def get_value_from_file(filename, converter=None):
 
     try:
-        with open(filename, 'r') as f:
+        with open(filename) as f:
             try:
                 return converter(f.read()) if converter else f.read()
             except ValueError:
                 LOG.error('Unable to convert value in %s', filename)
-    except IOError as error:
+    except OSError as error:
         LOG.debug('Unable to access %(filename)s; Error: %(error)s',
                   {'filename': filename, 'error': error})
 
@@ -318,9 +338,9 @@ def get_cmdline_from_pid(pid):
     # NOTE(jh): Even after the above check, the process may terminate
     # before the open below happens
     try:
-        with open('/proc/%s/cmdline' % pid, 'r') as f:
+        with open('/proc/%s/cmdline' % pid) as f:
             cmdline = f.readline().split('\0')[:-1]
-    except IOError:
+    except OSError:
         return []
 
     # NOTE(slaweq): sometimes it may happen that values in
@@ -400,8 +420,21 @@ def delete_if_exists(path, run_as_root=False):
         fileutils.delete_if_exists(path)
 
 
+def read_if_exists(path: str, run_as_root=False) -> str:
+    """Return the content of a text file as a string
+
+    The output includes the empty lines too. If the file does not exist,
+    returns an empty string.
+    It could be called with elevated permissions (root).
+    """
+    if run_as_root:
+        return priv_utils.read_file(path)
+    return utils.read_file(path)
+
+
 class UnixDomainHTTPConnection(httplib.HTTPConnection):
     """Connection class for HTTP over UNIX domain socket."""
+
     def __init__(self, host, port=None, strict=None, timeout=None,
                  proxy_info=None):
         httplib.HTTPConnection.__init__(self, host, port, strict)
@@ -415,62 +448,34 @@ class UnixDomainHTTPConnection(httplib.HTTPConnection):
         self.sock.connect(self.socket_path)
 
 
-class UnixDomainHttpProtocol(eventlet.wsgi.HttpProtocol):
-    def __init__(self, *args):
-        # NOTE(yamahata): from eventlet v0.22 HttpProtocol.__init__
-        # signature was changed by changeset of
-        # 7f53465578543156e7251e243c0636e087a8445f
-        # Both have server as last arg, but first arg(s) differ
-        server = args[-1]
-
-        # Because the caller is eventlet.wsgi.Server.process_request,
-        # the number of arguments will dictate if it is new or old style.
-        if len(args) == 2:
-            conn_state = args[0]
-            client_address = conn_state[0]
-            if not client_address:
-                conn_state[0] = ('<local>', 0)
-            # base class is old-style, so super does not work properly
-            eventlet.wsgi.HttpProtocol.__init__(self, conn_state, server)
-        elif len(args) == 3:
-            request = args[0]
-            client_address = args[1]
-            if not client_address:
-                client_address = ('<local>', 0)
-            # base class is old-style, so super does not work properly
-            # NOTE: eventlet 0.22 or later changes the number of args to 2.
-            # If we install eventlet 0.22 or later into a venv for pylint,
-            # pylint complains this. Let's skip it. (bug 1791178)
-            # pylint: disable=too-many-function-args
-            eventlet.wsgi.HttpProtocol.__init__(
-                self, request, client_address, server)
-        else:
-            eventlet.wsgi.HttpProtocol.__init__(self, *args)
-
-
-class UnixDomainWSGIServer(wsgi.Server):
-    def __init__(self, name, num_threads=None):
-        self._socket = None
-        self._launcher = None
+class UnixDomainWSGIThreadServer:
+    def __init__(self, name, application, file_socket):
+        self._name = name
+        self._application = application
+        self._file_socket = file_socket
         self._server = None
-        super(UnixDomainWSGIServer, self).__init__(name, disable_ssl=True,
-                                                   num_threads=num_threads)
 
-    def start(self, application, file_socket, workers, backlog, mode=None):
-        self._socket = eventlet.listen(file_socket,
-                                       family=socket.AF_UNIX,
-                                       backlog=backlog)
-        if mode is not None:
-            os.chmod(file_socket, mode)
+    def run(self):
+        self._server = socketserver.ThreadingUnixStreamServer(
+            self._file_socket, self._application)
 
-        self._launch(application, workers=workers)
+    def wait(self):
+        self._server.serve_forever()
 
-    def _run(self, application, socket):
-        """Start a WSGI service in a new green thread."""
-        logger = logging.getLogger('eventlet.wsgi.server')
-        eventlet.wsgi.server(socket,
-                             application,
-                             max_size=self.num_threads,
-                             protocol=UnixDomainHttpProtocol,
-                             log=logger,
-                             log_format=cfg.CONF.wsgi_log_format)
+
+def get_attr(pyroute2_obj, attr_name):
+    """Get an attribute in a pyroute object
+
+    pyroute2 object attributes are stored under a key called 'attrs'. This key
+    contains a tuple of tuples. E.g.:
+      pyroute2_obj = {'attrs': (('TCA_KIND': 'htb'),
+                                ('TCA_OPTIONS': {...}))}
+
+    :param pyroute2_obj: (dict) pyroute2 object
+    :param attr_name: (string) first value of the tuple we are looking for
+    :return: (object) second value of the tuple, None if the tuple doesn't
+             exist
+    """
+    rule_attrs = pyroute2_obj.get('attrs', [])
+    for attr in (attr for attr in rule_attrs if attr[0] == attr_name):
+        return attr[1]

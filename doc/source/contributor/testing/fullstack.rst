@@ -25,6 +25,11 @@
 Full Stack Testing
 ==================
 
+ .. warning::
+    Full Stack testing was disabled as a side effect of the Eventlet
+    removal process, see the related patch:
+    https://review.opendev.org/c/openstack/neutron/+/953295
+
 How?
 ++++
 
@@ -48,12 +53,9 @@ neutron/tests/fullstack/test_connectivity.py.
 
 Full stack testing can simulate multi node testing by starting an agent
 multiple times. Specifically, each node would have its own copy of the
-OVS/LinuxBridge/DHCP/L3 agents, all configured with the same "host" value.
+OVS/DHCP/L3 agents, all configured with the same "host" value.
 Each OVS agent is connected to its own pair of br-int/br-ex, and those bridges
 are then interconnected.
-For LinuxBridge agent each agent is started in its own namespace, called
-"host-<some_random_value>". Such namespaces are connected with OVS "central"
-bridge to each other.
 
 .. image:: images/fullstack_multinode_simulation.png
 
@@ -96,23 +98,35 @@ Neutron offers a Quality of Service API, initially offering bandwidth
 capping at the port level. In the reference implementation, it does this by
 utilizing an OVS feature.
 neutron.tests.fullstack.test_qos.TestBwLimitQoSOvs.test_bw_limit_qos_policy_rule_lifecycle
-is a positive example of how the fullstack testing infrastructure should be used.
-It creates a network, subnet, QoS policy & rule and a port utilizing that policy.
-It then asserts that the expected bandwidth limitation is present on the OVS
-bridge connected to that port. The test is a true integration test, in the
-sense that it invokes the API and then asserts that Neutron interacted with
-the hypervisor appropriately.
+is a positive example of how the fullstack testing infrastructure should be
+used. It creates a network, subnet, QoS policy & rule and a port utilizing
+that policy. It then asserts that the expected bandwidth limitation is present
+on the OVS bridge connected to that port. The test is a true integration test,
+in the sense that it invokes the API and then asserts that Neutron interacted
+with the hypervisor appropriately.
 
 How to run fullstack tests locally?
 +++++++++++++++++++++++++++++++++++
 
 Fullstack tests can be run locally. That makes it much easier to understand
 exactly how it works, debug issues in the existing tests or write new ones.
-To run fullstack tests locally, you should clone
-`Devstack <https://opendev.org/openstack/devstack/>` and `Neutron
-<https://opendev.org/openstack/neutron>` repositories. When repositories are
-available locally, the first thing which needs to be done is preparation of the
-environment. There is a simple script in Neutron to do that.
+
+Before proceeding, please make sure that the machine runs the latest kernel
+from your distibution repositories (reboot the machine, if needed). Otherwise,
+you may experience issues with the `openvswitch` built from source during the
+environment preparation.
+
+To run fullstack tests locally, you should clone the following repositories
+under `/opt/stack/` directory (you may have to create it first with
+`mkdir -p /opt/stack`):
+
+* `Devstack <https://opendev.org/openstack/devstack/>`_
+* `Neutron <https://opendev.org/openstack/neutron>`_
+* `Requirements <https://opendev.org/openstack/requirements>`_
+
+When repositories are available locally, the first thing which needs to be
+done is preparation of the environment. There is a simple script in Neutron
+to do that:
 
 .. code-block:: console
 
@@ -127,8 +141,24 @@ done you should see a message like:
    Phew, we're done!
 
 That means that all went well and you should be ready to run fullstack tests
-locally. Of course there are many tests there and running all of them can
-take a pretty long time so lets try to run just one:
+locally.
+
+Fullstack tests execute a custom dhclient-script. From kernel version 4.14
+onward, apparmor on certain distros could deny the execution of this script.
+To be sure, check journalctl ::
+
+    sudo journalctl | grep DENIED | grep fullstack-dhclient-script
+
+To execute these tests, the easiest workaround is to disable apparmor ::
+
+    sudo systemctl stop apparmor
+    sudo systemctl disable apparmor
+
+A more granular solution could be to disable apparmor only for dhclient ::
+
+    sudo ln -s /etc/apparmor.d/sbin.dhclient /etc/apparmor.d/disable/
+
+Now that your environment is ready for tests, you can try to run just one:
 
 .. code-block:: console
 
@@ -232,7 +262,8 @@ Each fullstack test is spawning its own, isolated environment with needed
 services. So, for example, it can be ``neutron-server``, ``neutron-ovs-agent``
 or ``neutron-dhcp-agent``. And often there is a need to check logs of some of
 those processes. That is of course possible when running fullstack tests
-locally. By default, logs are stored in ``/opt/stack/logs/dsvm-fullstack-logs``.
+locally. By default, logs are stored in
+``/opt/stack/logs/dsvm-fullstack-logs``.
 The logs directory can be defined by the environment variable ``OS_LOG_PATH``.
 In that directory there are directories with names matching names of the
 tests, for example:
@@ -271,8 +302,8 @@ Debugging fullstack failures in the gate
 
 Sometimes there is a need to investigate reason that a test failed in the gate.
 After every ``neutron-fullstack`` job run, on the Zuul job page there are logs
-available. In the directory ``controller/logs/dsvm-fullstack-logs`` you can find
-exactly the same files with logs from each test case as mentioned above.
+available. In the directory ``controller/logs/dsvm-fullstack-logs`` you can
+find exactly the same files with logs from each test case as mentioned above.
 
 You can also check, for example, the journal log from the node where the tests
 were run. All those logs are available in the file

@@ -17,7 +17,6 @@ import os
 import sys
 from unittest import mock
 
-import eventlet
 from neutron_lib import constants as n_const
 
 from neutron.agent.l3 import namespaces
@@ -33,13 +32,12 @@ from neutron.tests.functional import base
 from neutron.tests.functional.cmd import process_spawn
 
 GET_NAMESPACES = 'neutron.agent.linux.ip_lib.list_network_namespaces'
-TEST_INTERFACE_DRIVER = 'neutron.agent.linux.interface.OVSInterfaceDriver'
 NUM_SUBPROCESSES = 6
 
 
 class NetnsCleanupTest(base.BaseSudoTestCase):
     def setUp(self):
-        super(NetnsCleanupTest, self).setUp()
+        super().setUp()
 
         self.get_namespaces_p = mock.patch(GET_NAMESPACES)
         self.get_namespaces = self.get_namespaces_p.start()
@@ -52,7 +50,6 @@ class NetnsCleanupTest(base.BaseSudoTestCase):
         args.append('--force')
 
         self.conf = netns_cleanup.setup_conf()
-        self.conf.set_override('interface_driver', TEST_INTERFACE_DRIVER)
         self.config_parse(conf=self.conf, args=args)
 
     def test_cleanup_network_namespaces_cleans_dhcp_and_l3_namespaces(self):
@@ -77,9 +74,9 @@ class NetnsCleanupTest(base.BaseSudoTestCase):
             common_utils.wait_until_true(
                 lambda: self._get_num_spawned_procs() == procs_launched,
                 timeout=15)
-        except eventlet.Timeout:
+        except common_utils.WaitTimeout:
             num_spawned_procs = self._get_num_spawned_procs()
-            err_str = ("Expected number/spawned number: {0}/{1}\nProcess "
+            err_str = ("Expected number/spawned number: {}/{}\nProcess "
                        "information:\n".format(num_spawned_procs,
                                                procs_launched))
             cmd = ['ps', '-f', '-u', 'root']
@@ -152,14 +149,14 @@ class NetnsCleanupTest(base.BaseSudoTestCase):
     def _get_num_spawned_procs():
         cmd = ['ps', '-f', '-u', 'root']
         out = utils.execute(cmd, run_as_root=True)
-        return sum([1 for line in out.splitlines() if 'process_spawn' in line])
+        return sum(1 for line in out.splitlines() if 'process_spawn' in line)
 
 
 class TestNETNSCLIConfig(basetest.BaseTestCase):
 
     def setup_config(self, args=None):
         self.conf = netns_cleanup.setup_conf()
-        super(TestNETNSCLIConfig, self).setup_config(args=args)
+        super().setup_config(args=args)
 
     def test_netns_opts_registration(self):
         self.assertFalse(self.conf.force)

@@ -25,12 +25,14 @@ from neutron.services.portforwarding.common import exceptions as pf_exc
 from neutron.services.portforwarding import pf_plugin
 from neutron.tests.functional import base as functional_base
 from neutron.tests.unit.plugins.ml2 import base as ml2_test_base
+from neutron.tests.unit import testlib_api
 
 
-class PortForwardingTestCaseBase(ml2_test_base.ML2TestFramework,
+class PortForwardingTestCaseBase(testlib_api.MySQLTestCaseMixin,
+                                 ml2_test_base.ML2TestFramework,
                                  functional_base.BaseLoggingTestCase):
     def setUp(self):
-        super(PortForwardingTestCaseBase, self).setUp()
+        super().setUp()
         self.pf_plugin = pf_plugin.PortForwardingPlugin()
         directory.add_plugin(plugin_constants.PORTFORWARDING, self.pf_plugin)
 
@@ -39,8 +41,7 @@ class PortForwardingTestCaseBase(ml2_test_base.ML2TestFramework,
         body = {"floating_network_id": network_id,
                 "port_id": port_id,
                 "fixed_ip_address": fixed_ip_address,
-                "tenant_id": self._tenant_id,
-                "project_id": self._tenant_id}
+                "project_id": self._project_id}
 
         return self.l3_plugin.create_floatingip(
             self.context,
@@ -85,7 +86,7 @@ class PortForwardingTestCaseBase(ml2_test_base.ML2TestFramework,
 
 class PortForwardingTestCase(PortForwardingTestCaseBase):
     def setUp(self):
-        super(PortForwardingTestCase, self).setUp()
+        super().setUp()
         self._prepare_env()
 
     def _get_network_port_ips(self):
@@ -98,7 +99,8 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
     def _prepare_env(self):
         self.router = self._create_router(distributed=True)
         self.ext_net = self._create_network(
-            self.fmt, 'ext-net', True, arg_list=("router:external",),
+            self.fmt, 'ext-net', True, as_admin=True,
+            arg_list=("router:external",),
             **{"router:external": True}).json['network']
         self.ext_subnet = self._create_subnet(
             self.fmt, self.ext_net['id'], '172.24.2.0/24').json['subnet']
@@ -327,15 +329,17 @@ class PortForwardingTestCase(PortForwardingTestCaseBase):
         # There is already a port forwarding. We create another port forwarding
         # with the new_port, and update the new one with the same params of the
         # existing one.
-        new_port = self._create_port(self.fmt, self.net['id']).json['port']
+        fixed_ips = [{'subnet_id': self.subnet['id']}]
+        new_port = self._create_port(self.fmt, self.net['id'],
+                                     fixed_ips=fixed_ips).json['port']
         self.port_forwarding[apidef.RESOURCE_NAME].update({
             'internal_port_id': new_port['id'],
             'internal_ip_address': new_port['fixed_ips'][0]['ip_address'],
             'external_port': self.port_forwarding[
                                  apidef.RESOURCE_NAME]['external_port'] + 1,
-            'external_port_range': '%(port)s:%(port)s' % {
-                'port': self.port_forwarding[
-                            apidef.RESOURCE_NAME]['external_port'] + 1}
+            'external_port_range': '{port}:{port}'.format(
+                port=self.port_forwarding[
+                            apidef.RESOURCE_NAME]['external_port'] + 1)
         })
         new_res = self.pf_plugin.create_floatingip_port_forwarding(
             self.context, self.fip['id'], self.port_forwarding)

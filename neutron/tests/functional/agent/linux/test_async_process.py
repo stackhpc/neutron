@@ -12,7 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import eventlet
+import time
+from unittest import mock
 
 from neutron._i18n import _
 from neutron.agent.common import async_process
@@ -24,7 +25,7 @@ from neutron.tests.functional import base
 class AsyncProcessTestFramework(base.BaseLoggingTestCase):
 
     def setUp(self):
-        super(AsyncProcessTestFramework, self).setUp()
+        super().setUp()
         self.test_file_path = self.get_temp_file_path('test_async_process.tmp')
         self.data = [str(x) for x in range(4)]
         with open(self.test_file_path, 'w') as f:
@@ -37,7 +38,7 @@ class AsyncProcessTestFramework(base.BaseLoggingTestCase):
             new_output = list(proc.iter_stdout())
             if new_output:
                 output += new_output
-            eventlet.sleep(0.01)
+            time.sleep(0.01)
 
 
 class TestAsyncProcess(AsyncProcessTestFramework):
@@ -55,11 +56,11 @@ class TestAsyncProcess(AsyncProcessTestFramework):
         self._check_stdout(proc)
         proc.stop(block=True)
 
-        # Ensure that the process and greenthreads have stopped
+        # Ensure that the process and threads have stopped
         proc._process.wait()
         self.assertEqual(proc._process.returncode, -9)
         for watcher in proc._watchers:
-            watcher.wait()
+            watcher.join()
 
     def test_async_process_respawns(self):
         proc = async_process.AsyncProcess(['tail', '-f',
@@ -75,6 +76,16 @@ class TestAsyncProcess(AsyncProcessTestFramework):
         common_utils.wait_until_true(
             lambda: proc.is_active() and pid != proc.pid,
             timeout=5,
-            sleep=0.01,
+            sleep=0.2,
             exception=RuntimeError(_("Async process didn't respawn")))
         self._check_stdout(proc)
+
+    def test_async_process_respawns_with_race_condition(self):
+        original_sleep = time.sleep
+
+        with mock.patch(
+                'time.sleep',
+                side_effect=lambda x=0: original_sleep(
+                    0.1 if x == 0 else x)):
+            # Simulating a race condition
+            self.test_async_process_respawns()

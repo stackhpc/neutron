@@ -17,7 +17,7 @@ from neutron_lib.db import resource_extend
 
 from neutron.db import db_base_plugin_v2
 from neutron.db import uplink_status_propagation_db as usp_db
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
 
 
 class UplinkStatusPropagationExtensionTestPlugin(
@@ -36,8 +36,7 @@ class UplinkStatusPropagationExtensionTestPlugin(
 
     def create_port(self, context, port):
         with db_api.CONTEXT_WRITER.using(context):
-            new_port = super(UplinkStatusPropagationExtensionTestPlugin,
-                            self).create_port(context, port)
+            new_port = super().create_port(context, port)
             # Update the propagate_uplink_status in the database
             p = port['port']
             if 'propagate_uplink_status' not in p:
@@ -55,8 +54,7 @@ class UplinkStatusPropagationExtensionTestCase(
     def setUp(self):
         plugin = ('neutron.tests.unit.extensions.test_uplink_status_'
                   'propagation.UplinkStatusPropagationExtensionTestPlugin')
-        super(UplinkStatusPropagationExtensionTestCase,
-              self).setUp(plugin=plugin)
+        super().setUp(plugin=plugin)
 
     @ddt.data(True, False)
     def test_create_port_propagate_uplink_status(

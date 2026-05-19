@@ -26,7 +26,6 @@ from neutron._i18n import _
 from neutron.agent.l3 import fip_rule_priority_allocator as frpa
 from neutron.agent.l3 import link_local_allocator as lla
 from neutron.agent.l3 import namespaces
-from neutron.agent.l3 import router_info
 from neutron.agent.linux import ip_lib
 from neutron.agent.linux import iptables_manager
 from neutron.common import utils as common_utils
@@ -51,7 +50,7 @@ class FipNamespace(namespaces.Namespace):
 
     def __init__(self, ext_net_id, agent_conf, driver, use_ipv6):
         name = self._get_ns_name(ext_net_id)
-        super(FipNamespace, self).__init__(
+        super().__init__(
             name, agent_conf, driver, use_ipv6)
 
         self._ext_net_id = ext_net_id
@@ -71,7 +70,6 @@ class FipNamespace(namespaces.Namespace):
         self.local_subnets = lla.LinkLocalAllocator(
             path, lib_constants.DVR_FIP_LL_CIDR)
         self.destroyed = False
-        self._stale_fips_checked = False
 
     @classmethod
     def _get_ns_name(cls, ext_net_id):
@@ -199,13 +197,16 @@ class FipNamespace(namespaces.Namespace):
 
         self.agent_gateway_port = ex_gw_port
 
+        cmd = ['sysctl', '-w', 'net.ipv4.neigh.%s.proxy_delay=1' %
+               interface_name]
+        ip_wrapper.netns.execute(cmd, check_exit_code=False, privsep_exec=True)
         cmd = ['sysctl', '-w', 'net.ipv4.conf.%s.proxy_arp=1' % interface_name]
         ip_wrapper.netns.execute(cmd, check_exit_code=False, privsep_exec=True)
 
     def create(self):
         LOG.debug("DVR: add fip namespace: %s", self.name)
         # parent class will ensure the namespace exists and turn-on forwarding
-        super(FipNamespace, self).create()
+        super().create()
         ip_lib.set_ip_nonlocal_bind_for_namespace(self.name, 1,
                                                   root_namespace=True)
 
@@ -236,7 +237,7 @@ class FipNamespace(namespaces.Namespace):
 
         # TODO(mrsmith): add LOG warn if fip count != 0
         LOG.debug('DVR: destroy fip namespace: %s', self.name)
-        super(FipNamespace, self).delete()
+        super().delete()
 
     def _check_for_gateway_ip_change(self, new_agent_gateway_port):
 
@@ -351,7 +352,7 @@ class FipNamespace(namespaces.Namespace):
             gw_ip = subnet.get('gateway_ip')
             if gw_ip:
                 is_gateway_not_in_subnet = not ipam_utils.check_subnet_ip(
-                                                subnet.get('cidr'), gw_ip)
+                    subnet.get('cidr'), gw_ip)
                 if is_gateway_not_in_subnet:
                     ipd.route.add_route(gw_ip, scope='link')
                 self._add_default_gateway_for_fip(gw_ip, ipd, tbl_index)
@@ -454,7 +455,7 @@ class FipNamespace(namespaces.Namespace):
         # add default route for the link local interface
         rtr_2_fip_dev.route.add_gateway(str(fip_2_rtr.ip), table=FIP_RT_TBL)
         v6_gateway = common_utils.cidr_to_ip(
-                ip_lib.get_ipv6_lladdr(fip_2_rtr_dev.link.address))
+            ip_lib.get_ipv6_lladdr(fip_2_rtr_dev.link.address))
         rtr_2_fip_dev.route.add_gateway(v6_gateway)
 
     def scan_fip_ports(self, ri):
@@ -466,17 +467,3 @@ class FipNamespace(namespaces.Namespace):
                 self.rtr_fip_connect = True
             else:
                 self.rtr_fip_connect = False
-            # On upgrade, there could be stale IP addresses configured, check
-            # and remove them once.
-            # TODO(haleyb): this can go away after a cycle or two
-            if not self._stale_fips_checked:
-                stale_cidrs = (
-                    ip for ip in router_info.RouterInfo.get_router_cidrs(
-                        ri, device)
-                    if common_utils.is_cidr_host(ip))
-                for ip_cidr in stale_cidrs:
-                    LOG.debug("Removing stale floating ip %s from interface "
-                              "%s in namespace %s",
-                              ip_cidr, rtr_2_fip_interface, ri.ns_name)
-                    device.delete_addr_and_conntrack_state(ip_cidr)
-                self._stale_fips_checked = True

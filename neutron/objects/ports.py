@@ -44,7 +44,7 @@ class PortBindingBase(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(PortBindingBase, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         for field in ['profile', 'vif_details']:
             if field in result:
                 # dump field into string, set '' if empty '{}' or None
@@ -54,7 +54,7 @@ class PortBindingBase(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        fields = super(PortBindingBase, cls).modify_fields_from_db(db_obj)
+        fields = super().modify_fields_from_db(db_obj)
         if 'vif_details' in fields:
             # load string from DB into dict, set None if vif_details is ''
             fields['vif_details'] = (
@@ -105,10 +105,33 @@ class PortBinding(PortBindingBase):
 
     @classmethod
     @db_api.CONTEXT_READER
-    def get_duplicated_port_bindings(cls, context):
-        return context.session.query(
-            cls.db_model).group_by(
-            cls.db_model.port_id).having(sqlalchemy.func.count() > 1).all()
+    def get_duplicated_port_bindings(cls, context, port_id=None):
+        """Get duplicated port bindings or INACTIVE bindings for given port.
+
+        Returns all INACTIVE port bindings that are duplicated (appear more
+        than once for the same port_id). If ``port_id`` is provided, only
+        returns INACTIVE bindings for that specific port.
+        """
+        if port_id:
+            _filter = and_(cls.db_model.port_id == port_id,
+                           cls.db_model.status == constants.INACTIVE)
+        else:
+            select = (
+                sqlalchemy.select(cls.db_model.port_id).
+                select_from(cls.db_model).
+                group_by(cls.db_model.port_id).
+                having(sqlalchemy.func.count(cls.db_model.port_id) > 1))
+            _filter = and_(cls.db_model.port_id.in_(select),
+                           cls.db_model.status == constants.INACTIVE)
+        return context.session.query(cls.db_model).filter(_filter).all()
+
+    @classmethod
+    @db_api.CONTEXT_READER
+    def get_port_binding_by_vnic_type(cls, context, vnic_type):
+        """Returns the port binding filtering by VNIC type."""
+        query = context.session.query(cls.db_model)
+        query = query.filter(cls.db_model.vnic_type == vnic_type)
+        return query.all()
 
 
 @base.NeutronObjectRegistry.register
@@ -172,13 +195,8 @@ class PortBindingLevel(base.NeutronDbObject):
         if not _pager.sorts:
             # (NOTE) True means ASC, False is DESC
             _pager.sorts = [('port_id', True), ('level', True)]
-        return super(PortBindingLevel, cls).get_objects(
+        return super().get_objects(
             context, _pager, validate_filters, **kwargs)
-
-    def obj_make_compatible(self, primitive, target_version):
-        _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 1):
-            primitive.pop('segment_id', None)
 
 
 @base.NeutronObjectRegistry.register
@@ -195,7 +213,7 @@ class IPAllocation(base.NeutronDbObject):
         'ip_address': obj_fields.IPAddressField(),
     }
 
-    fields_no_update = fields.keys()
+    fields_no_update = list(fields.keys())
 
     primary_keys = ['subnet_id', 'network_id', 'ip_address']
 
@@ -207,7 +225,7 @@ class IPAllocation(base.NeutronDbObject):
     # custom types.
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(IPAllocation, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
         if 'ip_address' in result:
             result['ip_address'] = cls.filter_to_str(result['ip_address'])
         return result
@@ -216,7 +234,7 @@ class IPAllocation(base.NeutronDbObject):
     # custom types.
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        fields = super(IPAllocation, cls).modify_fields_from_db(db_obj)
+        fields = super().modify_fields_from_db(db_obj)
         if 'ip_address' in fields:
             fields['ip_address'] = netaddr.IPAddress(fields['ip_address'])
         return fields
@@ -238,7 +256,7 @@ class IPAllocation(base.NeutronDbObject):
                         filter(models_v2.Port.device_owner.
                                in_(device_owner)).first())
         if exclude and alloc_db:
-            return super(IPAllocation, cls)._load_object(context, alloc_db)
+            return super()._load_object(context, alloc_db)
         if alloc_db:
             return True
 
@@ -247,7 +265,7 @@ class IPAllocation(base.NeutronDbObject):
         allocs = context.session.query(models_v2.IPAllocation).filter_by(
             subnet_id=subnet_id).all()
         for alloc in allocs:
-            alloc_obj = super(IPAllocation, cls)._load_object(context, alloc)
+            alloc_obj = super()._load_object(context, alloc)
             alloc_obj.delete()
 
     @classmethod
@@ -263,8 +281,7 @@ class IPAllocation(base.NeutronDbObject):
 
         if first:
             return alloc_qry.first()
-        else:
-            return alloc_qry.all()
+        return alloc_qry.all()
 
 
 @base.NeutronObjectRegistry.register
@@ -318,7 +335,10 @@ class Port(base.NeutronDbObject):
     # Version 1.5: Added qos_network_policy_id field
     # Version 1.6: Added numa_affinity_policy field
     # Version 1.7: Added port_device field
-    VERSION = '1.7'
+    # Version 1.8: Added hints field
+    # Version 1.9: Added hardware_offload_type field
+    # Version 1.10: Added trusted field
+    VERSION = '1.10'
 
     db_model = models_v2.Port
 
@@ -352,6 +372,9 @@ class Port(base.NeutronDbObject):
         'fixed_ips': obj_fields.ListOfObjectsField(
             'IPAllocation', nullable=True
         ),
+        'hints': obj_fields.ObjectField(
+            'PortHints', nullable=True
+        ),
         # TODO(ihrachys): consider converting to boolean
         'security': obj_fields.ObjectField(
             'PortSecurity', nullable=True
@@ -370,6 +393,8 @@ class Port(base.NeutronDbObject):
         ),
         'numa_affinity_policy': obj_fields.StringField(nullable=True),
         'device_profile': obj_fields.StringField(nullable=True),
+        'hardware_offload_type': obj_fields.StringField(nullable=True),
+        'trusted': obj_fields.BooleanField(nullable=True),
 
         # TODO(ihrachys): consider adding a 'dns_assignment' fully synthetic
         # field in later object iterations
@@ -389,11 +414,14 @@ class Port(base.NeutronDbObject):
         'distributed_bindings',
         'dns',
         'fixed_ips',
+        'hardware_offload_type',
+        'hints',
         'numa_affinity_policy',
         'qos_policy_id',
         'qos_network_policy_id',
         'security',
         'security_group_ids',
+        'trusted',
     ]
 
     fields_need_translation = {
@@ -410,7 +438,7 @@ class Port(base.NeutronDbObject):
             if sg_ids is None:
                 sg_ids = set()
             qos_policy_id = self.qos_policy_id
-            super(Port, self).create()
+            super().create()
             if 'security_group_ids' in fields:
                 self._attach_security_groups(sg_ids)
             if 'qos_policy_id' in fields:
@@ -419,7 +447,7 @@ class Port(base.NeutronDbObject):
     def update(self):
         fields = self.obj_get_changes()
         with self.db_context_writer(self.obj_context):
-            super(Port, self).update()
+            super().update()
             if 'security_group_ids' in fields:
                 self._attach_security_groups(fields['security_group_ids'])
             if 'qos_policy_id' in fields:
@@ -464,9 +492,9 @@ class Port(base.NeutronDbObject):
                 kwargs['id'] = list(set(port_ids) & set(ports_with_sg))
             else:
                 kwargs['id'] = ports_with_sg
-        port_array = super(Port, cls).get_objects(context, _pager,
-                                                  validate_filters,
-                                                  **kwargs)
+        port_array = super().get_objects(context, _pager,
+                                         validate_filters,
+                                         **kwargs)
         sg_count = len(security_group_ids) if security_group_ids else 0
         LOG.debug("Time-cost: Fetching %(port_count)s ports in %(sg_count)s "
                   "security groups",
@@ -498,7 +526,7 @@ class Port(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_to_db(cls, fields):
-        result = super(Port, cls).modify_fields_to_db(fields)
+        result = super().modify_fields_to_db(fields)
 
         # TODO(rossella_s): get rid of it once we switch the db model to using
         # custom types.
@@ -514,7 +542,7 @@ class Port(base.NeutronDbObject):
 
     @classmethod
     def modify_fields_from_db(cls, db_obj):
-        fields = super(Port, cls).modify_fields_from_db(db_obj)
+        fields = super().modify_fields_from_db(db_obj)
 
         # TODO(rossella_s): get rid of it once we switch the db model to using
         # custom types.
@@ -531,7 +559,7 @@ class Port(base.NeutronDbObject):
         return fields
 
     def from_db_object(self, db_obj):
-        super(Port, self).from_db_object(db_obj)
+        super().from_db_object(db_obj)
         # extract security group bindings
         if db_obj.get('security_groups', []):
             self.security_group_ids = {
@@ -560,38 +588,25 @@ class Port(base.NeutronDbObject):
             self.device_profile = db_obj.device_profile.device_profile
             fields_to_change.append('device_profile')
 
+        if db_obj.get('hardware_offload_type'):
+            self.hardware_offload_type = (
+                db_obj.hardware_offload_type.hardware_offload_type)
+            fields_to_change.append('hardware_offload_type')
+
+        if db_obj.get('trusted') is not None:
+            self.trusted = db_obj.trusted.trusted
+            fields_to_change.append('trusted')
+
         self.obj_reset_changes(fields_to_change)
 
     def obj_make_compatible(self, primitive, target_version):
         _target_version = versionutils.convert_version_to_tuple(target_version)
-        if _target_version < (1, 2):
-            binding_levels = primitive.get('binding_levels', [])
-            for lvl in binding_levels:
-                lvl['versioned_object.version'] = '1.0'
-                lvl['versioned_object.data'].pop('segment_id', None)
-        if _target_version < (1, 3):
-            bindings = primitive.pop('distributed_bindings', [])
-            primitive['distributed_binding'] = (bindings[0]
-                                                if bindings else None)
-        if _target_version < (1, 4):
-            # In version 1.4 we add support for multiple port bindings.
-            # Previous versions only support one port binding. The following
-            # lines look for the active port binding, which is the only one
-            # needed in previous versions
-            if 'bindings' in primitive:
-                original_bindings = primitive.pop('bindings')
-                primitive['binding'] = None
-                for a_binding in original_bindings:
-                    if (a_binding['versioned_object.data']['status'] ==
-                            constants.ACTIVE):
-                        primitive['binding'] = a_binding
-                        break
-        if _target_version < (1, 5):
-            primitive.pop('qos_network_policy_id', None)
-        if _target_version < (1, 6):
-            primitive.pop('numa_affinity_policy', None)
-        if _target_version < (1, 7):
-            primitive.pop('device_profile', None)
+        if _target_version < (1, 8):
+            primitive.pop('hints', None)
+        if _target_version < (1, 9):
+            primitive.pop('hardware_offload_type', None)
+        if _target_version < (1, 10):
+            primitive.pop('trusted', None)
 
     @classmethod
     @db_api.CONTEXT_READER
@@ -723,7 +738,7 @@ class Port(base.NeutronDbObject):
         else:
             query = query.filter(
                 ml2_models.PortBinding.vif_type.in_(binding_types))
-        return bool(query.count())
+        return query.first() is not None
 
     @classmethod
     @db_api.CONTEXT_READER
@@ -741,13 +756,12 @@ class Port(base.NeutronDbObject):
 
         if not ports:
             return
-        elif not pci_slot:
+        if not pci_slot:
             return ports.pop()
-        else:
-            for port in ports:
-                for _binding in port.bindings:
-                    if _binding.get('profile', {}).get('pci_slot') == pci_slot:
-                        return port
+        for port in ports:
+            for _binding in port.bindings:
+                if _binding.get('profile', {}).get('pci_slot') == pci_slot:
+                    return port
 
     @classmethod
     @db_api.CONTEXT_READER

@@ -14,8 +14,8 @@
 #    under the License.
 
 import contextlib
+import time
 
-import eventlet
 from neutron_lib.plugins.ml2 import ovs_constants as ovs_const
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -54,7 +54,7 @@ class InterfacePollingMinimizer(base_polling.BasePollingManager):
             ovsdb_monitor_respawn_interval=ovs_const.DEFAULT_OVSDBMON_RESPAWN,
             bridge_names=None, ovs=None):
 
-        super(InterfacePollingMinimizer, self).__init__()
+        super().__init__()
         self._monitor = ovsdb_monitor.SimpleInterfaceMonitor(
             respawn_interval=ovsdb_monitor_respawn_interval,
             ovsdb_connection=cfg.CONF.OVS.ovsdb_connection,
@@ -71,8 +71,9 @@ class InterfacePollingMinimizer(base_polling.BasePollingManager):
 
     def _is_polling_required(self):
         # Maximize the chances of update detection having a chance to
-        # collect output.
-        eventlet.sleep()
+        # collect output.  TODO(sahid): We can remove this line once
+        # eventlet monkey patching removed.
+        time.sleep(0)
         return self._monitor.has_updates
 
     def get_events(self):

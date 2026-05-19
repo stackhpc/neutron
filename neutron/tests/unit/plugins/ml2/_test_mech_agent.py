@@ -22,26 +22,10 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.plugins.ml2 import api
 
 from neutron.tests import base
+from neutron.tests.unit import fake_resources as fakes
 
 NETWORK_ID = "fake_network"
 PORT_ID = "fake_port"
-
-
-class FakeNetworkContext(api.NetworkContext):
-    def __init__(self, segments):
-        self._network_segments = segments
-
-    @property
-    def current(self):
-        return {'id': NETWORK_ID}
-
-    @property
-    def original(self):
-        return None
-
-    @property
-    def network_segments(self):
-        return self._network_segments
 
 
 class FakePortContext(api.PortContext):
@@ -50,7 +34,8 @@ class FakePortContext(api.PortContext):
                  original=None, profile=None):
         self._agent_type = agent_type
         self._agents = agents
-        self._network_context = FakeNetworkContext(segments)
+        network = {'id': NETWORK_ID}
+        self._network_context = fakes.FakeNetworkContext(network, segments)
         self._bound_vnic_type = vnic_type
         self._bound_profile = profile
         self._bound_segment_id = None
@@ -163,8 +148,7 @@ class FakePortContext(api.PortContext):
     def host_agents(self, agent_type):
         if agent_type == self._agent_type:
             return self._agents
-        else:
-            return []
+        return []
 
     def set_binding(self, segment_id, vif_type, vif_details):
         self._bound_segment_id = segment_id
@@ -195,12 +179,12 @@ class MechDriverConfFixture(config_fixture.Config):
         :param registration_func: The method which do the config group's
                                   registration.
         """
-        super(MechDriverConfFixture, self).__init__(conf)
+        super().__init__(conf)
         self.prohibit_list_cfg = prohibit_list_cfg
         self.registration_func = registration_func
 
     def setUp(self):
-        super(MechDriverConfFixture, self).setUp()
+        super().setUp()
         self.registration_func(self.conf)
         for group, option in self.prohibit_list_cfg.items():
             self.config(group=group, **option)

@@ -1,15 +1,15 @@
 .. _neutron_teams:
 
-======================
-Neutron Team Structure
-======================
+==============
+Team Structure
+==============
 
 Neutron Core Reviewers
 ======================
 
 The `Neutron Core Reviewer Team <https://review.opendev.org/#/admin/groups/38,members>`_
-is responsible for many things related to Neutron. A lot of these things include mundane
-tasks such as the following:
+is responsible for many things related to Neutron. A lot of these things
+include mundane tasks such as the following:
 
 * Ensuring the bug count is low
 * Curating the gate and triaging failures
@@ -75,24 +75,34 @@ The following are the current Neutron Lieutenants.
 | Area                   | Lieutenant                | IRC nick             |
 +========================+===========================+======================+
 | API                    | Akihiro Motoki            | amotoki              |
+|                        +---------------------------+----------------------+
+|                        | Slawomir Kaplonski        | slaweq               |
 +------------------------+---------------------------+----------------------+
 | DB                     | Rodolfo Alonso Hernandez  | ralonsoh             |
 +------------------------+---------------------------+----------------------+
 | Built-In Control Plane | Miguel Lavalle            | mlavalle             |
 +------------------------+---------------------------+----------------------+
 | Client                 | Akihiro Motoki            | amotoki              |
+|                        +---------------------------+----------------------+
+|                        | Slawomir Kaplonski        | slaweq               |
+|                        +---------------------------+----------------------+
+|                        | Lajos Katona              | lajoskatona          |
 +------------------------+---------------------------+----------------------+
 | Docs                   | Akihiro Motoki            | amotoki              |
+|                        +---------------------------+----------------------+
+|                        | Lajos Katona              | lajoskatona          |
 +------------------------+---------------------------+----------------------+
 | Infra                  | Rodolfo Alonso Hernandez  | ralonsoh             |
 |                        +---------------------------+----------------------+
-|                        | YAMAMOTO Takashi          | yamamoto             |
+|                        | Jens Harbott              | frickler             |
 +------------------------+---------------------------+----------------------+
 | L3                     | Miguel Lavalle            | mlavalle             |
 |                        +---------------------------+----------------------+
 |                        | Yulong Liu                | liuyulong            |
 +------------------------+---------------------------+----------------------+
 | Testing                | Lajos Katona              | lajoskatona          |
+|                        +---------------------------+----------------------+
+|                        | Slawomir Kaplonski        | slaweq               |
 +------------------------+---------------------------+----------------------+
 
 Some notes on the above:
@@ -110,8 +120,9 @@ Some notes on the above:
 Sub-project Lieutenants
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Neutron also consists of several plugins, drivers, and agents that are developed
-effectively as sub-projects within Neutron in their own git repositories.
+Neutron also consists of several plugins, drivers, and agents that are
+developed effectively as sub-projects within Neutron in their own git
+repositories.
 Lieutenants are also named for these sub-projects to identify a clear point of
 contact and leader for that area.  The Lieutenant is also responsible for
 updating the core review team for the sub-project's repositories.
@@ -133,11 +144,11 @@ updating the core review team for the sub-project's repositories.
 |                         +-----------------------------+-------------------+
 |                         | Dongcan Ye                  | yedongcan         |
 +-------------------------+-----------------------------+-------------------+
-| networking-odl          | Lajos Katona                | lajoskatona       |
-+-------------------------+-----------------------------+-------------------+
 | networking-sfc          | Dharmendra Kushwaha         | dkushwaha         |
 +-------------------------+-----------------------------+-------------------+
-| ovn-octavia-provider    | None                        | N/A               |
+| ovn-octavia-provider    | Luis Tomas Bolivar          | ltomasbo          |
+|                         +-----------------------------+-------------------+
+|                         | Fernando Royo               | froyo             |
 +-------------------------+-----------------------------+-------------------+
 | ovsdbapp                | Terry Wilson                | otherwiseguy      |
 +-------------------------+-----------------------------+-------------------+
@@ -211,10 +222,10 @@ have +2 rights to the following git repositories:
 
 * `openstack/neutron-specs <https://opendev.org/openstack/neutron-specs/>`_
 
-The Neutron specs core reviewer team is responsible for reviewing specs targeted to
-all Neutron git repositories (Neutron + Advanced Services). It is worth noting that
-specs reviewers have the following attributes which are potentially different than
-code reviewers:
+The Neutron specs core reviewer team is responsible for reviewing specs
+targeted to all Neutron git repositories (Neutron + Advanced Services).
+It is worth noting that specs reviewers have the following attributes which
+are potentially different than code reviewers:
 
 * Broad understanding of cloud and networking technologies
 * Broad understanding of core OpenStack projects and technologies
@@ -230,11 +241,12 @@ Drivers Team
 ------------
 
 The `drivers team <https://review.opendev.org/#/admin/groups/464,members>`_ is
-the group of people who have full rights to the specs repo. This team, which matches
+the group of people who have full rights to the specs repo. This team, which
+matches
 `Launchpad Neutron Drivers team <https://launchpad.net/~neutron-drivers>`_, is
-instituted to ensure a consistent architectural vision for the Neutron project, and
-to continue to disaggregate and share the responsibilities of the Neutron PTL.
-The team is in charge of reviewing and commenting on
+instituted to ensure a consistent architectural vision for the Neutron
+project, and to continue to disaggregate and share the responsibilities of
+the Neutron PTL. The team is in charge of reviewing and commenting on
 :ref:`RFEs <request-for-feature-enhancement>`,
 and working with specification contributors to provide guidance on the process
 that govern contributions to the Neutron project as a whole. The team
@@ -247,7 +259,7 @@ Release Team
 
 The `release team <https://review.opendev.org/#/admin/groups/150,members>`_ is
 a group of people with some additional gerrit permissions primarily aimed at
-allowing release management of Neutron sub-projects.  These permissions include:
+allowing release management of Neutron sub-projects. These permissions include:
 
 * Ability to push signed tags to sub-projects whose releases are managed by the
   Neutron release team as opposed to the OpenStack release team.

@@ -23,10 +23,10 @@ from neutron.db import db_base_plugin_v2
 from neutron.extensions import agent
 from neutron.extensions import availability_zone as az_ext
 from neutron.tests.common import helpers
-from neutron.tests.unit.db import test_db_base_plugin_v2
+from neutron.tests.common import test_db_base_plugin_v2
 
 
-class AZExtensionManager(object):
+class AZExtensionManager:
 
     def get_resources(self):
         agent.Agent().update_attributes_map(az_def.RESOURCE_ATTRIBUTE_MAP)
@@ -60,7 +60,7 @@ class TestAZAgentCase(AZTestCommon):
         plugin = ('neutron.tests.unit.extensions.'
                   'test_availability_zone.AZTestPlugin')
         ext_mgr = AZExtensionManager()
-        super(TestAZAgentCase, self).setUp(plugin=plugin, ext_mgr=ext_mgr)
+        super().setUp(plugin=plugin, ext_mgr=ext_mgr)
 
     def test_list_availability_zones(self):
         self._register_azs()
@@ -71,12 +71,11 @@ class TestAZAgentCase(AZTestCommon):
             {'name': 'nova2', 'resource': 'network', 'state': 'available'},
             {'name': 'nova2', 'resource': 'router', 'state': 'available'},
             {'name': 'nova3', 'resource': 'router', 'state': 'unavailable'}]
-        res = self._list('availability_zones')
+        res = self._list('availability_zones', as_admin=True)
         azs = res['availability_zones']
         self.assertCountEqual(expected, azs)
         # not admin case
-        ctx = context.Context('', 'noadmin')
-        res = self._list('availability_zones', neutron_context=ctx)
+        res = self._list('availability_zones', as_admin=False)
         azs = res['availability_zones']
         self.assertCountEqual(expected, azs)
 
@@ -89,39 +88,43 @@ class TestAZAgentCase(AZTestCommon):
             {'name': 'nova2', 'resource': 'network', 'state': 'available'},
             {'name': 'nova2', 'resource': 'router', 'state': 'available'},
             {'name': 'nova3', 'resource': 'router', 'state': 'unavailable'}]
-        res = self._list('availability_zones')
+        res = self._list('availability_zones', as_admin=True)
         azs = res['availability_zones']
         self.assertCountEqual(expected, azs)
         # list with filter of 'name'
         res = self._list('availability_zones',
-                         query_params="name=nova1")
+                         query_params="name=nova1",
+                         as_admin=True)
         azs = res['availability_zones']
         self.assertCountEqual(expected[:1], azs)
         # list with filter of 'resource'
         res = self._list('availability_zones',
-                         query_params="resource=router")
+                         query_params="resource=router",
+                         as_admin=True)
         azs = res['availability_zones']
         self.assertCountEqual(expected[-2:], azs)
         # list with filter of 'state' as 'available'
         res = self._list('availability_zones',
-                         query_params="state=available")
+                         query_params="state=available",
+                         as_admin=True)
         azs = res['availability_zones']
         self.assertCountEqual(expected[:3], azs)
         # list with filter of 'state' as 'unavailable'
         res = self._list('availability_zones',
-                         query_params="state=unavailable")
+                         query_params="state=unavailable",
+                         as_admin=True)
         azs = res['availability_zones']
         self.assertCountEqual(expected[-1:], azs)
 
     def test_list_agent_with_az(self):
         helpers.register_dhcp_agent(host='host1', az='nova1')
-        res = self._list('agents')
+        res = self._list('agents', as_admin=True)
         self.assertEqual('nova1',
-            res['agents'][0]['availability_zone'])
+                         res['agents'][0]['availability_zone'])
 
     def test_validate_availability_zones(self):
         self._register_azs()
-        ctx = context.Context('', 'tenant_id')
+        ctx = context.Context('', 'project_id')
         self.plugin.validate_availability_zones(ctx, 'network',
                                                 ['nova1', 'nova2'])
         self.plugin.validate_availability_zones(ctx, 'router',
@@ -134,7 +137,7 @@ class TestAZAgentCase(AZTestCommon):
 class TestAZNetworkCase(AZTestCommon):
     def setUp(self):
         ext_mgr = AZExtensionManager()
-        super(TestAZNetworkCase, self).setUp(plugin='ml2', ext_mgr=ext_mgr)
+        super().setUp(plugin='ml2', ext_mgr=ext_mgr)
 
     def test_availability_zones_in_create_response(self):
         with self.network() as net:

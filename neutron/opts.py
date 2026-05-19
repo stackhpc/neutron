@@ -17,8 +17,11 @@ import operator
 from keystoneauth1 import loading as ks_loading
 from oslo_config import cfg
 
-import neutron.agent.agent_extensions_manager
-import neutron.agent.securitygroups_rpc
+# FIXME(stephenfin): We are importing some of these modules (with the noqa
+# lines) for their side effects. That's a bad idea and we should explicitly
+# load all options.
+import neutron.agent.agent_extensions_manager  # noqa: F401
+import neutron.agent.securitygroups_rpc  # noqa: F401
 import neutron.conf.agent.agent_extensions_manager
 import neutron.conf.agent.common
 import neutron.conf.agent.database.agents_db
@@ -26,7 +29,7 @@ import neutron.conf.agent.database.agentschedulers_db
 import neutron.conf.agent.dhcp
 import neutron.conf.agent.l3.config
 import neutron.conf.agent.l3.ha
-import neutron.conf.agent.linux
+import neutron.conf.agent.linux  # noqa: F401
 import neutron.conf.agent.metadata.config as meta_conf
 import neutron.conf.agent.ovs_conf
 import neutron.conf.agent.ovsdb_api
@@ -35,6 +38,7 @@ import neutron.conf.db.dvr_mac_db
 import neutron.conf.db.extraroute_db
 import neutron.conf.db.l3_agentschedulers_db
 import neutron.conf.db.l3_dvr_db
+import neutron.conf.db.l3_extra_gws_db
 import neutron.conf.db.l3_gwmode_db
 import neutron.conf.db.l3_hamode_db
 import neutron.conf.experimental
@@ -43,7 +47,6 @@ import neutron.conf.extensions.conntrack_helper
 import neutron.conf.plugins.ml2.config
 import neutron.conf.plugins.ml2.drivers.agent
 import neutron.conf.plugins.ml2.drivers.driver_type
-import neutron.conf.plugins.ml2.drivers.linuxbridge
 import neutron.conf.plugins.ml2.drivers.macvtap
 import neutron.conf.plugins.ml2.drivers.mech_sriov.agent_common
 import neutron.conf.plugins.ml2.drivers.mech_sriov.mech_sriov_conf
@@ -51,14 +54,14 @@ import neutron.conf.plugins.ml2.drivers.openvswitch.mech_ovs_conf
 import neutron.conf.plugins.ml2.drivers.ovs_conf
 import neutron.conf.quota
 import neutron.conf.service
+import neutron.conf.services.extdns_designate_driver
 import neutron.conf.services.logging
 import neutron.conf.services.metering_agent
-import neutron.conf.wsgi
+import neutron.conf.services.provider_configuration
 import neutron.db.migration.cli
-import neutron.extensions.l3
-import neutron.extensions.securitygroup
-import neutron.plugins.ml2.drivers.mech_sriov.agent.common.config
-import neutron.wsgi
+import neutron.extensions.l3  # noqa: F401
+import neutron.extensions.securitygroup  # noqa: F401
+import neutron.plugins.ml2.drivers.mech_sriov.agent.common.config  # noqa: F401
 
 
 AUTH_GROUPS_OPTS = {
@@ -76,7 +79,8 @@ AUTH_GROUPS_OPTS = {
         }
     },
     'ironic': {},
-    'placement': {}
+    'placement': {},
+    'designate': {}
 }
 
 CONF = cfg.CONF
@@ -114,6 +118,10 @@ def list_nova_auth_opts():
 
 def list_placement_auth_opts():
     return list_auth_opts('placement')
+
+
+def list_designate_auth_opts():
+    return list_auth_opts('designate')
 
 
 def list_agent_opts():
@@ -162,7 +170,8 @@ def list_db_opts():
              neutron.conf.db.dvr_mac_db.DVR_MAC_ADDRESS_OPTS,
              neutron.conf.db.l3_dvr_db.ROUTER_DISTRIBUTED_OPTS,
              neutron.conf.db.l3_agentschedulers_db.L3_AGENTS_SCHEDULER_OPTS,
-             neutron.conf.db.l3_hamode_db.L3_HA_OPTS)
+             neutron.conf.db.l3_hamode_db.L3_HA_OPTS,
+             neutron.conf.db.l3_extra_gws_db.L3_EXTRA_GWS_OPTS)
          ),
         ('database',
          neutron.db.migration.cli.get_engine_config())
@@ -175,7 +184,6 @@ def list_opts():
          itertools.chain(
              neutron.conf.common.core_cli_opts,
              neutron.conf.common.core_opts,
-             neutron.conf.wsgi.socket_opts,
              neutron.conf.service.SERVICE_OPTS,
              neutron.conf.service.RPC_EXTRA_OPTS)
          ),
@@ -191,7 +199,12 @@ def list_opts():
          itertools.chain(
              neutron.conf.common.placement_opts)
          ),
-        ('quotas', neutron.conf.quota.core_quota_opts)
+        ('designate',
+         neutron.conf.services.extdns_designate_driver.designate_opts
+         ),
+        ('quotas', neutron.conf.quota.core_quota_opts),
+        ('service_providers',
+         neutron.conf.services.provider_configuration.serviceprovider_opts)
     ]
 
 
@@ -225,28 +238,9 @@ def list_dhcp_agent_opts():
              neutron.conf.agent.dhcp.DHCP_AGENT_OPTS,
              neutron.conf.agent.dhcp.DHCP_OPTS,
              neutron.conf.agent.dhcp.DNSMASQ_OPTS)
-         )
-    ]
-
-
-def list_linux_bridge_opts():
-    return [
-        ('DEFAULT',
-         neutron.conf.service.RPC_EXTRA_OPTS),
-        ('linux_bridge',
-         neutron.conf.plugins.ml2.drivers.linuxbridge.bridge_opts),
-        ('vxlan',
-         neutron.conf.plugins.ml2.drivers.linuxbridge.vxlan_opts),
-        ('agent',
-         itertools.chain(
-             neutron.conf.plugins.ml2.drivers.agent.agent_opts,
-             neutron.conf.agent.agent_extensions_manager.
-             AGENT_EXT_MANAGER_OPTS)
          ),
-        ('securitygroup',
-         neutron.conf.agent.securitygroups_rpc.security_group_opts),
-        ('network_log',
-         neutron.conf.services.logging.log_driver_opts)
+        (meta_conf.RATE_LIMITING_GROUP,
+         meta_conf.METADATA_RATE_LIMITING_OPTS)
     ]
 
 
@@ -257,13 +251,14 @@ def list_l3_agent_opts():
              neutron.conf.agent.l3.config.OPTS,
              neutron.conf.service.SERVICE_OPTS,
              neutron.conf.agent.l3.ha.OPTS,
-             neutron.conf.agent.common.PD_DRIVER_OPTS,
              neutron.conf.agent.common.RA_OPTS)
          ),
         ('agent',
          neutron.conf.agent.agent_extensions_manager.AGENT_EXT_MANAGER_OPTS),
         ('network_log',
-         neutron.conf.services.logging.log_driver_opts)
+         neutron.conf.services.logging.log_driver_opts),
+        (meta_conf.RATE_LIMITING_GROUP,
+         meta_conf.METADATA_RATE_LIMITING_OPTS)
     ]
 
 
@@ -346,7 +341,11 @@ def list_ovs_opts():
         ('dhcp',
          itertools.chain(
              neutron.conf.plugins.ml2.drivers.ovs_conf.dhcp_opts,
-             neutron.conf.agent.common.DHCP_PROTOCOL_OPTS))
+             neutron.conf.agent.common.DHCP_PROTOCOL_OPTS)),
+        ('metadata',
+         itertools.chain(
+             neutron.conf.plugins.ml2.drivers.ovs_conf.metadata_opts,
+             meta_conf.METADATA_PROXY_HANDLER_OPTS))
     ]
 
 

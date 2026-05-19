@@ -25,24 +25,33 @@ from neutron.tests.unit.conf.policies import test_base as base
 class PortAPITestCase(base.PolicyBaseTestCase):
 
     def setUp(self):
-        super(PortAPITestCase, self).setUp()
+        super().setUp()
 
         self.network = {
             'id': uuidutils.generate_uuid(),
             'project_id': self.project_id}
+        self.alt_network = {
+            'id': uuidutils.generate_uuid(),
+            'project_id': self.alt_project_id}
         self.target = {
             'project_id': self.project_id,
-            'tenant_id': self.alt_project_id,
             'network_id': self.network['id'],
             'ext_parent_network_id': self.network['id']}
         self.alt_target = {
             'project_id': self.alt_project_id,
-            'tenant_id': self.alt_project_id,
-            'network_id': self.network['id'],
-            'ext_parent_network_id': self.network['id']}
+            'network_id': self.alt_network['id'],
+            'ext_parent_network_id': self.alt_network['id']}
+
+        networks = {
+            self.network['id']: self.network,
+            self.alt_network['id']: self.alt_network,
+        }
+
+        def get_network(context, id, fields=None):
+            return networks[id]
 
         self.plugin_mock = mock.Mock()
-        self.plugin_mock.get_network.return_value = self.network
+        self.plugin_mock.get_network.side_effect = get_network
         mock.patch(
             'neutron_lib.plugins.directory.get_plugin',
             return_value=self.plugin_mock).start()
@@ -51,7 +60,7 @@ class PortAPITestCase(base.PolicyBaseTestCase):
 class SystemAdminTests(PortAPITestCase):
 
     def setUp(self):
-        super(SystemAdminTests, self).setUp()
+        super().setUp()
         self.context = self.system_admin_ctx
 
     def test_create_port(self):
@@ -61,6 +70,16 @@ class SystemAdminTests(PortAPITestCase):
         self.assertRaises(
             base_policy.InvalidScope,
             policy.enforce, self.context, 'create_port', self.alt_target)
+
+    def test_create_port_with_device_id(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'create_port:device_id',
+            self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'create_port:device_id',
+            self.alt_target)
 
     def test_create_port_with_device_owner(self):
         self.assertRaises(
@@ -188,6 +207,14 @@ class SystemAdminTests(PortAPITestCase):
             self.context, 'create_port:allowed_address_pairs:ip_address',
             self.alt_target)
 
+    def test_create_port_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'create_port:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'create_port:tags', self.alt_target)
+
     def test_get_port(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -246,6 +273,14 @@ class SystemAdminTests(PortAPITestCase):
             policy.enforce, self.context, 'get_port:resource_request',
             self.alt_target)
 
+    def test_get_port_tags(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'get_port:tags', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'get_port:tags', self.alt_target)
+
     def test_update_port(self):
         self.assertRaises(
             base_policy.InvalidScope,
@@ -253,6 +288,16 @@ class SystemAdminTests(PortAPITestCase):
         self.assertRaises(
             base_policy.InvalidScope,
             policy.enforce, self.context, 'update_port', self.alt_target)
+
+    def test_update_port_with_device_id(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'update_port:device_id',
+            self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce, self.context, 'update_port:device_id',
+            self.alt_target)
 
     def test_update_port_with_device_owner(self):
         self.assertRaises(
@@ -402,21 +447,21 @@ class SystemAdminTests(PortAPITestCase):
 class SystemMemberTests(SystemAdminTests):
 
     def setUp(self):
-        super(SystemMemberTests, self).setUp()
+        super().setUp()
         self.context = self.system_member_ctx
 
 
 class SystemReaderTests(SystemMemberTests):
 
     def setUp(self):
-        super(SystemReaderTests, self).setUp()
+        super().setUp()
         self.context = self.system_reader_ctx
 
 
 class AdminTests(PortAPITestCase):
 
     def setUp(self):
-        super(AdminTests, self).setUp()
+        super().setUp()
         self.context = self.project_admin_ctx
 
     def test_create_port(self):
@@ -424,6 +469,14 @@ class AdminTests(PortAPITestCase):
             policy.enforce(self.context, 'create_port', self.target))
         self.assertTrue(
             policy.enforce(self.context, 'create_port', self.alt_target))
+
+    def test_create_port_with_device_id(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:device_id',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:device_id',
+                           self.alt_target))
 
     def test_create_port_with_device_owner(self):
         target = self.target.copy()
@@ -465,10 +518,10 @@ class AdminTests(PortAPITestCase):
     def test_create_port_with_fixed_ips_and_subnet_id(self):
         self.assertTrue(
             policy.enforce(self.context,
-                           'create_port:fixed_ips:subent_id', self.target))
+                           'create_port:fixed_ips:subnet_id', self.target))
         self.assertTrue(
             policy.enforce(self.context,
-                           'create_port:fixed_ips:subent_id', self.alt_target))
+                           'create_port:fixed_ips:subnet_id', self.alt_target))
 
     def test_create_port_with_port_security_enabled(self):
         self.assertTrue(
@@ -488,12 +541,14 @@ class AdminTests(PortAPITestCase):
                            'create_port:binding:host_id', self.alt_target))
 
     def test_create_port_with_binding_profile(self):
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'create_port:binding:profile', self.target))
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'create_port:binding:profile', self.alt_target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:binding:profile',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:binding:profile',
+            self.alt_target)
 
     def test_create_port_with_binding_vnic_type(self):
         self.assertTrue(
@@ -531,6 +586,32 @@ class AdminTests(PortAPITestCase):
             policy.enforce(self.context,
                            'create_port:allowed_address_pairs:ip_address',
                            self.alt_target))
+
+    def test_create_port_with_hints(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:hints',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:hints',
+                           self.alt_target))
+
+    def test_create_port_with_trusted_field(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:trusted',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:trusted',
+                           self.alt_target))
+
+    def test_create_port_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:tags', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:tags', self.alt_target))
 
     def test_get_port(self):
         self.assertTrue(
@@ -578,11 +659,41 @@ class AdminTests(PortAPITestCase):
             policy.enforce(
                 self.context, 'get_port:resource_request', self.alt_target))
 
+    def test_get_port_hints(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'get_port:hints', self.target))
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'get_port:hints', self.alt_target))
+
+    def test_get_port_trusted_field(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'get_port:trusted', self.target))
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'get_port:trusted', self.alt_target))
+
+    def test_get_port_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_port:tags', self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'get_port:tags', self.alt_target))
+
     def test_update_port(self):
         self.assertTrue(
             policy.enforce(self.context, 'update_port', self.target))
         self.assertTrue(
             policy.enforce(self.context, 'update_port', self.alt_target))
+
+    def test_update_port_with_device_id(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:device_id',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:device_id',
+                           self.alt_target))
 
     def test_update_port_with_device_owner(self):
         target = self.target.copy()
@@ -624,10 +735,10 @@ class AdminTests(PortAPITestCase):
     def test_update_port_with_fixed_ips_and_subnet_id(self):
         self.assertTrue(
             policy.enforce(self.context,
-                           'update_port:fixed_ips:subent_id', self.target))
+                           'update_port:fixed_ips:subnet_id', self.target))
         self.assertTrue(
             policy.enforce(self.context,
-                           'update_port:fixed_ips:subent_id', self.alt_target))
+                           'update_port:fixed_ips:subnet_id', self.alt_target))
 
     def test_update_port_with_port_security_enabled(self):
         self.assertTrue(
@@ -647,12 +758,14 @@ class AdminTests(PortAPITestCase):
                            'update_port:binding:host_id', self.alt_target))
 
     def test_update_port_with_binding_profile(self):
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'update_port:binding:profile', self.target))
-        self.assertTrue(
-            policy.enforce(self.context,
-                           'update_port:binding:profile', self.alt_target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:binding:profile',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:binding:profile',
+            self.alt_target)
 
     def test_update_port_with_binding_vnic_type(self):
         self.assertTrue(
@@ -701,6 +814,26 @@ class AdminTests(PortAPITestCase):
                            'update_port:data_plane_status',
                            self.alt_target))
 
+    def test_update_port_hints(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:hints',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:hints',
+                           self.alt_target))
+
+    def test_update_port_trusted_field(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:trusted',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:trusted',
+                           self.alt_target))
+
     def test_delete_port(self):
         self.assertTrue(
             policy.enforce(self.context, 'delete_port', self.target))
@@ -708,11 +841,11 @@ class AdminTests(PortAPITestCase):
             policy.enforce(self.context, 'delete_port', self.alt_target))
 
 
-class ProjectMemberTests(AdminTests):
+class ProjectManagerTests(AdminTests):
 
     def setUp(self):
-        super(ProjectMemberTests, self).setUp()
-        self.context = self.project_member_ctx
+        super().setUp()
+        self.context = self.project_manager_ctx
 
     def test_create_port(self):
         self.assertTrue(
@@ -721,65 +854,67 @@ class ProjectMemberTests(AdminTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'create_port', self.alt_target)
 
+    def test_create_port_with_device_id(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:device_id',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:device_id',
+            self.alt_target)
+
     def test_create_port_with_device_owner(self):
         target = self.target.copy()
         target['device_owner'] = 'network:test'
         alt_target = self.alt_target.copy()
         alt_target['device_owner'] = 'network:test'
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port:device_owner',
-            target)
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:device_owner', target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'create_port:device_owner',
             alt_target)
 
     def test_create_port_with_mac_address(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port:mac_address',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:mac_address', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'create_port:mac_address',
             self.alt_target)
 
     def test_create_port_with_fixed_ips(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port:fixed_ips',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:fixed_ips', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'create_port:fixed_ips',
             self.alt_target)
 
     def test_create_port_with_fixed_ips_and_ip_address(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port:fixed_ips:ip_address',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:fixed_ips:ip_address', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'create_port:fixed_ips:ip_address',
             self.alt_target)
 
     def test_create_port_with_fixed_ips_and_subnet_id(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port:fixed_ips:subnet_id',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:fixed_ips:subnet_id', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'create_port:fixed_ips:subnet_id',
             self.alt_target)
 
     def test_create_port_with_port_security_enabled(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port:port_security_enabled',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:port_security_enabled', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'create_port:port_security_enabled',
@@ -815,11 +950,9 @@ class ProjectMemberTests(AdminTests):
             self.alt_target)
 
     def test_create_port_with_allowed_address_pairs(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce,
-            self.context, 'create_port:allowed_address_pairs',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:allowed_address_pairs', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce,
@@ -827,11 +960,10 @@ class ProjectMemberTests(AdminTests):
             self.alt_target)
 
     def test_create_port_with_allowed_address_pairs_and_mac_address(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce,
-            self.context, 'create_port:allowed_address_pairs:mac_address',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:allowed_address_pairs:mac_address',
+                           self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce,
@@ -839,16 +971,46 @@ class ProjectMemberTests(AdminTests):
             self.alt_target)
 
     def test_create_port_with_allowed_address_pairs_and_ip_address(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce,
-            self.context, 'create_port:allowed_address_pairs:ip_address',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:allowed_address_pairs:ip_address',
+                           self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'create_port:allowed_address_pairs:ip_address',
             self.alt_target)
+
+    def test_create_port_with_hints(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:hints',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:hints',
+            self.alt_target)
+
+    def test_create_port_with_trusted_field(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:trusted',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:trusted',
+            self.alt_target)
+
+    def test_create_port_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:tags', self.alt_target)
 
     def test_get_port(self):
         self.assertTrue(
@@ -907,6 +1069,33 @@ class ProjectMemberTests(AdminTests):
             policy.enforce, self.context, 'get_port:resource_request',
             self.alt_target)
 
+    def test_get_port_hints(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'get_port:hints',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'get_port:hints',
+            self.alt_target)
+
+    def test_get_port_trusted_field(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'get_port:trusted',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'get_port:trusted',
+            self.alt_target)
+
+    def test_get_port_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_port:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'get_port:tags', self.alt_target)
+
     def test_update_port(self):
         self.assertTrue(
             policy.enforce(self.context, 'update_port', self.target))
@@ -914,65 +1103,66 @@ class ProjectMemberTests(AdminTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_port', self.alt_target)
 
+    def test_update_port_with_device_id(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:device_id', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:device_id',
+            self.alt_target)
+
     def test_update_port_with_device_owner(self):
         target = self.target.copy()
         target['device_owner'] = 'network:test'
         alt_target = self.alt_target.copy()
         alt_target['device_owner'] = 'network:test'
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'update_port:device_owner',
-            target)
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:device_owner', target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_port:device_owner',
             alt_target)
 
     def test_update_port_with_mac_address(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'update_port:mac_address',
-            self.target)
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:mac_address', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_port:mac_address',
             self.alt_target)
 
     def test_update_port_with_fixed_ips(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'update_port:fixed_ips',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:fixed_ips', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_port:fixed_ips',
             self.alt_target)
 
     def test_update_port_with_fixed_ips_and_ip_address(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'update_port:fixed_ips:ip_address',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:fixed_ips:ip_address', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_port:fixed_ips:ip_address',
             self.alt_target)
 
     def test_update_port_with_fixed_ips_and_subnet_id(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'update_port:fixed_ips:subnet_id',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:fixed_ips:subnet_id', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_port:fixed_ips:subnet_id',
             self.alt_target)
 
     def test_update_port_with_port_security_enabled(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'update_port:port_security_enabled',
-            self.target)
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:port_security_enabled', self.target))
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_port:port_security_enabled',
@@ -1005,6 +1195,453 @@ class ProjectMemberTests(AdminTests):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'update_port:binding:vnic_type',
+            self.alt_target)
+
+    def test_update_port_with_allowed_address_pairs(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:allowed_address_pairs', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:allowed_address_pairs',
+            self.alt_target)
+
+    def test_update_port_with_allowed_address_pairs_and_mac_address(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:allowed_address_pairs:mac_address',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:allowed_address_pairs:mac_address',
+            self.alt_target)
+
+    def test_update_port_with_allowed_address_pairs_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:allowed_address_pairs:ip_address',
+                           self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:allowed_address_pairs:ip_address',
+            self.alt_target)
+
+    def test_update_port_data_plane_status(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:data_plane_status', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:data_plane_status', self.alt_target)
+
+    def test_update_port_hints(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:hints', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:hints', self.alt_target)
+
+    def test_update_port_trusted_field(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:trusted', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:trusted', self.alt_target)
+
+    def test_update_port_tags(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:tags', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:tags', self.alt_target)
+
+    def test_delete_port(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_port', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'delete_port', self.alt_target)
+
+
+class ProjectMemberTests(ProjectManagerTests):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.project_member_ctx
+
+    def test_create_port_with_device_owner(self):
+        target = self.target.copy()
+        target['device_owner'] = 'network:test'
+        alt_target = self.alt_target.copy()
+        alt_target['device_owner'] = 'network:test'
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:device_owner', target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:device_owner',
+            alt_target)
+
+    def test_create_port_with_mac_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:mac_address', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:mac_address',
+            self.alt_target)
+
+    def test_create_port_with_fixed_ips(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:fixed_ips', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips',
+            self.alt_target)
+
+    def test_create_port_with_fixed_ips_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:fixed_ips:ip_address', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips:ip_address',
+            self.alt_target)
+
+    def test_create_port_with_fixed_ips_and_subnet_id(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:fixed_ips:subnet_id', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips:subnet_id',
+            self.alt_target)
+
+    def test_create_port_with_port_security_enabled(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:port_security_enabled',
+                self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:port_security_enabled',
+            self.alt_target)
+
+    def test_create_port_with_allowed_address_pairs(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:allowed_address_pairs',
+                self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs',
+            self.alt_target)
+
+    def test_create_port_with_allowed_address_pairs_and_mac_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:allowed_address_pairs:mac_address',
+                self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs:mac_address',
+            self.alt_target)
+
+    def test_create_port_with_allowed_address_pairs_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:allowed_address_pairs:ip_address',
+                self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs:ip_address',
+            self.alt_target)
+
+    def test_update_port_with_device_owner(self):
+        target = self.target.copy()
+        target['device_owner'] = 'network:test'
+        alt_target = self.alt_target.copy()
+        alt_target['device_owner'] = 'network:test'
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:device_owner', target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:device_owner',
+            alt_target)
+
+    def test_update_port_with_mac_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:mac_address',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:mac_address',
+            self.alt_target)
+
+    def test_update_port_with_fixed_ips(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:fixed_ips', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:fixed_ips',
+            self.alt_target)
+
+    def test_update_port_with_fixed_ips_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:fixed_ips', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:fixed_ips:ip_address',
+            self.alt_target)
+
+    def test_update_port_with_fixed_ips_and_subnet_id(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:fixed_ips', self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:fixed_ips:subnet_id',
+            self.alt_target)
+
+    def test_update_port_with_port_security_enabled(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:port_security_enabled',
+                self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:port_security_enabled',
+            self.alt_target)
+
+    def test_update_port_with_allowed_address_pairs(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:allowed_address_pairs',
+                self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:allowed_address_pairs',
+            self.alt_target)
+
+    def test_update_port_with_allowed_address_pairs_and_mac_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:allowed_address_pairs:mac_address',
+                self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:allowed_address_pairs:mac_address',
+            self.alt_target)
+
+    def test_update_port_with_allowed_address_pairs_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:allowed_address_pairs:ip_address',
+                self.target))
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:allowed_address_pairs:ip_address',
+            self.alt_target)
+
+
+class ProjectReaderTests(ProjectMemberTests):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.project_reader_ctx
+
+    def test_create_port(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port', self.alt_target)
+
+    def test_create_port_with_device_owner(self):
+        target = self.target.copy()
+        target['device_owner'] = 'network:test'
+        alt_target = self.alt_target.copy()
+        alt_target['device_owner'] = 'network:test'
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:device_owner',
+            target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:device_owner',
+            alt_target)
+
+    def test_create_port_with_mac_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:mac_address',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:mac_address',
+            self.alt_target)
+
+    def test_create_port_with_device_id(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:device_id',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:device_id',
+            self.alt_target)
+
+    def test_create_port_with_fixed_ips(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips',
+            self.alt_target)
+
+    def test_create_port_with_fixed_ips_and_subnet_id(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips:subnet_id',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips:subnet_id',
+            self.alt_target)
+
+    def test_create_port_with_port_security_enabled(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:port_security_enabled',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:port_security_enabled',
+            self.alt_target)
+
+    def test_create_port_with_allowed_address_pairs(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs',
+            self.alt_target)
+
+    def test_create_port_with_allowed_address_pairs_and_mac_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs:mac_address',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs:mac_address',
+            self.alt_target)
+
+    def test_create_port_with_allowed_address_pairs_and_ip_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs:ip_address',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:allowed_address_pairs:ip_address',
+            self.alt_target)
+
+    def test_create_port_with_fixed_ips_and_ip_address(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips:ip_address',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:fixed_ips:ip_address',
+            self.alt_target)
+
+    def test_create_port_with_binding_vnic_type(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:binding:vnic_type',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:binding:vnic_type',
+            self.alt_target)
+
+    def test_create_port_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'create_port:tags', self.alt_target)
+
+    def test_update_port(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port', self.alt_target)
+
+    def test_update_port_with_device_owner(self):
+        target = self.target.copy()
+        target['device_owner'] = 'network:test'
+        alt_target = self.alt_target.copy()
+        alt_target['device_owner'] = 'network:test'
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:device_owner',
+            target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:device_owner',
+            alt_target)
+
+    def test_update_port_with_device_id(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:device_id',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:device_id',
+            self.alt_target)
+
+    def test_update_port_with_port_security_enabled(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:port_security_enabled',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:port_security_enabled',
             self.alt_target)
 
     def test_update_port_with_allowed_address_pairs(self):
@@ -1043,55 +1680,41 @@ class ProjectMemberTests(AdminTests):
             self.context, 'update_port:allowed_address_pairs:ip_address',
             self.alt_target)
 
-    def test_update_port_data_plane_status(self):
+    def test_update_port_with_fixed_ips(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce,
-            self.context, 'update_port:data_plane_status', self.target)
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce,
-            self.context, 'update_port:data_plane_status', self.alt_target)
-
-    def test_delete_port(self):
-        self.assertTrue(
-            policy.enforce(self.context, 'delete_port', self.target))
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'delete_port', self.alt_target)
-
-
-class ProjectReaderTests(ProjectMemberTests):
-
-    def setUp(self):
-        super(ProjectReaderTests, self).setUp()
-        self.context = self.project_reader_ctx
-
-    def test_create_port(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port', self.target)
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port', self.alt_target)
-
-    def test_create_port_with_binding_vnic_type(self):
-        self.assertRaises(
-            base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port:binding:vnic_type',
+            self.context, 'update_port:fixed_ips',
             self.target)
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'create_port:binding:vnic_type',
+            policy.enforce,
+            self.context, 'update_port:fixed_ips',
             self.alt_target)
 
-    def test_update_port(self):
+    def test_update_port_with_fixed_ips_and_ip_address(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'update_port', self.target)
+            policy.enforce,
+            self.context, 'update_port:fixed_ips:ip_address',
+            self.target)
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
-            policy.enforce, self.context, 'update_port', self.alt_target)
+            policy.enforce,
+            self.context, 'update_port:fixed_ips:ip_address',
+            self.alt_target)
+
+    def test_update_port_with_fixed_ips_and_subnet_id(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:fixed_ips:subnet_id',
+            self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:fixed_ips:subnet_id',
+            self.alt_target)
 
     def test_update_port_with_binding_vnic_type(self):
         self.assertRaises(
@@ -1103,6 +1726,14 @@ class ProjectReaderTests(ProjectMemberTests):
             policy.enforce, self.context, 'update_port:binding:vnic_type',
             self.alt_target)
 
+    def test_update_port_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:tags', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'update_port:tags', self.alt_target)
+
     def test_delete_port(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
@@ -1110,3 +1741,209 @@ class ProjectReaderTests(ProjectMemberTests):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
             policy.enforce, self.context, 'delete_port', self.alt_target)
+
+
+class ServiceRoleTests(PortAPITestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.context = self.service_ctx
+
+    def test_create_port(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port', self.target))
+
+    def test_create_port_with_device_id(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:device_id',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'create_port:device_id',
+                           self.alt_target))
+
+    def test_create_port_with_device_owner(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:device_owner', self.target))
+
+    def test_create_port_with_mac_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:mac_address', self.target))
+
+    def test_create_port_with_fixed_ips(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:fixed_ips', self.target))
+
+    def test_create_port_with_fixed_ips_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:fixed_ips:ip_address', self.target))
+
+    def test_create_port_with_fixed_ips_and_subnet_id(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:fixed_ips:subnet_id', self.target))
+
+    def test_create_port_with_port_security_enabled(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:port_security_enabled',
+                self.target))
+
+    def test_create_port_with_binding_host_id(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:binding:host_id', self.target))
+
+    def test_create_port_with_binding_profile(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:binding:profile', self.target))
+
+    def test_create_port_with_binding_vnic_type(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'create_port:binding:vnic_type', self.target))
+
+    def test_create_port_with_allowed_address_pairs(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:allowed_address_pairs',
+                self.target))
+
+    def test_create_port_with_allowed_address_pairs_and_mac_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:allowed_address_pairs:mac_address',
+                self.alt_target))
+
+    def test_create_port_with_allowed_address_pairs_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'create_port:allowed_address_pairs:ip_address',
+                self.target))
+
+    def test_create_port_tags(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'create_port:tags',
+            self.target)
+
+    def test_get_port(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'get_port', self.target))
+
+    def test_get_port_binding_vif_type(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'get_port:binding:vif_type', self.target))
+
+    def test_get_port_binding_vif_details(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'get_port:binding:vif_details', self.target))
+
+    def test_get_port_binding_host_id(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'get_port:binding:host_id', self.target))
+
+    def test_get_port_binding_profile(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'get_port:binding:profile', self.target))
+
+    def test_get_port_resource_request(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce, self.context, 'get_port:resource_request',
+            self.target)
+
+    def test_update_port(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port', self.target))
+
+    def test_update_port_with_device_id(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:device_id',
+                           self.target))
+        self.assertTrue(
+            policy.enforce(self.context, 'update_port:device_id',
+                           self.alt_target))
+
+    def test_update_port_with_device_owner(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:device_owner', self.target))
+
+    def test_update_port_with_mac_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:mac_address', self.target))
+
+    def test_update_port_with_fixed_ips(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:fixed_ips', self.target))
+
+    def test_update_port_with_fixed_ips_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:fixed_ips:ip_address', self.target))
+
+    def test_update_port_with_fixed_ips_and_subnet_id(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:fixed_ips:subnet_id', self.target))
+
+    def test_update_port_with_port_security_enabled(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:port_security_enabled',
+                self.target))
+
+    def test_update_port_with_binding_host_id(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:binding:host_id', self.target))
+
+    def test_update_port_with_binding_profile(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_port:binding:profile', self.target))
+
+    def test_update_port_with_binding_vnic_type(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:binding:vnic_type', self.target))
+
+    def test_update_port_with_allowed_address_pairs(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:allowed_address_pairs',
+                self.target))
+
+    def test_update_port_with_allowed_address_pairs_and_mac_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:allowed_address_pairs:mac_address',
+                self.target))
+
+    def test_update_port_with_allowed_address_pairs_and_ip_address(self):
+        self.assertTrue(
+            policy.enforce(
+                self.context, 'update_port:allowed_address_pairs:ip_address',
+                self.target))
+
+    def test_update_port_data_plane_status(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_port:data_plane_status', self.target)
+
+    def test_delete_port(self):
+        self.assertTrue(
+            policy.enforce(self.context, 'delete_port', self.target))
