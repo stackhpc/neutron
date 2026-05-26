@@ -426,6 +426,83 @@ class TestPortBindingUpdateVirtualPortsEvent(base.BaseTestCase):
         self.assertTrue(self.event.match_fn(self.event.ROW_UPDATE,
                                             self.row, old))
 
+    def test_run_creates_fresh_admin_context(self):
+        driver = mock.MagicMock()
+        event = ovsdb_monitor.PortBindingUpdateVirtualPortsEvent(driver)
+        self.assertFalse(hasattr(event, 'admin_context'))
+
+        row = self.ovsdb_row(
+            attrs={'_table': self.pbtable,
+                   'chassis': [],
+                   'options': {},
+                   'logical_port': 'port-1'})
+        with mock.patch('neutron_lib.context.get_admin_context') as ctx_mock:
+            ctx_mock.return_value = mock.sentinel.fresh_ctx
+            event.run(event.ROW_DELETE, row, None)
+            ctx_mock.assert_called_once()
+            driver._ovn_client.update_virtual_port_parent_host.\
+                assert_called_once_with(
+                    mock.sentinel.fresh_ctx, 'port-1', chassis_id=None)
+
+    def test_run_creates_new_context_each_call(self):
+        driver = mock.MagicMock()
+        event = ovsdb_monitor.PortBindingUpdateVirtualPortsEvent(driver)
+
+        row = self.ovsdb_row(
+            attrs={'_table': self.pbtable,
+                   'chassis': [],
+                   'options': {},
+                   'logical_port': 'port-1'})
+        contexts = []
+        with mock.patch('neutron_lib.context.get_admin_context') as ctx_mock:
+            ctx_mock.side_effect = lambda: mock.MagicMock(
+                name=f'ctx-{len(contexts)}')
+            for _ in range(3):
+                ctx = ctx_mock()
+                contexts.append(ctx)
+                event.run(event.ROW_DELETE, row, None)
+
+        self.assertEqual(3, driver._ovn_client.
+                         update_virtual_port_parent_host.call_count)
+        call_contexts = [
+            c.args[0] for c in
+            driver._ovn_client.update_virtual_port_parent_host.call_args_list]
+        self.assertEqual(len(set(id(c) for c in call_contexts)),
+                         len(call_contexts))
+
+
+class TestLogicalSwitchPortUpdateLogicalRouterPortEvent(base.BaseTestCase):
+
+    def test_no_shared_admin_context(self):
+        driver = mock.MagicMock()
+        with mock.patch.object(directory, 'get_plugin'):
+            event = (
+                ovsdb_monitor.
+                LogicalSwitchPortUpdateLogicalRouterPortEvent(driver))
+        self.assertFalse(hasattr(event, 'admin_context'))
+
+    def test_run_creates_fresh_admin_context(self):
+        driver = mock.MagicMock()
+        driver._plugin.get_ports.return_value = [{'id': 'port-1'}]
+        with mock.patch.object(directory, 'get_plugin') as get_plugin:
+            l3_plugin = mock.MagicMock()
+            get_plugin.return_value = l3_plugin
+            event = (
+                ovsdb_monitor.
+                LogicalSwitchPortUpdateLogicalRouterPortEvent(driver))
+
+        table = fakes.FakeOvsdbTable.create_one_ovsdb_table(
+            attrs={'name': 'Logical_Switch_Port'})
+        row = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'_table': table, 'name': 'port-1'})
+
+        with mock.patch('neutron_lib.context.get_admin_context') as ctx_mock:
+            ctx_mock.return_value = mock.sentinel.fresh_ctx
+            event.run(event.ROW_UPDATE, row, None)
+            ctx_mock.assert_called_once()
+            driver._plugin.get_ports.assert_called_once_with(
+                mock.sentinel.fresh_ctx, filters={'id': ['port-1']})
+
 
 class TestOvnNbIdlNotifyHandler(test_mech_driver.OVNMechanismDriverTestCase):
 
@@ -966,3 +1043,89 @@ class TestFIPAddDeleteEvent(base.BaseTestCase):
             attrs={'external_ids': {},
                    'external_ip': '1.2.3.4'})
         self.assertFalse(self.event.match_fn(self.event.ROW_DELETE, row))
+
+
+class TestFIPAddExternalMacEvent(base.BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.driver = mock.Mock()
+        self.event = ovsdb_monitor.FIPAddExternalMacEvent(self.driver)
+        self.ovsdb_row = fakes.FakeOvsdbRow.create_one_ovsdb_row
+
+    def _make_row(self, external_mac=None, logical_port=None,
+                  fip_ext_mac='fa:16:3e:aa:bb:cc'):
+        external_ids = {ovn_const.OVN_FIP_EXT_ID_KEY: 'fip-uuid-123'}
+        if fip_ext_mac is not None:
+            external_ids[ovn_const.OVN_FIP_EXT_MAC_KEY] = fip_ext_mac
+        attrs = {
+            'external_ids': external_ids,
+            'external_ip': '1.2.3.4',
+            'external_mac': [external_mac] if external_mac else [],
+            'logical_port': [logical_port] if logical_port else [],
+        }
+        return self.ovsdb_row(attrs=attrs)
+
+    @mock.patch.object(ovn_conf, 'is_ovn_distributed_floating_ip',
+                       return_value=True)
+    def test_match_fn_dvr_no_external_mac(self, *args):
+        row = self._make_row(logical_port='port-1')
+        self.assertTrue(
+            self.event.match_fn(self.event.ROW_CREATE, row))
+
+    @mock.patch.object(ovn_conf, 'is_ovn_distributed_floating_ip',
+                       return_value=False)
+    def test_match_fn_no_dvr(self, *args):
+        row = self._make_row(logical_port='port-1')
+        self.assertFalse(
+            self.event.match_fn(self.event.ROW_CREATE, row))
+
+    @mock.patch.object(ovn_conf, 'is_ovn_distributed_floating_ip',
+                       return_value=True)
+    def test_match_fn_no_fip_ext_mac_key(self, *args):
+        row = self._make_row(logical_port='port-1', fip_ext_mac=None)
+        self.assertFalse(
+            self.event.match_fn(self.event.ROW_CREATE, row))
+
+    @mock.patch.object(ovn_conf, 'is_ovn_distributed_floating_ip',
+                       return_value=True)
+    def test_match_fn_no_logical_port(self, *args):
+        row = self._make_row()
+        self.assertFalse(
+            self.event.match_fn(self.event.ROW_CREATE, row))
+
+    def test_run_lsp_up_no_external_mac(self):
+        row = self._make_row(logical_port='port-1')
+        lsp = mock.Mock()
+        lsp.up = [True]
+        self.driver.nb_ovn.lookup.return_value = lsp
+        self.event.run(self.event.ROW_CREATE, row, None)
+        self.driver.nb_ovn.db_set.assert_called_once_with(
+            'NAT', row.uuid, ('external_mac', 'fa:16:3e:aa:bb:cc'))
+
+    def test_run_lsp_up_external_mac_mismatch(self):
+        row = self._make_row(external_mac='fa:16:3e:00:00:00',
+                             logical_port='port-1')
+        lsp = mock.Mock()
+        lsp.up = [True]
+        self.driver.nb_ovn.lookup.return_value = lsp
+        self.event.run(self.event.ROW_CREATE, row, None)
+        self.driver.nb_ovn.db_set.assert_called_once_with(
+            'NAT', row.uuid, ('external_mac', 'fa:16:3e:aa:bb:cc'))
+
+    def test_run_lsp_up_external_mac_matches(self):
+        row = self._make_row(external_mac='fa:16:3e:aa:bb:cc',
+                             logical_port='port-1')
+        lsp = mock.Mock()
+        lsp.up = [True]
+        self.driver.nb_ovn.lookup.return_value = lsp
+        self.event.run(self.event.ROW_CREATE, row, None)
+        self.driver.nb_ovn.db_set.assert_not_called()
+
+    def test_run_lsp_down(self):
+        row = self._make_row(logical_port='port-1')
+        lsp = mock.Mock()
+        lsp.up = [False]
+        self.driver.nb_ovn.lookup.return_value = lsp
+        self.event.run(self.event.ROW_CREATE, row, None)
+        self.driver.nb_ovn.db_set.assert_not_called()

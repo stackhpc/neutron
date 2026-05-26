@@ -101,6 +101,7 @@ ovn-router = "neutron.services.ovn_l3.plugin:OVNL3RouterPlugin"
 local_ip = "neutron.services.local_ip.local_ip_plugin:LocalIPPlugin"
 ndp_proxy = "neutron.services.ndp_proxy.plugin:NDPProxyPlugin"
 ovn-bgp = "neutron.services.bgp.plugin:BGPServicePlugin"
+evpn = "neutron.services.evpn.plugin:EVPNPlugin"
 
 [project.entry-points."neutron.ml2.type_drivers"]
 flat = "neutron.plugins.ml2.drivers.type_flat:FlatTypeDriver"
@@ -171,6 +172,7 @@ qos_hwol = "neutron.agent.ovn.extensions.qos_hwol:QoSHardwareOffloadExtension"
 noop = "neutron.agent.ovn.extensions.noop:NoopOVNAgentExtension"
 testing = "neutron.tests.functional.agent.ovn.agent.fake_ovn_agent_extension:FakeOVNAgentExtension"
 ovn-bgp = "neutron.agent.ovn.extensions.bgp:BGPAgentExtension"
+ovn-evpn = "neutron.agent.ovn.extensions.evpn:EVPNAgentExtension"
 
 [project.entry-points."neutron.services.logapi.drivers"]
 ovs = "neutron.services.logapi.drivers.openvswitch.ovs_firewall_log:OVSFirewallLoggingDriver"

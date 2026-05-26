@@ -620,7 +620,6 @@ class LogicalSwitchPortUpdateLogicalRouterPortEvent(LogicalSwitchPortEvent):
         super().__init__(events, table, None)
         self.event_name = 'LogicalSwitchPortUpdateLogicalRouterPortEvent'
         self.l3_plugin = directory.get_plugin(constants.L3)
-        self.admin_context = neutron_context.get_admin_context()
 
     def match_fn(self, event, row, old):
         if not super().match_fn(event, row, old):
@@ -642,7 +641,8 @@ class LogicalSwitchPortUpdateLogicalRouterPortEvent(LogicalSwitchPortEvent):
 
         # TODO(ralonsoh): store the router "flavor_id" in the LSP.external_ids
         # or the LRP.external_ids (better the second).
-        router = router_obj.Router.get_object(self.admin_context, id=device_id,
+        admin_context = neutron_context.get_admin_context()
+        router = router_obj.Router.get_object(admin_context, id=device_id,
                                               fields=('flavor_id', ))
         if (utils.is_lsp_router_port(lsp=row) and
                 router and
@@ -651,17 +651,18 @@ class LogicalSwitchPortUpdateLogicalRouterPortEvent(LogicalSwitchPortEvent):
         return False
 
     def run(self, event, row, old):
+        admin_context = neutron_context.get_admin_context()
         # In some cases, it is possible for the logical switch port to be
         # already removed from db by some other concurrent event when this
         # method is called. Therefore, use get_ports to just query for this
         # port instead of directly trying to get it from db causing not
         # found exception.
         ports = self.driver._plugin.get_ports(
-            self.admin_context,
+            admin_context,
             filters={'id': [row.name]})
         if ports:
             self.l3_plugin._ovn_client.update_router_port(
-                self.admin_context,
+                admin_context,
                 ports[0])
         else:
             LOG.debug('Port %(port_id)s not found when '
@@ -684,7 +685,6 @@ class PortBindingUpdateVirtualPortsEvent(LogicalSwitchPortEvent):
         events = (self.ROW_UPDATE, self.ROW_DELETE)
         super().__init__(events, table, None)
         self.event_name = 'PortBindingUpdateVirtualPortsEvent'
-        self.admin_context = neutron_context.get_admin_context()
 
     def match_fn(self, event, row, old):
         if not super().match_fn(event, row, old):
@@ -732,8 +732,9 @@ class PortBindingUpdateVirtualPortsEvent(LogicalSwitchPortEvent):
                 ovn_const.LSP_OPTIONS_VIRTUAL_PARENTS_KEY)
             chassis_uuid = (row.chassis[0].uuid if
                             row.chassis and virtual_parents else None)
+        admin_context = neutron_context.get_admin_context()
         self.driver._ovn_client.update_virtual_port_parent_host(
-            self.admin_context, row.logical_port, chassis_id=chassis_uuid)
+            admin_context, row.logical_port, chassis_id=chassis_uuid)
 
 
 class FIPAddDeleteEvent(row_event.RowEvent):
@@ -762,6 +763,49 @@ class FIPAddDeleteEvent(row_event.RowEvent):
         # TODO(dalvarez): Remove this workaround once fixed in core OVN:
         # https://mail.openvswitch.org/pipermail/ovs-discuss/2018-October/047604.html
         self.driver.delete_mac_binding_entries(row.external_ip)
+
+
+class FIPAddExternalMacEvent(row_event.RowEvent):
+    """Row create event - NAT 'dnat_and_snat' entry added
+
+    When a NAT entry is created without external_mac (because the LSP was
+    already UP before the NAT was committed), this event sets external_mac
+    if the LSP is currently UP. This closes the race window where
+    FIP creation and LSP UP happen concurrently.
+    """
+
+    def __init__(self, driver):
+        self.driver = driver
+        table = 'NAT'
+        events = (self.ROW_CREATE,)
+        super().__init__(
+            events, table, (('type', '=', 'dnat_and_snat'),))
+        self.event_name = 'FIPAddExternalMacEvent'
+
+    def match_fn(self, event, row, old=None):
+        if (not super().match_fn(event, row, old) or
+                not ovn_conf.is_ovn_distributed_floating_ip() or
+                ovn_const.OVN_FIP_EXT_MAC_KEY not in row.external_ids or
+                not row.logical_port):
+            return False
+        return True
+
+    def run(self, event, row, old):
+        logical_port = row.logical_port[0]
+        lsp = self.driver.nb_ovn.lookup(
+            'Logical_Switch_Port', logical_port, default=None)
+        if not lsp:
+            LOG.warning('Logical Switch Port %s not found for '
+                        'NAT entry %s', logical_port, row.uuid)
+            return
+
+        external_mac = row.external_ids[ovn_const.OVN_FIP_EXT_MAC_KEY]
+        if utils.is_lsp_up(lsp) and row.external_mac != [external_mac]:
+            LOG.debug('Setting external_mac of NAT entry %s to %s',
+                      row.uuid, external_mac)
+            self.driver.nb_ovn.db_set(
+                'NAT', row.uuid, ('external_mac', external_mac)).execute(
+                check_error=True)
 
 
 class HAChassisGroupRouterEvent(row_event.RowEvent):
@@ -964,12 +1008,14 @@ class OvnNbIdl(OvnIdlDistributedLock):
         self._lsp_lrp_event = (
             LogicalSwitchPortUpdateLogicalRouterPortEvent(driver))
         self._fip_create_delete_event = FIPAddDeleteEvent(driver)
+        self._nat_dnat_and_snat_event = FIPAddExternalMacEvent(driver)
         self._ha_chassis_group_event = HAChassisGroupRouterEvent(driver)
 
         self.notify_handler.watch_events([self._lsp_create_event,
                                           self._lsp_update_up_event,
                                           self._lsp_update_down_event,
                                           self._fip_create_delete_event,
+                                          self._nat_dnat_and_snat_event,
                                           self._lsp_lrp_event,
                                           self._ha_chassis_group_event,
                                           ])
