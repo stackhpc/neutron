@@ -14,14 +14,14 @@ services:
 * Layer-3 (routing)
 
   Native implementation that supports distributed routing.  Replaces the
-  conventional Neutron L3 agent. This includes transparent L3HA :doc::`routing`
+  conventional Neutron L3 agent. This includes transparent L3HA :doc:`routing`
   support, based on BFD monitorization integrated in core OVN.
 
 * DHCP
 
   Native distributed implementation.  Replaces the conventional Neutron DHCP
-  agent.  Note that the native implementation does not yet support DNS
-  features.
+  agent.  DNS is handled separately via OVN's built-in DNS table (see the
+  DNS section below).
 
 * DPDK
 

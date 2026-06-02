@@ -12,7 +12,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
 import os
 import pprint
 
@@ -66,19 +65,21 @@ object_data = {
     'MeteringLabelRule': '2.0-0ad09894c62e1ce6e868f725158959ba',
     'Log': '1.0-6391351c0f34ed34375a19202f361d24',
     'NDPProxy': '1.0-a6597d9caac3bb0d63f943f82e4dda8c',
-    'Network': '1.2-0221c921b40f11b237e6a274984f238a',
+    'Network': '1.3-5adf26dc5bf678b90203e8349637d4c9',
     'NetworkDhcpAgentBinding': '1.1-d9443c88809ffa4c45a0a5a48134b54a',
     'NetworkDNSDomain': '1.0-420db7910294608534c1e2e30d6d8319',
     'NetworkPortSecurity': '1.0-b30802391a87945ee9c07582b4ff95e3',
+    'NetworkPVLAN': '1.0-03f233ead47f71af1eca97971c84fc7d',
     'NetworkRBAC': '1.3-be82ed54376b85ee4f963d479ac48c91',
     'NetworkSegment': '1.0-57b7f2960971e3b95ded20cbc59244a8',
     'NetworkSegmentRange': '1.1-ed71c4bd2d3f06c3da5b4a1b3069b69f',
     'NetworkSubnetLock': '1.0-140de39d4b86ae346dc3d70b885bea53',
-    'Port': '1.10-ae84f686bfc3deb4017495134da6ef04',
+    'Port': '1.11-762f9aec047462b0571525be24be7930',
     'PortHardwareOffloadType': '1.0-5f424d02b144fd1832ac3e6b03662674',
     'PortDeviceProfile': '1.0-b98c7083cc3e93d176fd7a91ae13af32',
     'PortHints': '1.0-e6d029e62d66b4384dfbe220cc027c21',
     'PortNumaAffinityPolicy': '1.0-38fcea43e7bfb2536461f3d053c43aa3',
+    'PortPVLAN': '1.0-dae40779d37a9518adee2523d75c3a9f',
     'PortBinding': '1.0-8c30695f87c700d9f435b160519e3400',
     'PortBindingLevel': '1.1-50d47f63218f87581b6cd9a62db574e5',
     'PortDataPlaneStatus': '1.0-25be74bda46c749653a10357676c0ab2',
@@ -155,32 +156,7 @@ class TestObjectVersions(test_base.BaseTestCase):
                 hashes_file.write(pprint.pformat(fingerprints))
 
         expected, actual = checker.test_hashes(object_data)
-        try:
-            self.assertEqual(
-                expected, actual,
-                'Some objects have changed; please make sure the '
-                'versions have been bumped, and then update their '
-                'hashes in the object_data map in this test module.')
-        except Exception:
-            # FIXME(stephenfin): This is workaround for a bug fix in
-            # neutron-lib which had the side effect of changing hashes. The
-            # change in hash has no impact at runtime since our behavior and
-            # data remain unchanged. We should drop all of the below and the
-            # try-except above once we bump our neutron-lib minimum to a
-            # version that includes the fix [1].
-            #
-            # [1] https://review.opendev.org/c/openstack/neutron-lib/+/985636
-            old_object_data = copy.copy(object_data)
-            old_object_data.update({
-                'Agent': '1.1-64b670752d57b3c7602cb136e0338507',
-                'DistributedPortBinding': '1.0-39c0d17b281991dcb66716fee5a8bef2',  # noqa: E501
-                'PortBinding': '1.0-3306deeaa6deb01e33af06777d48d578',
-                'PortHints': '1.0-9ebf6e12fa427809476a92c7432352b8',
-            })
-
-            expected, actual = checker.test_hashes(old_object_data)
-            self.assertEqual(
-                expected, actual,
-                'Some objects have changed; please make sure the '
-                'versions have been bumped, and then update their '
-                'hashes in the object_data map in this test module.')
+        self.assertEqual(expected, actual,
+                         'Some objects have changed; please make sure the '
+                         'versions have been bumped, and then update their '
+                         'hashes in the object_data map in this test module.')
