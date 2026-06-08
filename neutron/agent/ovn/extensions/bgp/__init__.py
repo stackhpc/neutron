@@ -35,6 +35,7 @@ class BGPAgentExtension(ovn_ext_mgr.OVNAgentExtension):
         #     'br-eth2': BGPChassisBridge('br-eth2'),
         # }
         self.bgp_bridges = {}
+        self.interconnect_bridge = None
         self.hostdev_name = ip_lib.LOOPBACK_DEVNAME
 
     @property
@@ -47,11 +48,20 @@ class BGPAgentExtension(ovn_ext_mgr.OVNAgentExtension):
             events.CreateLocalOVSEvent,
             events.UpdateLocalOVSEvent,
             events.NewBgpBridgeEvent,
+            events.InterconnectBridgeOVSEvent,
+            events.InterconnectBridgeCreatedEvent,
+            events.InterconnectBridgeDeletedEvent,
+            events.InterconnectPatchPortCreatedEvent,
+            events.InterconnectPatchPortDeletedEvent,
         ]
 
     @property
     def nb_idl_tables(self):
-        return []
+        return [
+            'Logical_Switch',
+            'Logical_Switch_Port',
+            'Logical_Router_Port',
+        ]
 
     @property
     def nb_idl_events(self):
@@ -100,6 +110,20 @@ class BGPAgentExtension(ovn_ext_mgr.OVNAgentExtension):
             namespace=None, name=self.hostdev_name)
                 if not (cidr := netaddr.IPNetwork(dev['cidr'])).is_loopback()]
 
+    def set_interconnect_bridge(self, name):
+        if self.interconnect_bridge and self.interconnect_bridge.name == name:
+            return
+        LOG.info('Setting interconnect bridge to %s', name)
+        self.interconnect_bridge = bridge.BGPInterconnectBridge(self, name)
+        self.interconnect_bridge.scan_existing_patch_ports()
+
+    def clear_interconnect_bridge(self):
+        if self.interconnect_bridge is None:
+            return
+        LOG.info('Clearing interconnect bridge %s',
+                 self.interconnect_bridge.name)
+        self.interconnect_bridge = None
+
     def create_bgp_bridge(self, bridge_name):
         bgp_bridge = bridge.BGPChassisBridge(self, bridge_name)
         self.bgp_bridges[bridge_name] = bgp_bridge
@@ -110,6 +134,12 @@ class BGPAgentExtension(ovn_ext_mgr.OVNAgentExtension):
             self.agent_api.sb_idl,
             self.chassis_name,
             bridge_name_list
+        ).execute(check_error=True)
+
+    def get_interconnect_lrp_mac(self, localnet_port_name):
+        return commands.GetInterconnectLrpMacCommand(
+            self.agent_api.nb_idl,
+            localnet_port_name
         ).execute(check_error=True)
 
     def watch_port_created_event(self, bgp_bridge, *port_types):

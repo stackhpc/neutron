@@ -21,6 +21,8 @@ from oslo_log import log
 
 from neutron.agent.common import ovs_lib
 from neutron.agent.linux import ip_lib
+from neutron.agent.ovn.extensions.bgp import commands
+from neutron.agent.ovn.extensions.bgp import exceptions
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils as ovn_utils
 from neutron.services.bgp import constants as bgp_const
@@ -33,6 +35,7 @@ class Bridge:
         self.bgp_agent_api = bgp_agent_api
         self.name = name
         self.ovs_bridge = ovs_lib.OVSBridge(name)
+        self._requirements = []
 
     @property
     def ovs_idl(self):
@@ -41,6 +44,19 @@ class Bridge:
     @property
     def sb_idl(self):
         return self.bgp_agent_api.agent_api.sb_idl
+
+    def get_port_ofport(self, port_name):
+        if port_name:
+            return self.ovs_bridge.get_port_ofport(port_name)
+
+    def check_requirements_for_flows_met(self):
+        for msg, requirement in self._requirements:
+            if not getattr(self, requirement):
+                LOG.debug(
+                    "Bridge %s: %s, skipping installing flows",
+                    self.name, msg)
+                return False
+        return True
 
     def _apply_flows_as_bundle(self, flows):
         """Apply multiple OpenFlow rules as a bundle using temporary file"""
@@ -78,15 +94,6 @@ class BGPChassisBridge(Bridge):
         return f"BGPChassisBridge(name={self.name})"
 
     __repr__ = __str__
-
-    def check_requirements_for_flows_met(self):
-        for msg, requirement in self._requirements:
-            if not getattr(self, requirement):
-                LOG.debug(
-                    "Bridge %s: %s, skipping installing flows",
-                    self.name, msg)
-                return False
-        return True
 
     @property
     def patch_port_ofport(self):
@@ -217,3 +224,132 @@ class BGPChassisBridge(Bridge):
         except Exception as e:
             LOG.error("Failed to configure BGP flows on bridge %s: %s: %s",
                       self.name, e, flows)
+
+
+class BGPInterconnectBridge(Bridge):
+    """Provider interconnect bridge (Neutron localnet <-> BGP localnet).
+
+    The interconnect bridge has two patch ports to br-int, both created by
+    OVN-controller for localnet LSPs:
+
+    * **provider patch** — carries traffic for the Neutron provider network.
+      Its OVS Port row contains ``neutron:provnet-physical-network`` in
+      ``external_ids``.
+    * **BGP patch** — carries traffic for the BGP interconnect network.
+      Its OVS Port row does *not* contain that key.
+    """
+
+    def __init__(self, bgp_agent_api, name):
+        super().__init__(bgp_agent_api, name)
+        self._requirements = [
+            ('provider patch port is not set', 'provider_patch_port'),
+            ('BGP patch port is not set', 'bgp_patch_port'),
+            ('Interconnect LRP MAC is not set', 'ic_lrp_mac'),
+        ]
+        self._provider_patch_port = None
+        self._bgp_patch_port = None
+
+    def __str__(self):
+        return f'BGPInterconnectBridge(name={self.name})'
+
+    __repr__ = __str__
+
+    @staticmethod
+    def _is_provider_port(port_name):
+        # FIXME(jlibosva):  the ovn-localnet-port references the LSP in OVN
+        #                   It would be better to look it up there and not
+        #                   rely on the naming convention.
+        return port_name.startswith(
+            f"patch-{ovn_const.OVN_PROVNET_PORT_NAME_PREFIX}")
+
+    def add_patch_port(self, iface_row):
+        port_name = iface_row.name
+        if self._is_provider_port(port_name):
+            self._provider_patch_port = port_name
+            LOG.info("Provider patch port %s set on %s", port_name, self.name)
+        else:
+            self._bgp_patch_port = port_name
+            LOG.info("BGP patch port %s set on %s", port_name, self.name)
+
+    def scan_existing_patch_ports(self):
+        for iface in commands.GetPatchPortsFromBridgeCommand(
+                self.ovs_idl, self.name).execute(check_error=True):
+            self.add_patch_port(iface)
+        if self.check_requirements_for_flows_met():
+            self.configure_flows()
+
+    def remove_patch_port(self, port_row):
+        port_name = port_row.name
+        if self._provider_patch_port == port_name:
+            LOG.info("Provider patch port %s removed from %s",
+                     port_name, self.name)
+            self._provider_patch_port = None
+        elif self._bgp_patch_port == port_name:
+            LOG.info("BGP patch port %s removed from %s",
+                     port_name, self.name)
+            self._bgp_patch_port = None
+
+    def has_patch_port(self, port_name):
+        return port_name in (self._provider_patch_port, self._bgp_patch_port)
+
+    @property
+    def provider_patch_port(self):
+        return self._provider_patch_port
+
+    @property
+    def provider_patch_ofport(self):
+        return self.get_port_ofport(self._provider_patch_port)
+
+    @property
+    def bgp_patch_port(self):
+        return self._bgp_patch_port
+
+    @property
+    def localnet_port_name(self):
+        if self._bgp_patch_port is None:
+            return None
+        ext_ids = self.ovs_idl.db_get(
+            'Port', self._bgp_patch_port, 'external_ids'
+        ).execute(check_error=True)
+        return ext_ids.get(ovn_const.OVN_LOCALNET_PORT_EXT_ID_KEY)
+
+    @property
+    def ic_lrp_mac(self):
+        try:
+            return self.bgp_agent_api.get_interconnect_lrp_mac(
+                self.localnet_port_name)
+        except exceptions.InterconnectLrpMacNotFound as e:
+            LOG.error(
+                "Failed to get interconnect LRP MAC for bridge %s from "
+                "localnet port %s: %s",
+                self.name, self.localnet_port_name, e)
+        return None
+
+    @property
+    def bgp_patch_ofport(self):
+        return self.get_port_ofport(self._bgp_patch_port)
+
+    def configure_flows(self):
+        if not self.check_requirements_for_flows_met():
+            LOG.error("Some of the requirements to install flows on "
+                      "bridge %s are missing, skipping", self.name)
+            return
+
+        LOG.debug("Configuring BGP flows for interconnect bridge %s",
+                  self.name)
+
+        flows = [
+            (f"priority=10,in_port={self.provider_patch_ofport},"
+             f"actions=mod_dl_dst:{self.ic_lrp_mac},"
+             f"output:{self.bgp_patch_ofport}"),
+
+            (f"priority=10,in_port={self.bgp_patch_ofport},"
+             f"actions=output:{self.provider_patch_ofport}"),
+        ]
+
+        try:
+            self._apply_flows_as_bundle(flows)
+        except Exception as e:
+            LOG.error(
+                "Failed to configure BGP flows on interconnect bridge %s: %s: "
+                "flows: %s", self.name, e, flows)

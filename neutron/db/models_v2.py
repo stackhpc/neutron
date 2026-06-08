@@ -59,7 +59,7 @@ class HasInUse:
         # `FOR UPDATE` statement.
         num_reg = context.session.query(
             cls).filter_by(**filters).enable_eagerloads(
-                False).with_for_update().first()
+                False).with_for_update().one_or_none()
         if num_reg is None:
             raise exception
 
@@ -72,7 +72,7 @@ class HasInUse:
         # `LOCK IN SHARE MODE` statement.
         num_reg = context.session.query(
             cls).filter_by(**filters).enable_eagerloads(
-                False).with_for_update(read=True).first()
+                False).with_for_update(read=True).one_or_none()
         if num_reg is None:
             raise exception
 
@@ -153,6 +153,9 @@ class Port(standard_attr.HasStandardAttributes, model_base.BASEV2,
         sa.UniqueConstraint(
             network_id, mac_address,
             name='uniq_ports0network_id0mac_address'),
+        sa.UniqueConstraint(
+            'id', 'network_id',
+            name='uniq_ports0id0network_id'),
         model_base.BASEV2.__table_args__
     )
     api_collections = [port_def.COLLECTION_NAME]

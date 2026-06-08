@@ -24,6 +24,7 @@ from oslo_db import exception as db_exc
 from oslo_log import log as logging
 import oslo_messaging
 
+from neutron._i18n import _
 from neutron.agent.common import utils as agent_utils
 from neutron.common import _constants as n_const
 from neutron.conf.db import l3_agentschedulers_db
@@ -57,8 +58,9 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
                      "automatic router rescheduling is disabled.")
             return
 
+        desc = 'Periodic worker for "reschedule_routers_from_down_agents"'
         self.add_agent_status_check_worker(
-            self.reschedule_routers_from_down_agents)
+            self.reschedule_routers_from_down_agents, desc=desc)
 
     def reschedule_routers_from_down_agents(self):
         """Reschedule routers from down l3 agents if admin state is up."""
@@ -156,7 +158,17 @@ class L3AgentSchedulerDbMixin(l3agentscheduler.L3AgentSchedulerPluginBase,
                 raise l3agentscheduler.RouterSchedulingFailed(
                     router_id=router_id, agent_id=agent_id)
 
-    def add_router_to_l3_agent(self, context, agent_id, router_id):
+    def update_router_in_l3_agent(self, context, agent_id, router_id,
+                                  **kwargs):
+        """Update a router associated to a L3 agent.
+
+        Not implemented for the L3 agent (ML2/OVS) scheduler.
+        """
+        raise NotImplementedError(_(
+            'Updating a router in an L3 agent is not supported for '
+            'this backend'))
+
+    def add_router_to_l3_agent(self, context, agent_id, router_id, **kwargs):
         """Add a l3 agent to host a router."""
         if not self.router_supports_scheduling(context, router_id):
             raise l3agentscheduler.RouterDoesntSupportScheduling(

@@ -15,6 +15,8 @@
 
 import enum
 
+MAIN_ROUTER_NAME = 'bgp-lr-main'
+
 BGP_ROUTER_REDISTRIBUTE = 'connected-as-host,nat'
 OVN_DYNAMIC_ROUTING_PORT_MAPPING = 'dynamic-routing-port-mapping'
 
@@ -36,6 +38,7 @@ HA_CHASSIS_GROUP_PRIORITY = 10
 CHASSIS_BGP_BRIDGES_EXT_ID_KEY = 'neutron-bgp-bridges'
 
 AGENT_BGP_PEER_BRIDGES = 'neutron-bgp-peer-bridges'
+AGENT_BGP_INTERCONNECT_BRIDGE = 'neutron-bgp-interconnect-bridge'
 AGENT_BGP_EXT_NAME = 'ovn-bgp'
 
 BGP_BRIDGE_NIC_TYPES = ('', 'system')

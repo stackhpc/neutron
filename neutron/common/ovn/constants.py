@@ -72,6 +72,7 @@ OVN_ROUTER_PORT_GW_MTU_OPTION = 'gateway_mtu'
 OVN_OWNED = 'ovn-owned'
 
 OVN_PROVNET_PORT_NAME_PREFIX = 'provnet-'
+OVN_LOCALNET_PORT_EXT_ID_KEY = 'ovn-localnet-port'
 OVN_NAME_PREFIX = 'neutron-'
 OVN_HA_CH_GROUP_EXTPORT_PREFIX = 'neutron-extport-'
 OVN_METADATA_PREFIX = 'ovnmeta-'
@@ -432,6 +433,7 @@ LS_OTHER_CFG_DR_VXLAN_IFNAME = 'dynamic-routing-vxlan-ifname'
 
 LRP_OPTIONS_RESIDE_REDIR_CH = 'reside-on-redirect-chassis'
 LRP_OPTIONS_REDIRECT_TYPE = 'redirect-type'
+LRP_OPTIONS_ARP_PROXY = 'arp_proxy'
 BRIDGE_REDIRECT_TYPE = "bridged"
 
 # FDB AGE Settings
@@ -449,6 +451,9 @@ PB_TYPE_L3GATEWAY = 'l3gateway'
 
 HA_CHASSIS_GROUP_DEFAULT_NAME = 'default_ha_chassis_group'
 HA_CHASSIS_GROUP_HIGHEST_PRIORITY = 32767
+HA_CHASSIS_GROUP_LOWEST_PRIORITY = 0
+HA_CHASSIS_GROUP_PRIORITY_RANGE = [HA_CHASSIS_GROUP_LOWEST_PRIORITY,
+                                   HA_CHASSIS_GROUP_HIGHEST_PRIORITY]
 
 # OVN igmp options
 MCAST_SNOOP = 'mcast_snoop'
@@ -462,6 +467,7 @@ EXTERNAL_PORT_TYPES = (portbindings.VNIC_DIRECT,
 
 NEUTRON_AVAILABILITY_ZONES = 'neutron-availability-zones'
 OVN_CMS_OPTIONS = 'ovn-cms-options'
+OVN_BRIDGE_MAPPINGS = 'ovn-bridge-mappings'
 CMS_OPT_CHASSIS_AS_GW = 'enable-chassis-as-gw'
 CMS_OPT_CHASSIS_AS_EXTPORT_HOST = 'enable-chassis-as-extport-host'
 CMS_OPT_AVAILABILITY_ZONES = 'availability-zones'
