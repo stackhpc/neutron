@@ -1342,6 +1342,92 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
 
         raise periodics.NeverAgain()
 
+    # TODO(ralonsoh): to remove in H+3=K (2028.1) cycle (2nd next SLURP
+    # release)
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    def update_virtual_port_parent_hostname(self):
+        """Virtual ports should have parent_hostname, NOT portbinding.host"""
+        # 1. List and store all virtual ports with
+        # "external_ids:neutron:host_id"
+        lsp_with_host_id = []
+        for lsp in self._nb_idl.lsp_list().execute(check_error=True):
+            if lsp.type != ovn_const.LSP_TYPE_VIRTUAL:
+                continue
+
+            if lsp.external_ids.get(ovn_const.OVN_HOST_ID_EXT_ID_KEY):
+                lsp_with_host_id.append(lsp)
+
+        # 2. For all these LSPs, **if present** during this second loop,
+        # (2.1) update the LSP.external_ids dictionary, (2.2) remove the
+        # Neutron port host and (2.3) update the Neutron port VIF details.
+        admin_context = n_context.get_admin_context()
+        for lsp in lsp_with_host_id:
+            host_id = lsp.external_ids[ovn_const.OVN_HOST_ID_EXT_ID_KEY]
+            self._ovn_client.update_virtual_port_parent_host(
+                admin_context, lsp.name, hostname=host_id)
+            self._nb_idl.db_remove(
+                'Logical_Switch_Port', lsp.uuid, 'external_ids',
+                ovn_const.OVN_HOST_ID_EXT_ID_KEY).execute(check_error=True)
+
+        raise periodics.NeverAgain()
+
+    # TODO(ralonsoh): to remove in H+3=K (2028.1) cycle (2nd next SLURP
+    # release)
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
+    def migrate_lrp_gateway_chassis_to_ha_chassis_group(self):
+        """Migrate the LRP Gateway_Chassis to HA_Chassis_Group"""
+        with self._nb_idl.transaction(check_error=True) as txn:
+            for lrp in self._nb_idl.db_list_rows(
+                    'Logical_Router_Port').execute(check_error=True):
+                if not lrp.gateway_chassis:
+                    continue
+
+                r_name = lrp.external_ids.get(
+                    ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY)
+                if not r_name:
+                    LOG.warning('Logical_Router_Port %s does not '
+                                'have the router name in external_ids.',
+                                lrp.name)
+                    continue
+
+                chassis_prio = {}
+                for gc in lrp.gateway_chassis:
+                    chassis_prio[gc.chassis_name] = gc.priority
+
+                lr = self._nb_idl.lookup('Logical_Router', r_name,
+                                         default=None)
+                if not lr:
+                    # NOTE(ralonsoh): this is almost impossible to have a
+                    # LRP without a LR, but we consider this case too.
+                    LOG.warning('Logical_Router %s does not exist', r_name)
+                    continue
+
+                az_hints = lr.external_ids.get(
+                    ovn_const.OVN_AZ_HINTS_EXT_ID_KEY, '')
+                router_id = utils.get_neutron_name(r_name)
+                # Add the new HA_Chassis_Group and assign to the LRP.
+                external_ids = {
+                    ovn_const.OVN_AZ_HINTS_EXT_ID_KEY: ','.join(az_hints),
+                    ovn_const.OVN_ROUTER_ID_EXT_ID_KEY: router_id,
+                }
+                hcg_cmd = txn.add(self._nb_idl.ha_chassis_group_with_hc_add(
+                    r_name, chassis_prio, may_exist=True,
+                    external_ids=external_ids))
+                txn.add(self._nb_idl.db_set(
+                    'Logical_Router_Port', lrp.uuid,
+                    ('ha_chassis_group', hcg_cmd)))
+                # Unset the Gateway_Chassis in the LRP.
+                txn.add(self._nb_idl.db_clear(
+                    'Logical_Router_Port', lrp.uuid, 'gateway_chassis'))
+
+        raise periodics.NeverAgain()
+
 
 class HashRingHealthCheckPeriodics:
 
