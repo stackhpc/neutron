@@ -61,6 +61,7 @@ from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_hash_ring_db
 from neutron.db import ovn_revision_numbers_db
 from neutron.db import provisioning_blocks
+from neutron.db import segments_db
 from neutron.extensions import securitygroup as ext_sg
 from neutron.objects import router
 from neutron.plugins.ml2 import db as ml2_db
@@ -284,6 +285,9 @@ class OVNMechanismDriver(api.MechanismDriver):
         registry.subscribe(self._add_segment_host_mapping_for_segment,
                            resources.SEGMENT,
                            events.AFTER_CREATE)
+        registry.subscribe(self._create_segment_revision_precommit,
+                           resources.SEGMENT,
+                           events.PRECOMMIT_CREATE)
         registry.subscribe(self.create_segment_provnet_port,
                            resources.SEGMENT,
                            events.AFTER_CREATE)
@@ -690,6 +694,29 @@ class OVNMechanismDriver(api.MechanismDriver):
                 )
                 raise n_exc.InvalidInput(error_message=err_msg)
 
+    def _create_segment_revision_precommit(self, resource, event, trigger,
+                                           payload=None):
+        """Create initial revision for segments in VLAN-only routed networks.
+        """
+        # Ignore events from add_network_segment (network creation)
+        # We already handle those revisions in create_network_precommit method
+        if trigger is segments_db.add_network_segment:
+            return
+
+        context = payload.context
+        segment = payload.latest_state
+
+        # Get the network for this segment
+        network = self._plugin.get_network(context, segment['network_id'])
+
+        # Only create segment revision for VLAN-only routed networks
+        if not ovn_utils.network_needs_lswitch(context,
+                                               network=network):
+            # VLAN-only routed networks: Create revision for the segment
+            ovn_revision_numbers_db.create_initial_revision(
+                context, segment['id'], ovn_const.TYPE_SEGMENTS,
+                std_attr_id=network['standard_attr_id'])
+
     def create_segment_provnet_port(self, resource, event, trigger,
                                     payload=None):
         segment = payload.latest_state
@@ -704,7 +731,8 @@ class OVNMechanismDriver(api.MechanismDriver):
         segment = payload.states[-1]
         if segment.get(segment_def.PHYSICAL_NETWORK):
             self._ovn_client.delete_provnet_port(
-                segment['network_id'], segment)
+                segment['network_id'], segment,
+                payload.metadata[segment_service_db.FOR_NET_DELETE])
 
     def create_network_precommit(self, context):
         """Allocate resources for a new network.
@@ -718,10 +746,22 @@ class OVNMechanismDriver(api.MechanismDriver):
         of the current transaction.
         """
         self._validate_network_segments(context.network_segments)
-        ovn_revision_numbers_db.create_initial_revision(
-            context.plugin_context, context.current['id'],
-            ovn_const.TYPE_NETWORKS,
-            std_attr_id=context.current['standard_attr_id'])
+
+        # Create revisions based on logical switch strategy
+        if ovn_utils.network_needs_lswitch(context.plugin_context,
+                                           network=context.current):
+            # Regular/mixed networks: Create network revision
+            ovn_revision_numbers_db.create_initial_revision(
+                context.plugin_context, context.current['id'],
+                ovn_const.TYPE_NETWORKS,
+                std_attr_id=context.current['standard_attr_id'])
+        else:
+            # VLAN-only routed networks: Create revision for each segment
+            for segment in context.network_segments:
+                ovn_revision_numbers_db.create_initial_revision(
+                    context.plugin_context, segment['id'],
+                    ovn_const.TYPE_SEGMENTS,
+                    std_attr_id=context.current['standard_attr_id'])
 
     def create_network_postcommit(self, context):
         """Create a network.
@@ -967,8 +1007,18 @@ class OVNMechanismDriver(api.MechanismDriver):
         """
         port = copy.deepcopy(context.current)
         port['network'] = context.network.current
-        self._ovn_client.create_port(context.plugin_context, port)
-        self._notify_dhcp_updated(context.plugin_context, port['id'])
+
+        # Only create port in network logical switch if network needs one
+        # For routed networks with multiple segments per host, ports are
+        # created in segment logical switches during binding
+        if ovn_utils.network_needs_lswitch(
+                context.plugin_context,
+                network=context.network.current):
+            self._ovn_client.create_port(context.plugin_context, port)
+            self._notify_dhcp_updated(context.plugin_context, port['id'])
+        else:
+            ovn_revision_numbers_db.bump_revision(context.plugin_context, port,
+                                                  ovn_const.TYPE_PORTS)
 
     def update_port_precommit(self, context):
         """Update resources of a port.
@@ -1010,6 +1060,79 @@ class OVNMechanismDriver(api.MechanismDriver):
                     context.plugin_context, port['id'],
                     ovn_const.TYPE_ROUTER_PORTS, may_exist=True,
                     std_attr_id=context.current['standard_attr_id'])
+
+    def _extract_vlan_segment_from_binding_levels(self, binding_levels):
+        """Extract VLAN segment from binding_levels list."""
+        if not binding_levels:
+            return None
+
+        for level in binding_levels:
+            segment = level.get('bound_segment')
+            if segment and ovn_utils.is_vlan_segment(segment):
+                return segment
+        return None
+
+    def _handle_segment_port_binding_changes(self, context, port):
+        """Handle port binding changes for segment logical switches.
+
+        This implementation does not support hierarchical port binding.
+        We only handle single-level bindings with at most 1 element.
+
+        Returns:
+            bool: True if port update should continue, False otherwise
+        """
+        # Check for hierarchical binding - not supported in this version
+        if (context.binding_levels and len(context.binding_levels) > 1):
+            LOG.warning("Hierarchical port binding not supported for "
+                        "segment logical switches. Port: %s", port['id'])
+            return True  # Continue with normal update
+
+        if (context.original_binding_levels and
+                len(context.original_binding_levels) > 1):
+            LOG.warning("Hierarchical port binding not supported for "
+                        "segment logical switches. Port: %s", port['id'])
+            return True  # Continue with normal update
+
+        current_segment = self._extract_vlan_segment_from_binding_levels(
+            context.binding_levels)
+        original_segment = self._extract_vlan_segment_from_binding_levels(
+            context.original_binding_levels)
+
+        # Case 1: the port is transitioning from unbound status to bound to a
+        # vlan segment
+        if original_segment is None and current_segment is not None:
+            self._create_segment_port(context, port, current_segment)
+            return False  # Don't continue with normal update
+
+        # Case 2: the port is being unbound from a vlan segment and bound to a
+        # different one
+        if (original_segment is not None and current_segment is not None and
+                original_segment['id'] != current_segment['id']):
+            self._delete_segment_port(context, port, original_segment)
+            self._create_segment_port(context, port, current_segment)
+            return False  # Don't continue with normal update
+
+        # Case 3: the port is being unbound
+        if original_segment is not None and current_segment is None:
+            self._delete_segment_port(context, port, original_segment)
+
+        # Case 4: If we get here, it is either because we are continuing case 3
+        # or because there is no change in the port binding. In either case, we
+        # update the port
+        return True  # Default to continue with normal update
+
+    def _create_segment_port(self, context, port, segment):
+        """Create port in segment-specific logical switch."""
+        self._ovn_client.create_port(
+            context.plugin_context, port, segment_id=segment['id'])
+        self._notify_dhcp_updated(context.plugin_context, port['id'])
+
+    def _delete_segment_port(self, context, port, segment):
+        """Delete port from segment-specific logical switch."""
+        # The delete_port method is port-centric and works regardless
+        # of which logical switch the port is on
+        self._ovn_client.delete_port(context.plugin_context, port['id'],
+                                     port_object=port, keep_revision=True)
 
     def update_port_postcommit(self, context):
         """Update a port.
@@ -1066,6 +1189,18 @@ class OVNMechanismDriver(api.MechanismDriver):
                 # So there is no need to update it again here. Anyway it
                 # will fail that OVN has port with bigger revision.
                 return
+        else:
+            # Handle segment-specific port creation/deletion for
+            # VLAN segments in routed networks
+            if not ovn_utils.network_needs_lswitch(
+                    context.plugin_context,
+                    network=context.network.current):
+                # This is a VLAN-only routed network
+                should_continue = (
+                    self._handle_segment_port_binding_changes(
+                        context, port))
+                if not should_continue:
+                    return
 
         self._ovn_update_port(context.plugin_context, port, original_port,
                               retry_on_revision_mismatch=True)
@@ -1180,7 +1315,23 @@ class OVNMechanismDriver(api.MechanismDriver):
         iface_types = other_config.get('iface-types', '')
         iface_types = iface_types.split(',') if iface_types else []
         chassis_physnets = self.sb_ovn._get_chassis_physnets(chassis)
-        for segment_to_bind in context.segments_to_bind:
+        if not ovn_utils.network_needs_lswitch(
+                context._plugin_context,
+                network=context.network.current):
+            allowed_binding_segments = []
+            for data in port.get('fixed_ips', []):
+                subnet_id = data.get('subnet_id')
+                if subnet_id:
+                    subnet = self._plugin.get_subnet(
+                        context._plugin_context, subnet_id)
+                    seg_id = subnet.get('segment_id')
+                    for segment in context.segments_to_bind:
+                        if seg_id is None or seg_id == segment[api.ID]:
+                            allowed_binding_segments.append(segment)
+        else:
+            allowed_binding_segments = context.segments_to_bind
+
+        for segment_to_bind in allowed_binding_segments:
             network_type = segment_to_bind['network_type']
             segmentation_id = segment_to_bind['segmentation_id']
             physical_network = segment_to_bind['physical_network']

@@ -385,7 +385,8 @@ class Subnet(base.NeutronDbObject):
 
         if len(segment_ids) > 1:
             LOG.info("The network '%s' has multiple segments, "
-                     "this is currently supported by OVS agent only.",
+                     "this is currently supported by the OVS agent and, if "
+                     "configured to support it, the ML2/OVN driver only.",
                      network_id)
 
         return [subnet for subnet, _mapping in results]

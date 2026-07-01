@@ -547,15 +547,27 @@ class FakePort:
 
 
 class FakePortContext:
-    def __init__(self, port, host, segments_to_bind):
+    def __init__(self, port, host, segments_to_bind,
+                 original_port=None, binding_levels=None,
+                 original_binding_levels=None):
         self.fake_port = port
         self.fake_host = host
         self.fake_segments_to_bind = segments_to_bind
         self.set_binding = mock.Mock()
+        self._plugin_context = mock.Mock()
+        self.network = mock.Mock()
+        self.network.network_segments = segments_to_bind
+        self._original_port = original_port
+        self._binding_levels = binding_levels
+        self._original_binding_levels = original_binding_levels
 
     @property
     def current(self):
         return self.fake_port
+
+    @property
+    def original(self):
+        return self._original_port
 
     @property
     def host(self):
@@ -564,6 +576,18 @@ class FakePortContext:
     @property
     def segments_to_bind(self):
         return self.fake_segments_to_bind
+
+    @property
+    def plugin_context(self):
+        return self._plugin_context
+
+    @property
+    def binding_levels(self):
+        return self._binding_levels
+
+    @property
+    def original_binding_levels(self):
+        return self._original_binding_levels
 
 
 class FakeSecurityGroup:

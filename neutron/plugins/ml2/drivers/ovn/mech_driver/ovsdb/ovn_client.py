@@ -28,6 +28,7 @@ from neutron_lib.api.definitions import provider_net as pnet
 from neutron_lib.api.definitions import qinq as qinq_apidef
 from neutron_lib.api.definitions import segment as segment_def
 from neutron_lib import constants as const
+from neutron_lib import context as n_context
 from neutron_lib import exceptions as n_exc
 from neutron_lib.exceptions import l3 as l3_exc
 from neutron_lib.plugins import constants as plugin_constants
@@ -606,13 +607,19 @@ class OVNClient:
         }
         return port_info, external_ids
 
-    def create_port(self, context, port):
+    def create_port(self, context, port, segment_id=None):
         if utils.is_lsp_ignored(port):
             return
 
         port_info, external_ids = self.get_external_ids_from_port(
             context, port)
-        lswitch_name = utils.ovn_name(port['network_id'])
+
+        # Determine logical switch name and add segment_id to external_ids
+        if segment_id is not None:
+            lswitch_name = utils.ovn_name(segment_id)
+            external_ids[ovn_const.OVN_PORT_SEGMENT_EXT_ID_KEY] = segment_id
+        else:
+            lswitch_name = utils.ovn_name(port['network_id'])
 
         # It's possible to have a network created on one controller and then a
         # port created on a different controller quickly enough that the second
@@ -686,9 +693,11 @@ class OVNClient:
                     utils.ovn_port_group_name(sg), port_cmd))
 
             if self.is_dns_required_for_port(port):
-                self.add_txns_to_sync_port_dns_records(txn, port)
+                self.add_txns_to_sync_port_dns_records(txn, port,
+                                                       ls_name=lswitch_name)
 
-            self._qos_driver.create_port(context, txn, port, port_cmd)
+            if segment_id is None:
+                self._qos_driver.create_port(context, txn, port, port_cmd)
 
             if port.get('pvlan_type') and self.pvlan_driver:
                 self.pvlan_driver.create_port(context, txn, port)
@@ -761,6 +770,12 @@ class OVNClient:
             dhcpv4_options, dhcpv6_options = self.update_port_dhcp_options(
                 port_info, txn=txn)
 
+            # Check if port is in a routed network with segments enabled
+            is_routed_network = not utils.network_needs_lswitch(
+                context, network_id=port['network_id'])
+            port_segment_id = ovn_port.external_ids.get(
+                ovn_const.OVN_PORT_SEGMENT_EXT_ID_KEY)
+
             if utils.is_ovn_metadata_port(port):
                 network = self._plugin.get_network(admin_context,
                                                    port['network_id'])
@@ -774,6 +789,13 @@ class OVNClient:
                         admin_context, filters={'id': subnet_ids}):
                     if not subnet['enable_dhcp']:
                         continue
+
+                    # For routed networks, only process subnets that match
+                    # the port's segment
+                    if (is_routed_network and port_segment_id and
+                            subnet.get('segment_id') != port_segment_id):
+                        continue
+
                     self._update_subnet_dhcp_options(
                         context, subnet, network, txn)
 
@@ -852,12 +874,19 @@ class OVNClient:
 
             self._qos_driver.update_port(context, txn, port, port_object)
 
+            # Determine logical switch name for DNS records
+            if is_routed_network and port_segment_id:
+                ls_name = utils.ovn_name(port_segment_id)
+            else:
+                ls_name = None
+
             if self.is_dns_required_for_port(port):
                 self.add_txns_to_sync_port_dns_records(
-                    txn, port, original_port=port_object)
+                    txn, port, original_port=port_object, ls_name=ls_name)
             elif port_object and self.is_dns_required_for_port(port_object):
                 # We need to remove the old entries
-                self.add_txns_to_remove_port_dns_records(txn, port_object)
+                self.add_txns_to_remove_port_dns_records(
+                    txn, port_object, ls_name=ls_name)
 
         if check_rev_cmd.result == ovn_const.TXN_COMMITTED:
             db_rev.bump_revision(context, port, ovn_const.TYPE_PORTS)
@@ -892,19 +921,28 @@ class OVNClient:
         if check_rev_cmd.result == ovn_const.TXN_COMMITTED:
             db_rev.bump_revision(context, db_port, ovn_const.TYPE_PORTS)
 
-    def _delete_port(self, context, port_id, port_object=None):
+    def _delete_port(self, context, port_id, check_rev_cmd, port_object=None):
         ovn_port = self._nb_idl.lookup('Logical_Switch_Port', port_id)
         ovn_network_name = ovn_port.external_ids.get(
             ovn_const.OVN_NETWORK_NAME_EXT_ID_KEY)
         network_id = utils.get_neutron_name(ovn_network_name)
 
+        # For routed networks, use segment logical switch name
+        port_segment_id = ovn_port.external_ids.get(
+            ovn_const.OVN_PORT_SEGMENT_EXT_ID_KEY)
+        if port_segment_id:
+            ovn_network_name = utils.ovn_name(port_segment_id)
+
         with self._nb_idl.transaction(check_error=True) as txn:
+            if check_rev_cmd:
+                txn.add(check_rev_cmd)
             txn.add(self._nb_idl.delete_lswitch_port(
                 port_id, ovn_network_name))
 
             p_object = ({'id': port_id, 'network_id': network_id}
                         if not port_object else port_object)
-            self._qos_driver.delete_port(context, txn, p_object)
+            if not port_segment_id:
+                self._qos_driver.delete_port(context, txn, p_object)
 
             if port_object and self.is_dns_required_for_port(port_object):
                 self.add_txns_to_remove_port_dns_records(txn, port_object)
@@ -926,9 +964,15 @@ class OVNClient:
 
     # TODO(lucasagomes): The ``port_object`` parameter was added to
     # keep things backward compatible. Remove it in the Rocky release.
-    def delete_port(self, context, port_id, port_object=None):
+    def delete_port(self, context, port_id, port_object=None,
+                    keep_revision=False):
+        check_rev_cmd = None
+        if keep_revision:
+            check_rev_cmd = self._nb_idl.check_revision_number(
+                port_id, port_object, ovn_const.TYPE_PORTS)
         try:
-            self._delete_port(context, port_id, port_object=port_object)
+            self._delete_port(context, port_id, check_rev_cmd,
+                              port_object=port_object)
         except idlutils.RowNotFound:
             # NOTE(dalvarez): At this point the port doesn't exist in the OVN
             # database or, most likely, this worker IDL hasn't been updated
@@ -946,7 +990,12 @@ class OVNClient:
             with excutils.save_and_reraise_exception():
                 LOG.error('Failed to delete port %(port)s. Error: '
                           '%(error)s', {'port': port_id, 'error': e})
-        db_rev.delete_revision(context, port_id, ovn_const.TYPE_PORTS)
+        if keep_revision:
+            if check_rev_cmd.result == ovn_const.TXN_COMMITTED:
+                db_rev.bump_revision(context, port_object,
+                                     ovn_const.TYPE_PORTS)
+        else:
+            db_rev.delete_revision(context, port_id, ovn_const.TYPE_PORTS)
 
     def _create_or_update_floatingip(self, context, floatingip, txn=None,
                                      nat_uuid=None):
@@ -2230,23 +2279,82 @@ class OVNClient:
                 # db only if required value is 802.1ad
                 options[ovn_const.VLAN_ETHTYPE] = vlan_ethtype
 
-        cmd = self._nb_idl.create_lswitch_port(
+        # Determine target logical switch based on segment and
+        # configuration. Only create segment logical switches for
+        # VLAN segments in routed networks.
+        network_needs_lswitch_flag = utils.network_needs_lswitch(
+            context, network_id=network_id)
+        cmds = []
+        if (not network_needs_lswitch_flag and
+                utils.is_vlan_segment(segment)):
+            # VLAN segments get their own logical switch
+            segment_lswitch_name = utils.ovn_name(segment['id'])
+            lswitch_params = self._gen_network_parameters(network)
+
+            # Create logical switch for this VLAN segment
+            cmds.append(self._nb_idl.ls_add(
+                network_id=segment['id'],
+                **lswitch_params, may_exist=True))
+
+            target_lswitch = segment_lswitch_name
+            target_network_id = segment['id']
+        else:
+            # Other segment types use network logical switch
+            target_lswitch = utils.ovn_name(network_id)
+            target_network_id = network_id
+
+        cmds.append(self._nb_idl.create_lswitch_port(
             lport_name=utils.ovn_provnet_port_name(segment['id']),
-            lswitch_name=utils.ovn_name(network_id),
-            network_id=network_id,
+            lswitch_name=target_lswitch,
+            network_id=target_network_id,
             addresses=[ovn_const.UNKNOWN_ADDR],
             external_ids={ovn_const.OVN_PHYSNET_EXT_ID_KEY: physnet},
             type=ovn_const.LSP_TYPE_LOCALNET,
-            tag_request=tag,
-            options=options)
-        self._transaction([cmd], txn=txn)
+            tag_request=tag if network_needs_lswitch_flag else [],
+            options=options))
+        self._transaction(cmds, txn=txn)
 
-    def delete_provnet_port(self, network_id, segment):
-        port_to_del = utils.ovn_provnet_port_name(segment['id'])
-        cmd = self._nb_idl.delete_lswitch_port(
-            lport_name=port_to_del,
-            lswitch_name=utils.ovn_name(network_id))
+        if (not network_needs_lswitch_flag and
+                utils.is_vlan_segment(segment)):
+            # Bump revision for segments not created during a
+            # network creation (txn=None means called from
+            # create_segment_provnet_port)
+            if txn is None:
+                db_rev.bump_revision(
+                    context, network, ovn_const.TYPE_NETWORKS,
+                    dependent_resource=segment,
+                    dependent_resource_type=ovn_const.TYPE_SEGMENTS)
+            self.create_metadata_port(context, network, segment['id'])
+
+    def delete_provnet_port(self, network_id, segment, for_net_delete=False):
+        # Only delete segment logical switches for VLAN segments in routed
+        # networks
+        context = n_context.get_admin_context()
+        is_vlan_segment_deletion = (
+            not utils.network_needs_lswitch(context, network_id=network_id))
+
+        if is_vlan_segment_deletion:
+            # VLAN segments: Delete segment logical switch
+            if not for_net_delete:
+                metadata_port = self._find_metadata_port(context, network_id,
+                                                         segment['id'])
+                if metadata_port:
+                    self._plugin.delete_port(context, metadata_port['id'])
+            segment_lswitch_name = utils.ovn_name(segment['id'])
+            cmd = self._nb_idl.ls_del(segment_lswitch_name, if_exists=True)
+        else:
+            # Other segments: Delete localnet port from network logical switch
+            port_to_del = utils.ovn_provnet_port_name(segment['id'])
+            cmd = self._nb_idl.delete_lswitch_port(
+                lport_name=port_to_del,
+                lswitch_name=utils.ovn_name(network_id))
+
         self._transaction([cmd])
+
+        # Delete segment revision for VLAN-only routed networks
+        if is_vlan_segment_deletion:
+            db_rev.delete_revision(
+                context, segment['id'], ovn_const.TYPE_SEGMENTS)
 
     def _get_vlan_passthru(self, network):
         return bool(network.get('vlan_transparent') or
@@ -2303,9 +2411,19 @@ class OVNClient:
         # 1869877 will be fixed.
         segments = segments_db.get_network_segments(
             context, network['id'])
+
+        # Determine logical switch strategy once
+        network_needs_lswitch_flag = utils.network_needs_lswitch(
+            context, network=network)
+
         with self._nb_idl.transaction(check_error=True) as txn:
-            txn.add(self._nb_idl.ls_add(network_id=network['id'],
-                                        **lswitch_params, may_exist=True))
+            # Only create network logical switch if needed
+            # VLAN-only networks don't need it since segments create their own
+            if network_needs_lswitch_flag:
+                txn.add(self._nb_idl.ls_add(network_id=network['id'],
+                                            **lswitch_params, may_exist=True))
+
+            # Create segment logical switches and provider network ports
             for segment in segments:
                 if segment.get(segment_def.PHYSICAL_NETWORK):
                     self.create_provnet_port(context, network['id'], segment,
@@ -2314,8 +2432,18 @@ class OVNClient:
             if network.get('pvlan') and self.pvlan_driver:
                 self.pvlan_driver.create_network_resources(
                     network['id'], txn=txn)
-        db_rev.bump_revision(context, network, ovn_const.TYPE_NETWORKS)
-        self.create_metadata_port(context, network)
+        # For routed networks with multiple segments per host, each segment
+        # has its own revision number and metadata port
+        if network_needs_lswitch_flag:
+            db_rev.bump_revision(context, network, ovn_const.TYPE_NETWORKS)
+            self.create_metadata_port(context, network)
+        else:
+            # VLAN-only routed networks: Bump revision for each segment
+            for segment in segments:
+                db_rev.bump_revision(
+                    context, network, ovn_const.TYPE_NETWORKS,
+                    dependent_resource=segment,
+                    dependent_resource_type=ovn_const.TYPE_SEGMENTS)
         return network
 
     def delete_network(self, context, network_id):
@@ -2383,6 +2511,54 @@ class OVNClient:
                 context, self._nb_idl, self._sb_idl, port_id, network_id, txn)
 
     def update_network(self, context, network, original_network=None):
+        # Get segments and determine logical switch strategy
+        segments = segments_db.get_network_segments(context, network['id'])
+        network_needs_lswitch_flag = utils.network_needs_lswitch(
+            context, network=network)
+
+        if not network_needs_lswitch_flag:
+            # VLAN-only routed networks: Update each segment logical switch
+            self.update_network_vlan_segments(context, network, segments)
+        else:
+            # Regular/mixed networks: Use existing behavior
+            self._update_network_regular(context, network, original_network,
+                                         segments)
+
+    def update_network_vlan_segments(self, context, network, segments):
+        """Update network for VLAN-only routed networks (segment switches)."""
+        check_rev_cmds = []
+        with self._nb_idl.transaction(check_error=True) as txn:
+            # Update each segment logical switch
+            lswitch_params = self._gen_network_parameters(network)
+            for segment in segments:
+                segment_lswitch_name = utils.ovn_name(
+                    segment['id'])
+                check_rev_cmd = self._nb_idl.check_revision_number(
+                    segment_lswitch_name, network, ovn_const.TYPE_NETWORKS)
+                check_rev_cmds.append(check_rev_cmd)
+                txn.add(check_rev_cmd)
+                txn.add(self._nb_idl.db_set(
+                    'Logical_Switch', segment_lswitch_name,
+                    *lswitch_params.items()))
+
+            # Update subnets (no network logical switch in VLAN-only networks)
+            subnets = self._plugin.get_subnets_by_network(
+                context, network['id'])
+            for subnet in subnets:
+                self.update_subnet(context, subnet, network, txn)
+
+        # Bump revision for each segment if transaction committed
+        for i, check_rev_cmd in enumerate(check_rev_cmds):
+            if check_rev_cmd.result == ovn_const.TXN_COMMITTED:
+                db_rev.bump_revision(
+                    context, network, ovn_const.TYPE_NETWORKS,
+                    dependent_resource=segments[i],
+                    dependent_resource_type=ovn_const.TYPE_SEGMENTS)
+
+    def _update_network_regular(self, context, network, original_network,
+                                segments):
+        """Update network for regular/mixed networks (network logical switch).
+        """
         lswitch_name = utils.ovn_name(network['id'])
         check_rev_cmd = self._nb_idl.check_revision_number(
             lswitch_name, network, ovn_const.TYPE_NETWORKS)
@@ -2400,17 +2576,6 @@ class OVNClient:
         # p2 = P2_IP
         # p2.test1 = P2_IP
         # p2.default_domain = P2_IP
-        # ===========================
-        # if the network n1's dns domain name is updated to test2, then we need
-        # to delete the below DNS records
-        # ===========================
-        # p1.test1 = P1_IP
-        # p2.test1 = P2_IP
-        # ===========================
-        # and add the new ones
-        # ===========================
-        # p1.test2 = P1_IP
-        # p2.test2 = P2_IP
         # ===========================
         # in the DNS row for this network.
 
@@ -2440,7 +2605,6 @@ class OVNClient:
                 context, lswitch, lswitch_params, txn)
 
             # Update the segment tags, if any
-            segments = segments_db.get_network_segments(context, network['id'])
             for segment in segments:
                 tag = segment.get(segment_def.SEGMENTATION_ID)
                 tag = [] if tag is None else tag
@@ -2586,8 +2750,14 @@ class OVNClient:
                     pass
 
     def _get_ovn_dhcpv4_opts(self, context, subnet, network, server_mac=None):
+        # Pass segment_id for routed networks functionality
+        if not utils.network_needs_lswitch(context, network_id=network['id']):
+            segment_id = subnet.get('segment_id')
+        else:
+            segment_id = None
+
         metadata_port_ip = self._find_metadata_port_ip(
-            context.elevated(), subnet)
+            context.elevated(), subnet, segment_id)
         # TODO(dongj): Currently the metadata port is created only when
         # ovn_metadata_enabled is true, therefore this is a restriction for
         # supporting DHCP of subnet without gateway IP.
@@ -2948,48 +3118,75 @@ class OVNClient:
         db_rev.delete_revision(
             context, address_group_id, ovn_const.TYPE_ADDRESS_GROUPS)
 
-    def _find_metadata_port(self, context, network_id):
+    def _find_metadata_port(self, context, network_id, segment_id=None):
         if not ovn_conf.is_ovn_metadata_enabled():
             return
+
+        # Construct device_id based on segment_id or network_id
+        if segment_id:
+            device_id = ovn_const.OVN_METADATA_PREFIX + segment_id
+        else:
+            device_id = ovn_const.OVN_METADATA_PREFIX + network_id
 
         ports = self._plugin.get_ports(
             context, filters={
                 'network_id': [network_id],
+                'device_id': [device_id],
                 'device_owner': [const.DEVICE_OWNER_DISTRIBUTED]},
             limit=1)
 
         if ports:
             return ports[0]
 
-    def _find_metadata_port_ip(self, context, subnet):
-        metadata_port = self._find_metadata_port(context, subnet['network_id'])
+    def _find_metadata_port_ip(self, context, subnet, segment_id=None):
+        metadata_port = self._find_metadata_port(context, subnet['network_id'],
+                                                 segment_id)
         if metadata_port:
             for fixed_ip in metadata_port['fixed_ips']:
                 if fixed_ip['subnet_id'] == subnet['id']:
                     return fixed_ip['ip_address']
 
-    def create_metadata_port(self, context, network):
+    def create_metadata_port(self, context, network, segment_id=None):
         if not ovn_conf.is_ovn_metadata_enabled():
             return
 
         net_id = network['id']
-        metadata_port = self._find_metadata_port(context, net_id)
+
+        # Check if metadata port already exists
+        metadata_port = self._find_metadata_port(context, net_id,
+                                                 segment_id)
         if metadata_port:
             return metadata_port
 
-        # Create a neutron port for DHCP/metadata services
-        filters = {'network_id': [net_id]}
-        subnets = self._plugin.get_subnets(context, filters=filters)
-        fixed_ips = [{'subnet_id': s['id']}
-                     for s in subnets if s['enable_dhcp']]
+        # Set device_id based on segment
+        if segment_id:
+            device_id = ovn_const.OVN_METADATA_PREFIX + segment_id
+        else:
+            device_id = ovn_const.OVN_METADATA_PREFIX + net_id
+
+        fixed_ips = []
+        if segment_id is None:
+            # Regular/mixed networks: Include all DHCP-enabled subnets
+            filters = {'network_id': [net_id]}
+            subnets = self._plugin.get_subnets(context, filters=filters)
+            fixed_ips = [{'subnet_id': s['id']}
+                         for s in subnets if s['enable_dhcp']]
+
         port = {'port': {'network_id': net_id,
                          'project_id': network['project_id'],
                          'device_owner': const.DEVICE_OWNER_DISTRIBUTED,
-                         'device_id': ovn_const.OVN_METADATA_PREFIX + net_id,
+                         'device_id': device_id,
                          'fixed_ips': fixed_ips,
                          }
                 }
-        return p_utils.create_port(self._plugin, context, port)
+        new_port = p_utils.create_port(self._plugin, context, port)
+
+        # For VLAN-only routed networks, create port in segment logical switch
+        if segment_id is not None:
+            self.create_port(context, new_port,
+                             segment_id=segment_id)
+
+        return new_port
 
     def update_metadata_port(self, context, network, subnet=None):
         """Update metadata port.
@@ -3021,7 +3218,13 @@ class OVNClient:
             return False
 
         # Retrieve or create the metadata port of this network
-        metadata_port = self.create_metadata_port(context, network)
+        if not utils.network_needs_lswitch(context, network_id=network_id):
+            # VLAN-only routed networks: Pass subnet for segment-specific port
+            metadata_port = self.create_metadata_port(context, network,
+                                                      subnet['segment_id'])
+        else:
+            # Regular/mixed networks: Network-level metadata port
+            metadata_port = self.create_metadata_port(context, network)
         if not metadata_port:
             LOG.error("Metadata port could not be found or created "
                       "for network %s", network_id)
@@ -3108,7 +3311,8 @@ class OVNClient:
 
         return port_dns_records
 
-    def add_txns_to_sync_port_dns_records(self, txn, port, original_port=None):
+    def add_txns_to_sync_port_dns_records(self, txn, port, original_port=None,
+                                          ls_name=None):
         # NOTE(numans): - This implementation has certain known limitations
         # and that will be addressed in the future patches
         # https://bugs.launchpad.net/networking-ovn/+bug/1739257.
@@ -3118,7 +3322,10 @@ class OVNClient:
         #  - If a port is deleted with dns name 'd1' and a new port is
         #    added with the same dns name 'd1'.
         records_to_add = self.get_port_dns_records(port)
-        lswitch_name = utils.ovn_name(port['network_id'])
+        if ls_name is not None:
+            lswitch_name = ls_name
+        else:
+            lswitch_name = utils.ovn_name(port['network_id'])
         ls, ls_dns_record = self._nb_idl.get_ls_and_dns_record(lswitch_name)
 
         # If ls_dns_record is None, then we need to create a DNS row for the
@@ -3150,8 +3357,11 @@ class OVNClient:
                 txn.add(self._nb_idl.dns_add_record(
                     ls_dns_record.uuid, hostname, ips))
 
-    def add_txns_to_remove_port_dns_records(self, txn, port):
-        lswitch_name = utils.ovn_name(port['network_id'])
+    def add_txns_to_remove_port_dns_records(self, txn, port, ls_name=None):
+        if ls_name is not None:
+            lswitch_name = ls_name
+        else:
+            lswitch_name = utils.ovn_name(port['network_id'])
         ls, ls_dns_record = self._nb_idl.get_ls_and_dns_record(lswitch_name)
 
         if ls_dns_record is None:

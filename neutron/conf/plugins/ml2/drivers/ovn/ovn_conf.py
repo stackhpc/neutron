@@ -303,6 +303,16 @@ ovn_opts = [
                       'only if "ha_failover_strategy=%s"') %
                ovn_const.OVN_HA_FAILOVER_MANUAL,
                ),
+    cfg.BoolOpt('logical_switch_per_vlan_segment',
+                default=False,
+                help=_('Create separate logical switches for VLAN segments '
+                       'in routed provider networks. When enabled, each '
+                       'VLAN segment gets its own logical switch '
+                       '(neutron-<segment_id>) instead of sharing the '
+                       'network logical switch (neutron-<network_id>). '
+                       'This enables multiple segments per host in routed '
+                       'provider networks. Requires restart of '
+                       'neutron-server.')),
 ]
 
 nb_global_opts = [
@@ -365,6 +375,11 @@ def get_ovn_nb_certificate():
 
 def get_ovn_nb_ca_cert():
     return cfg.CONF.ovn.ovn_nb_ca_cert
+
+
+def is_logical_switch_per_vlan_segment_enabled():
+    """Check if logical switch per VLAN segment is enabled."""
+    return cfg.CONF.ovn.logical_switch_per_vlan_segment
 
 
 def get_ovn_sb_connection():

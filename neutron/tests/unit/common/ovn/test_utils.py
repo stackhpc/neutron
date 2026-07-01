@@ -246,6 +246,123 @@ class TestUtils(base.BaseTestCase):
         self.assertFalse(utils.is_ovn_lb_hm_port(non_ovn_lb_hm_port_0))
         self.assertFalse(utils.is_ovn_lb_hm_port(non_ovn_lb_hm_port_1))
 
+    def test_is_vlan_segment_vlan(self):
+        segment = {'network_type': 'vlan',
+                   'physical_network': 'physnet1',
+                   'segmentation_id': 100}
+        self.assertTrue(utils.is_vlan_segment(segment))
+
+    def test_is_vlan_segment_flat(self):
+        segment = {'network_type': 'flat',
+                   'physical_network': 'physnet1',
+                   'segmentation_id': None}
+        self.assertFalse(utils.is_vlan_segment(segment))
+
+    def test_is_vlan_segment_geneve(self):
+        segment = {'network_type': 'geneve',
+                   'physical_network': None,
+                   'segmentation_id': 1023}
+        self.assertFalse(utils.is_vlan_segment(segment))
+
+    def test_is_vlan_segment_empty(self):
+        self.assertFalse(utils.is_vlan_segment({}))
+
+    def test_network_needs_lswitch_feature_disabled(self):
+        ovn_conf.register_opts()
+        network = {'id': 'net-1',
+                   'router:external': False,
+                   'provider:network_type': 'vlan',
+                   'provider:physical_network': 'physnet1',
+                   'provider:segmentation_id': 100}
+        self.assertTrue(utils.network_needs_lswitch(
+            mock.Mock(), network=network))
+
+    @mock.patch(
+        'neutron.conf.plugins.ml2.drivers.ovn.ovn_conf.'
+        'is_logical_switch_per_vlan_segment_enabled',
+        return_value=True)
+    def test_network_needs_lswitch_enabled_all_vlan(self, *_):
+        network = {
+            'id': 'net-1', 'router:external': False,
+            'segments': [
+                {'provider:network_type': 'vlan',
+                 'provider:physical_network': 'physnet1',
+                 'provider:segmentation_id': 100},
+                {'provider:network_type': 'vlan',
+                 'provider:physical_network': 'physnet2',
+                 'provider:segmentation_id': 200}]}
+        self.assertFalse(utils.network_needs_lswitch(
+            mock.Mock(), network=network))
+
+    @mock.patch(
+        'neutron.conf.plugins.ml2.drivers.ovn.ovn_conf.'
+        'is_logical_switch_per_vlan_segment_enabled',
+        return_value=True)
+    def test_network_needs_lswitch_enabled_mixed(self, *_):
+        network = {
+            'id': 'net-1', 'router:external': False,
+            'segments': [
+                {'provider:network_type': 'vlan',
+                 'provider:physical_network': 'physnet1',
+                 'provider:segmentation_id': 100},
+                {'provider:network_type': 'geneve',
+                 'provider:physical_network': None,
+                 'provider:segmentation_id': 1023}]}
+        self.assertTrue(utils.network_needs_lswitch(
+            mock.Mock(), network=network))
+
+    @mock.patch(
+        'neutron.conf.plugins.ml2.drivers.ovn.ovn_conf.'
+        'is_logical_switch_per_vlan_segment_enabled',
+        return_value=True)
+    def test_network_needs_lswitch_enabled_single_vlan(self, *_):
+        network = {'id': 'net-1',
+                   'router:external': False,
+                   'provider:network_type': 'vlan',
+                   'provider:physical_network': 'physnet1',
+                   'provider:segmentation_id': 100}
+        self.assertFalse(utils.network_needs_lswitch(
+            mock.Mock(), network=network))
+
+    @mock.patch(
+        'neutron.conf.plugins.ml2.drivers.ovn.ovn_conf.'
+        'is_logical_switch_per_vlan_segment_enabled',
+        return_value=True)
+    def test_network_needs_lswitch_enabled_external(self, *_):
+        network = {
+            'id': 'net-1', 'router:external': True,
+            'segments': [
+                {'provider:network_type': 'vlan',
+                 'provider:physical_network': 'physnet1',
+                 'provider:segmentation_id': 100},
+                {'provider:network_type': 'vlan',
+                 'provider:physical_network': 'physnet2',
+                 'provider:segmentation_id': 200}]}
+        self.assertTrue(utils.network_needs_lswitch(
+            mock.Mock(), network=network))
+
+    @mock.patch(
+        'neutron.conf.plugins.ml2.drivers.ovn.ovn_conf.'
+        'is_logical_switch_per_vlan_segment_enabled',
+        return_value=True)
+    @mock.patch('neutron_lib.plugins.directory.get_plugin')
+    def test_network_needs_lswitch_enabled_from_db(
+            self, mock_get_plugin, *_):
+        network = {
+            'id': 'net-1', 'router:external': False,
+            'segments': [
+                {'provider:network_type': 'vlan',
+                 'provider:physical_network': 'physnet1',
+                 'provider:segmentation_id': 100}]}
+        mock_plugin = mock.Mock()
+        mock_plugin.get_network.return_value = network
+        mock_get_plugin.return_value = mock_plugin
+        ctx = mock.Mock()
+        self.assertFalse(utils.network_needs_lswitch(
+            ctx, network_id='net-1'))
+        mock_plugin.get_network.assert_called_once_with(
+            ctx, 'net-1')
+
 
 class TestGateWayChassisValidity(base.BaseTestCase):
 
