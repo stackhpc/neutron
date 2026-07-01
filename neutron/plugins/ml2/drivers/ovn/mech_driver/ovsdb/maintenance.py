@@ -43,6 +43,7 @@ from neutron.conf.agent import ovs_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_hash_ring_db as hash_ring_db
 from neutron.db import ovn_revision_numbers_db as revision_numbers_db
+from neutron.db import segments_db
 from neutron.objects import network as network_obj
 from neutron.objects import ports as ports_obj
 from neutron.objects import pvlan as pvlan_obj
@@ -401,6 +402,59 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         else:
             self._ovn_client.update_subnet(context, sn_db_obj, n_db_obj)
 
+    def _fix_create_update_segment(self, context, row):
+        """Fix create/update inconsistencies for segment logical switches."""
+        # Get the latest version of the segment from Neutron DB
+        segment = segments_db.get_segment_by_id(context, row.resource_uuid)
+        segment_ls_name = utils.ovn_name(row.resource_uuid)
+        ovn_ls = self._nb_idl.get_lswitch(segment_ls_name)
+        if not segment:
+            LOG.warning('Segment %(seg_uuid)s does not exist in Neutron '
+                        'database anymore',
+                        {'seg_uuid': row.resource_uuid})
+            if ovn_ls:
+                self._nb_idl.ls_del(
+                    segment_ls_name).execute(check_error=True)
+            revision_numbers_db.delete_revision(
+                context, row.resource_uuid, row.resource_type)
+            return
+
+        if not ovn_ls:
+            # Logical switch doesn't exist, create it
+            self._ovn_client.create_provnet_port(
+                context, segment['network_id'], segment)
+        else:
+            # Logical switch exists, update it
+            # Get the network from Neutron DB for the update call
+            network = self._ovn_client._plugin.get_network(
+                context, segment['network_id'])
+            # Call update with a list containing only this segment
+            self._ovn_client.update_network_vlan_segments(
+                context, network, [segment])
+
+    def _fix_delete_segment(self, context, row):
+        """Fix delete inconsistencies for segment logical switches."""
+        # Get the logical switch for this segment
+        segment_ls_name = utils.ovn_name(row.resource_uuid)
+        ovn_ls = self._nb_idl.get_lswitch(segment_ls_name)
+
+        if not ovn_ls:
+            # Logical switch doesn't exist, just clean up revision entry
+            revision_numbers_db.delete_revision(
+                context, row.resource_uuid, row.resource_type)
+        else:
+            # Logical switch exists, get segment and delete it
+            segment = segments_db.get_segment_by_id(context, row.resource_uuid)
+            if segment:
+                self._ovn_client.delete_provnet_port(
+                    segment['network_id'], segment)
+            else:
+                # Segment doesn't exist in DB but logical switch does,
+                # force delete the logical switch
+                self._nb_idl.ls_del(segment_ls_name).execute(check_error=True)
+                revision_numbers_db.delete_revision(
+                    context, row.resource_uuid, row.resource_type)
+
     def _log_maintenance_inconsistencies(self, create_update_inconsistencies,
                                          delete_inconsistencies):
         if not CONF.debug:
@@ -460,6 +514,8 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 # resource even when it does not exist in the OVN database.
                 if row.resource_type == ovn_const.TYPE_SUBNETS:
                     self._fix_create_update_subnet(admin_context, row)
+                elif row.resource_type == ovn_const.TYPE_SEGMENTS:
+                    self._fix_create_update_segment(admin_context, row)
                 else:
                     self._fix_create_update(admin_context, row)
             except Exception:
@@ -477,6 +533,8 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 if row.resource_type == ovn_const.TYPE_SUBNETS:
                     self._ovn_client.delete_subnet(admin_context,
                                                    row.resource_uuid)
+                elif row.resource_type == ovn_const.TYPE_SEGMENTS:
+                    self._fix_delete_segment(admin_context, row)
                 elif row.resource_type == ovn_const.TYPE_PORTS:
                     self._ovn_client.delete_port(admin_context,
                                                  row.resource_uuid)

@@ -29,6 +29,7 @@ from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db.models import ovn as ovn_models
 from neutron.db import ovn_revision_numbers_db
+from neutron.db import segments_db
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import maintenance
 from neutron.tests import base
 from neutron.tests.unit.extensions import test_address_group as test_ag
@@ -1009,3 +1010,108 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         pvlan_drv.create_port\
             .assert_called_once_with(mock.ANY, mock.ANY,
                                      fake_port)
+
+    # --- Segment maintenance tests ---
+
+    def _make_fake_segment_row(self, seg_id):
+        """Create a fake revision row for a segment resource."""
+        return mock.Mock(resource_uuid=seg_id,
+                         resource_type=constants.TYPE_SEGMENTS)
+
+    @mock.patch.object(segments_db, 'get_segment_by_id')
+    def test__fix_create_update_segment_create(self, mock_get_seg):
+        """Segment lswitch doesn't exist: calls create_provnet_port."""
+        segment = {'id': 'seg-1', 'network_id': self.net['id'],
+                   'network_type': 'vlan', 'physical_network': 'physnet1',
+                   'segmentation_id': 100}
+        mock_get_seg.return_value = segment
+        self.fake_ovn_client._nb_idl.get_lswitch.return_value = None
+
+        row = self._make_fake_segment_row('seg-1')
+        self.periodic._fix_create_update_segment(self.ctx, row)
+
+        self.fake_ovn_client.create_provnet_port.assert_called_once_with(
+            self.ctx, self.net['id'], segment)
+
+    @mock.patch.object(segments_db, 'get_segment_by_id')
+    def test__fix_create_update_segment_update(self, mock_get_seg):
+        """Segment lswitch exists: calls update_network_vlan_segments."""
+        segment = {'id': 'seg-1', 'network_id': self.net['id'],
+                   'network_type': 'vlan', 'physical_network': 'physnet1',
+                   'segmentation_id': 100}
+        mock_get_seg.return_value = segment
+        fake_ls = mock.Mock(external_ids={
+            constants.OVN_REV_NUM_EXT_ID_KEY: 5})
+        self.fake_ovn_client._nb_idl.get_lswitch.return_value = fake_ls
+        self.fake_ovn_client._plugin.get_network.return_value = self.net
+
+        row = self._make_fake_segment_row('seg-1')
+        self.periodic._fix_create_update_segment(self.ctx, row)
+
+        self.fake_ovn_client.update_network_vlan_segments \
+            .assert_called_once_with(self.ctx, self.net, [segment])
+
+    @mock.patch.object(segments_db, 'get_segment_by_id')
+    def test__fix_create_update_segment_not_found(self, mock_get_seg):
+        """Segment gone from Neutron DB: logs warning, does nothing."""
+        mock_get_seg.return_value = None
+
+        row = self._make_fake_segment_row('seg-gone')
+        self.periodic._fix_create_update_segment(self.ctx, row)
+
+        self.fake_ovn_client.create_provnet_port.assert_not_called()
+        self.fake_ovn_client.update_network_vlan_segments \
+            .assert_not_called()
+
+    @mock.patch.object(segments_db, 'get_segment_by_id')
+    def test__fix_delete_segment_ls_exists(self, mock_get_seg):
+        """Segment lswitch exists + segment in DB: delete_provnet_port."""
+        segment = {'id': 'seg-1', 'network_id': self.net['id'],
+                   'network_type': 'vlan', 'physical_network': 'physnet1',
+                   'segmentation_id': 100}
+        mock_get_seg.return_value = segment
+        fake_ls = mock.Mock()
+        self.fake_ovn_client._nb_idl.get_lswitch.return_value = fake_ls
+
+        row = self._make_fake_segment_row('seg-1')
+        self.periodic._fix_delete_segment(self.ctx, row)
+
+        self.fake_ovn_client.delete_provnet_port.assert_called_once_with(
+            self.net['id'], segment)
+
+    @mock.patch.object(ovn_revision_numbers_db, 'delete_revision')
+    def test__fix_delete_segment_ls_gone(self, mock_del_rev):
+        """Segment lswitch already gone: just cleans up revision row."""
+        self.fake_ovn_client._nb_idl.get_lswitch.return_value = None
+
+        row = self._make_fake_segment_row('seg-gone')
+        self.periodic._fix_delete_segment(self.ctx, row)
+
+        mock_del_rev.assert_called_once_with(
+            self.ctx, 'seg-gone', constants.TYPE_SEGMENTS)
+        self.fake_ovn_client.delete_provnet_port.assert_not_called()
+
+    @mock.patch.object(segments_db, 'get_segment_by_id')
+    def test__fix_delete_segment_ls_exists_segment_gone(self, mock_get_seg):
+        """Segment lswitch exists but segment gone from DB: force delete."""
+        mock_get_seg.return_value = None
+        fake_ls = mock.Mock()
+        self.fake_ovn_client._nb_idl.get_lswitch.return_value = fake_ls
+
+        row = self._make_fake_segment_row('seg-orphan')
+        self.periodic._fix_delete_segment(self.ctx, row)
+
+        self.fake_ovn_client._nb_idl.ls_del.assert_called_once_with(
+            utils.ovn_name('seg-orphan'))
+        self.fake_ovn_client.delete_provnet_port.assert_not_called()
+
+    @mock.patch.object(maintenance.DBInconsistenciesPeriodics,
+                       '_fix_create_update_segment')
+    @mock.patch.object(ovn_revision_numbers_db, 'get_inconsistent_resources')
+    def test_inconsistencies_dispatches_segments(
+            self, mock_get_incon, mock_fix_seg):
+        """Main loop routes TYPE_SEGMENTS to _fix_create_update_segment."""
+        fake_row = mock.Mock(resource_type=constants.TYPE_SEGMENTS)
+        mock_get_incon.return_value = [fake_row]
+        self.periodic.check_for_inconsistencies()
+        mock_fix_seg.assert_called_once_with(mock.ANY, fake_row)
