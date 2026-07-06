@@ -287,7 +287,14 @@ class TestOvsNeutronAgent:
             self.assertNotIn(tag, available_vlan)
 
     def _test_restore_local_vlan_maps(self, tag, segmentation_id='1',
-            tun_ofports=None):
+            tun_ofports=None, no_tun_br=False):
+        if no_tun_br:
+            self.agent.enable_tunneling = False
+            self.agent.tun_br = None
+        else:
+            # _make_agent() leaves enable_tunneling False (tunnel_types=[]);
+            # enable it so the gated get_flood_to_tun_ofports() runs.
+            self.agent.enable_tunneling = True
         tun_ofports = tun_ofports or set()
         port = mock.Mock()
         port.port_name = 'fake_port'
@@ -319,19 +326,25 @@ class TestOvsNeutronAgent:
                       'other_config': local_vlan_map,
                       'tag': tag}]
 
-        with mock.patch.object(self.agent.int_br,
-                               'get_ports_attributes',
-                               side_effect=[get_interfaces,
-                                   get_ports]) as gpa,\
-                mock.patch.object(self.agent.tun_br,
-                                  'get_flood_to_tun_ofports') as gftto:
-            gftto.return_value = tun_ofports
+        if no_tun_br:
+            # enable_tunneling=False: no br-tun to mock.
+            tun_ctx = contextlib.nullcontext()
+            expected_tun_ofports = set()
+        else:
+            tun_ctx = mock.patch.object(self.agent.tun_br,
+                                        'get_flood_to_tun_ofports',
+                                        return_value=tun_ofports)
+            expected_tun_ofports = tun_ofports
+        with tun_ctx, mock.patch.object(self.agent.int_br,
+                                        'get_ports_attributes',
+                                        side_effect=[get_interfaces,
+                                            get_ports]) as gpa:
             self.agent._restore_local_vlan_map()
             expected_hints = {}
             if tag:
                 key = f"{net_uuid}/{segmentation_id}"
                 expected_hints[key] = {'vlan': tag,
-                                       'tun_ofports': tun_ofports}
+                                       'tun_ofports': expected_tun_ofports}
             self.assertEqual(expected_hints, self.agent._local_vlan_hints)
             # make sure invalid and unassigned ports were skipped
             gpa.assert_has_calls([
@@ -353,6 +366,11 @@ class TestOvsNeutronAgent:
 
     def test_restore_local_vlan_map_tun_ofports(self):
         self._test_restore_local_vlan_maps(2, tun_ofports={2, 3})
+
+    def test_restore_local_vlan_map_no_tun_br(self):
+        # Non-tunneling deployment (enable_tunneling=False): tun_br is None,
+        # so the flood-port restore must be skipped instead of crashing.
+        self._test_restore_local_vlan_maps(2, no_tun_br=True)
 
     def test_check_agent_configurations_for_dvr_raises(self):
         self.agent.enable_distributed_routing = True
@@ -411,6 +429,59 @@ class TestOvsNeutronAgent:
 
     def test_port_dead_with_valid_tag(self):
         self._test_port_dead(cur_tag=1)
+
+    def test_port_dead_invalid_ofport_unassigned(self):
+        port = mock.Mock()
+        port.ofport = ovs_lib.UNASSIGNED_OFPORT
+        port.port_name = 'tap1234'
+        with mock.patch.object(self.agent, 'int_br') as int_br:
+            self.agent.port_dead(port)
+        int_br.set_db_attribute.assert_not_called()
+        int_br.drop_port.assert_not_called()
+
+    def test_port_dead_invalid_ofport_negative(self):
+        port = mock.Mock()
+        port.ofport = ovs_lib.INVALID_OFPORT
+        port.port_name = 'tap1234'
+        with mock.patch.object(self.agent, 'int_br') as int_br:
+            self.agent.port_dead(port)
+        int_br.set_db_attribute.assert_not_called()
+        int_br.drop_port.assert_not_called()
+
+    def test_port_alive_invalid_ofport_unassigned(self):
+        port = mock.Mock()
+        port.ofport = ovs_lib.UNASSIGNED_OFPORT
+        port.port_name = 'tap1234'
+        with mock.patch.object(self.agent, 'int_br') as int_br:
+            self.agent.port_alive(port)
+        int_br.db_get_val.assert_not_called()
+        int_br.uninstall_flows.assert_not_called()
+
+    def test_port_alive_invalid_ofport_negative(self):
+        port = mock.Mock()
+        port.ofport = ovs_lib.INVALID_OFPORT
+        port.port_name = 'tap1234'
+        with mock.patch.object(self.agent, 'int_br') as int_br:
+            self.agent.port_alive(port)
+        int_br.db_get_val.assert_not_called()
+        int_br.uninstall_flows.assert_not_called()
+
+    def test_treat_vif_port_invalid_ofport_returns_false(self):
+        for ofport in (ovs_lib.UNASSIGNED_OFPORT, ovs_lib.INVALID_OFPORT, 0):
+            vif_port = mock.Mock()
+            vif_port.ofport = ofport
+            vif_port.vif_id = 'test-port-id'
+            with mock.patch.object(
+                self.agent, 'port_bound'
+            ) as port_bound, mock.patch.object(
+                self.agent, 'port_alive'
+            ) as port_alive:
+                result = self.agent.treat_vif_port(
+                    vif_port, 'port-id', 'net-id', 'vxlan',
+                    None, 100, True, [], 'compute:nova', False)
+            self.assertFalse(result)
+            port_bound.assert_not_called()
+            port_alive.assert_not_called()
 
     def mock_scan_ports(self, vif_port_set=None, registered_ports=None,
                         updated_ports=None, port_tags_dict=None, sync=False):
@@ -1153,7 +1224,7 @@ class TestOvsNeutronAgent:
             "iface-id": "407a79e0-e0be-4b7d-92a6-513b2161011b",
             "vif_mac": "fa:16:3e:68:46:7b",
             "port_name": "qr-407a79e0-e0",
-            "ofport": -1,
+            "ofport": 10,
             "bridge_name": "br-int"})
         with mock.patch.object(
                 self.agent.plugin_rpc, 'update_device_down'

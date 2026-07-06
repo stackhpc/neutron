@@ -1109,7 +1109,11 @@ class FrrFixture(fixtures.Fixture):
 
     FRR_CONF_DIR_BASE = '/etc/frr'
     FRR_STATE_DIR_BASE = '/var/run/frr'
-    FRRINIT = '/usr/lib/frr/frrinit.sh'
+    FRR_LOG_DIR_BASE = '/var/log/frr'
+    FRRINIT_PATHS = ['/usr/lib/frr/frrinit.sh',
+                     '/usr/libexec/frr/frrinit.sh']
+    FRRINIT = next((p for p in FRRINIT_PATHS if os.path.isfile(p)),
+                   FRRINIT_PATHS[0])
 
     DAEMONS_CONF = (
         'zebra=yes\n'
@@ -1149,12 +1153,12 @@ class FrrFixture(fixtures.Fixture):
         self.namespace = namespace
         self._conf_dir = os.path.join(self.FRR_CONF_DIR_BASE, namespace)
         self._state_dir = os.path.join(self.FRR_STATE_DIR_BASE, namespace)
+        self._log_dir = os.path.join(self.FRR_LOG_DIR_BASE, namespace)
 
     def _setUp(self):
-        self.addCleanup(self._stop_frr)
-        self.addCleanup(self._remove_config)
+        self.addCleanup(self._cleanup_frr)
         self._create_config()
-        self._start_frr()
+        self.start_frr()
 
     @staticmethod
     def _write_file(path, content):
@@ -1164,8 +1168,11 @@ class FrrFixture(fixtures.Fixture):
             utils.execute(['cp', tmp.name, path], run_as_root=True)
 
     def _create_config(self):
-        utils.execute(
-            ['mkdir', '-p', self._conf_dir], run_as_root=True)
+        for pathspace_dir in (self._conf_dir, self._log_dir):
+            utils.execute(
+                ['mkdir', '-p', pathspace_dir], run_as_root=True)
+            utils.execute(
+                ['chown', '-R', 'frr:frr', pathspace_dir], run_as_root=True)
 
         self._write_file(
             os.path.join(self._conf_dir, 'daemons'),
@@ -1179,29 +1186,46 @@ class FrrFixture(fixtures.Fixture):
             os.path.join(self._conf_dir, 'frr.conf'),
             self.FRR_CONF % {
                 'hostname': self.namespace,
-                'log_file': '/var/log/frr/%s/frr.log' % self.namespace})
+                'log_file': '%s/frr.log' % self._log_dir})
 
+    def _excute_with_std_discard(self, frr_action):
+        """Redirect stdout/stderr to /dev/null.
+
+        frrinit.sh spawns background daemons (e.g. watchfrr)
+        that inherit the script's stdout/stderr pipes,
+        causing execute() to hang waiting for pipe close.
+        """
         utils.execute(
-            ['chown', '-R', 'frr:frr', self._conf_dir],
+            ['bash', '-c',
+             '%s %s %s > /dev/null 2>&1'
+             % (self.FRRINIT, frr_action,
+                self.namespace)],
             run_as_root=True)
 
-    def _start_frr(self):
+    def start_frr(self):
+        self._excute_with_std_discard('start')
+
+    def stop_frr(self):
         utils.execute(
-            [self.FRRINIT, 'start', self.namespace],
+            [self.FRRINIT, 'stop', self.namespace],
             run_as_root=True)
 
-    def _stop_frr(self):
+    def restart_frr(self):
+        self._excute_with_std_discard('restart')
+
+    def _cleanup_frr(self):
+        # NOTE: frrinit.sh returns 0 when stopping an already-stopped
+        # service, so this is safe even if a test stopped FRR earlier.
+        # However, stop must be called before config directories are
+        # removed.
         try:
-            utils.execute(
-                [self.FRRINIT, 'stop', self.namespace],
-                run_as_root=True)
+            self.stop_frr()
         except RuntimeError:
             LOG.error("Failed to stop FRR in namespace %s", self.namespace)
 
-    def _remove_config(self):
-        for dir in (self._conf_dir, self._state_dir):
+        for pathspace_dir in (self._conf_dir, self._state_dir):
             try:
                 utils.execute(
-                    ['rm', '-rf', dir], run_as_root=True)
+                    ['rm', '-rf', pathspace_dir], run_as_root=True)
             except RuntimeError:
-                LOG.error("Failed to remove %s", dir)
+                LOG.error("Failed to remove %s", pathspace_dir)

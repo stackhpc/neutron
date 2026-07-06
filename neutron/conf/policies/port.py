@@ -11,6 +11,7 @@
 #  under the License.
 
 from neutron_lib import policy as neutron_policy
+from neutron_lib.policy import rules as lib_rules
 from oslo_log import versionutils
 from oslo_policy import policy
 
@@ -70,8 +71,10 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_PROJECT_MEMBER,
-            base.SERVICE),
+            lib_rules.ADMIN_OR_SERVICE,
+            base.NET_OWNER_MEMBER,
+            'rule:shared',
+        ),
         scope_types=['project'],
         description='Create a port',
         operations=ACTION_POST,
@@ -84,8 +87,8 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port:device_id',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_PROJECT_MEMBER,
-            base.SERVICE),
+            lib_rules.ADMIN_OR_PROJECT_MEMBER,
+            lib_rules.SERVICE),
         scope_types=['project'],
         description='Specify ``device_id`` attribute when creating a port',
         operations=ACTION_POST,
@@ -99,7 +102,7 @@ rules = [
         name='create_port:device_owner',
         check_str=neutron_policy.policy_or(
             'not rule:network_device',
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER
         ),
         scope_types=['project'],
@@ -117,7 +120,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port:mac_address',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER),
         scope_types=['project'],
         description='Specify ``mac_address`` attribute when creating a port',
@@ -133,7 +136,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port:fixed_ips',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER,
             'rule:shared'),
         scope_types=['project'],
@@ -151,7 +154,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port:fixed_ips:ip_address',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER),
         scope_types=['project'],
         description='Specify IP address in ``fixed_ips`` when creating a port',
@@ -167,7 +170,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port:fixed_ips:subnet_id',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER,
             'rule:shared'),
         scope_types=['project'],
@@ -185,7 +188,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port:port_security_enabled',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER),
         scope_types=['project'],
         description=(
@@ -203,7 +206,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='create_port:binding:host_id',
-        check_str=base.ADMIN_OR_SERVICE,
+        check_str=lib_rules.ADMIN_OR_SERVICE,
         scope_types=['project'],
         description=(
             'Specify ``binding:host_id`` '
@@ -218,7 +221,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='create_port:binding:profile',
-        check_str=base.SERVICE,
+        check_str=lib_rules.SERVICE,
         scope_types=['project'],
         description=(
             'Specify ``binding:profile`` attribute '
@@ -234,8 +237,8 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port:binding:vnic_type',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_PROJECT_MEMBER,
-            base.SERVICE),
+            lib_rules.ADMIN_OR_PROJECT_MEMBER,
+            lib_rules.SERVICE),
         scope_types=['project'],
         description=(
             'Specify ``binding:vnic_type`` '
@@ -252,7 +255,7 @@ rules = [
         name='create_port:allowed_address_pairs',
         check_str=neutron_policy.policy_or(
             base.ADMIN_OR_NET_OWNER_MEMBER,
-            base.SERVICE),
+            lib_rules.SERVICE),
         scope_types=['project'],
         description=(
             'Specify ``allowed_address_pairs`` '
@@ -269,7 +272,7 @@ rules = [
         name='create_port:allowed_address_pairs:mac_address',
         check_str=neutron_policy.policy_or(
             base.ADMIN_OR_NET_OWNER_MEMBER,
-            base.SERVICE),
+            lib_rules.SERVICE),
         scope_types=['project'],
         description=(
             'Specify ``mac_address` of `allowed_address_pairs`` '
@@ -286,7 +289,7 @@ rules = [
         name='create_port:allowed_address_pairs:ip_address',
         check_str=neutron_policy.policy_or(
             base.ADMIN_OR_NET_OWNER_MEMBER,
-            base.SERVICE),
+            lib_rules.SERVICE),
         scope_types=['project'],
         description=(
             'Specify ``ip_address`` of ``allowed_address_pairs`` '
@@ -301,7 +304,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='create_port:hints',
-        check_str=base.ADMIN,
+        check_str=lib_rules.ADMIN,
         scope_types=['project'],
         description=(
             'Specify ``hints`` attribute when creating a port'
@@ -310,7 +313,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='create_port:trusted',
-        check_str=base.ADMIN,
+        check_str=lib_rules.ADMIN,
         scope_types=['project'],
         description=(
             'Specify ``trusted`` attribute when creating a port'
@@ -320,7 +323,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='create_port:tags',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_PROJECT_MEMBER,
+            lib_rules.ADMIN_OR_PROJECT_MEMBER,
             neutron_policy.RULE_ADVSVC
         ),
         scope_types=['project'],
@@ -329,7 +332,7 @@ rules = [
         deprecated_rule=policy.DeprecatedRule(
             name='create_ports_tags',
             check_str=neutron_policy.policy_or(
-                base.ADMIN_OR_PROJECT_MEMBER,
+                lib_rules.ADMIN_OR_PROJECT_MEMBER,
                 neutron_policy.RULE_ADVSVC
             ),
             deprecated_reason="Name of the rule is changed.",
@@ -339,9 +342,9 @@ rules = [
     policy.DocumentedRuleDefault(
         name='get_port',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_READER,
-            base.PROJECT_READER
+            lib_rules.PROJECT_READER
         ),
         scope_types=['project'],
         description='Get a port',
@@ -356,7 +359,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='get_port:binding:vif_type',
-        check_str=base.ADMIN_OR_SERVICE,
+        check_str=lib_rules.ADMIN_OR_SERVICE,
         scope_types=['project'],
         description='Get ``binding:vif_type`` attribute of a port',
         operations=ACTION_GET,
@@ -368,7 +371,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='get_port:binding:vif_details',
-        check_str=base.ADMIN_OR_SERVICE,
+        check_str=lib_rules.ADMIN_OR_SERVICE,
         scope_types=['project'],
         description='Get ``binding:vif_details`` attribute of a port',
         operations=ACTION_GET,
@@ -380,7 +383,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='get_port:binding:host_id',
-        check_str=base.ADMIN_OR_SERVICE,
+        check_str=lib_rules.ADMIN_OR_SERVICE,
         scope_types=['project'],
         description='Get ``binding:host_id`` attribute of a port',
         operations=ACTION_GET,
@@ -392,7 +395,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='get_port:binding:profile',
-        check_str=base.ADMIN_OR_SERVICE,
+        check_str=lib_rules.ADMIN_OR_SERVICE,
         scope_types=['project'],
         description='Get ``binding:profile`` attribute of a port',
         operations=ACTION_GET,
@@ -404,7 +407,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='get_port:resource_request',
-        check_str=base.ADMIN,
+        check_str=lib_rules.ADMIN,
         scope_types=['project'],
         description='Get ``resource_request`` attribute of a port',
         operations=ACTION_GET,
@@ -416,14 +419,14 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='get_port:hints',
-        check_str=base.ADMIN,
+        check_str=lib_rules.ADMIN,
         scope_types=['project'],
         description='Get ``hints`` attribute of a port',
         operations=ACTION_GET,
     ),
     policy.DocumentedRuleDefault(
         name='get_port:trusted',
-        check_str=base.ADMIN,
+        check_str=lib_rules.ADMIN,
         scope_types=['project'],
         description='Get ``trusted`` attribute of a port',
         operations=ACTION_GET,
@@ -433,7 +436,7 @@ rules = [
         check_str=neutron_policy.policy_or(
             neutron_policy.RULE_ADVSVC,
             base.ADMIN_OR_NET_OWNER_READER,
-            base.PROJECT_READER
+            lib_rules.PROJECT_READER
         ),
         scope_types=['project'],
         description='Get the port tags',
@@ -443,7 +446,7 @@ rules = [
             check_str=neutron_policy.policy_or(
                 neutron_policy.RULE_ADVSVC,
                 base.ADMIN_OR_NET_OWNER_READER,
-                base.PROJECT_READER
+                lib_rules.PROJECT_READER
             ),
             deprecated_reason="Name of the rule is changed.",
             deprecated_since="2025.1")
@@ -454,8 +457,8 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
-            base.PROJECT_MEMBER,
+            lib_rules.ADMIN_OR_SERVICE,
+            lib_rules.PROJECT_MEMBER,
         ),
         scope_types=['project'],
         description='Update a port',
@@ -471,8 +474,8 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:device_id',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_PROJECT_MEMBER,
-            base.SERVICE),
+            lib_rules.ADMIN_OR_PROJECT_MEMBER,
+            lib_rules.SERVICE),
         scope_types=['project'],
         description='Update ``device_id`` attribute of a port',
         operations=ACTION_PUT,
@@ -486,7 +489,7 @@ rules = [
         name='update_port:device_owner',
         check_str=neutron_policy.policy_or(
             'not rule:network_device',
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER,
         ),
         scope_types=['project'],
@@ -504,7 +507,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:mac_address',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MANAGER,
         ),
         scope_types=['project'],
@@ -521,7 +524,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:fixed_ips',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER
         ),
         scope_types=['project'],
@@ -538,7 +541,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:fixed_ips:ip_address',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER
         ),
         scope_types=['project'],
@@ -558,7 +561,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:fixed_ips:subnet_id',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER,
             'rule:shared'
         ),
@@ -580,7 +583,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:port_security_enabled',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER
         ),
         scope_types=['project'],
@@ -596,7 +599,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='update_port:binding:host_id',
-        check_str=base.ADMIN_OR_SERVICE,
+        check_str=lib_rules.ADMIN_OR_SERVICE,
         scope_types=['project'],
         description='Update ``binding:host_id`` attribute of a port',
         operations=ACTION_PUT,
@@ -608,7 +611,7 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='update_port:binding:profile',
-        check_str=base.SERVICE,
+        check_str=lib_rules.SERVICE,
         scope_types=['project'],
         description='Update ``binding:profile`` attribute of a port',
         operations=ACTION_PUT,
@@ -621,8 +624,8 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:binding:vnic_type',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
-            base.PROJECT_MEMBER,
+            lib_rules.ADMIN_OR_SERVICE,
+            lib_rules.PROJECT_MEMBER,
         ),
         scope_types=['project'],
         description='Update ``binding:vnic_type`` attribute of a port',
@@ -639,7 +642,7 @@ rules = [
         name='update_port:allowed_address_pairs',
         check_str=neutron_policy.policy_or(
             base.ADMIN_OR_NET_OWNER_MEMBER,
-            base.SERVICE),
+            lib_rules.SERVICE),
         scope_types=['project'],
         description='Update ``allowed_address_pairs`` attribute of a port',
         operations=ACTION_PUT,
@@ -653,7 +656,7 @@ rules = [
         name='update_port:allowed_address_pairs:mac_address',
         check_str=neutron_policy.policy_or(
             base.ADMIN_OR_NET_OWNER_MEMBER,
-            base.SERVICE),
+            lib_rules.SERVICE),
         scope_types=['project'],
         description=(
             'Update ``mac_address`` of ``allowed_address_pairs`` '
@@ -670,7 +673,7 @@ rules = [
         name='update_port:allowed_address_pairs:ip_address',
         check_str=neutron_policy.policy_or(
             base.ADMIN_OR_NET_OWNER_MEMBER,
-            base.SERVICE),
+            lib_rules.SERVICE),
         scope_types=['project'],
         description=(
             'Update ``ip_address`` of ``allowed_address_pairs`` '
@@ -686,7 +689,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:data_plane_status',
         check_str=neutron_policy.policy_or(
-            base.ADMIN,
+            lib_rules.ADMIN,
             'role:data_plane_integrator'),
         scope_types=['project'],
         description='Update ``data_plane_status`` attribute of a port',
@@ -699,14 +702,14 @@ rules = [
     ),
     policy.DocumentedRuleDefault(
         name='update_port:hints',
-        check_str=base.ADMIN,
+        check_str=lib_rules.ADMIN,
         scope_types=['project'],
         description='Update ``hints`` attribute of a port',
         operations=ACTION_PUT,
     ),
     policy.DocumentedRuleDefault(
         name='update_port:trusted',
-        check_str=base.ADMIN,
+        check_str=lib_rules.ADMIN,
         scope_types=['project'],
         description='Update ``trusted`` attribute of a port',
         operations=ACTION_PUT,
@@ -714,7 +717,7 @@ rules = [
     policy.DocumentedRuleDefault(
         name='update_port:tags',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_PROJECT_MEMBER,
+            lib_rules.ADMIN_OR_PROJECT_MEMBER,
             neutron_policy.RULE_ADVSVC
         ),
         scope_types=['project'],
@@ -723,7 +726,7 @@ rules = [
         deprecated_rule=policy.DeprecatedRule(
             name='update_ports_tags',
             check_str=neutron_policy.policy_or(
-                base.ADMIN_OR_PROJECT_MEMBER,
+                lib_rules.ADMIN_OR_PROJECT_MEMBER,
                 neutron_policy.RULE_ADVSVC
             ),
             deprecated_reason="Name of the rule is changed.",
@@ -733,9 +736,9 @@ rules = [
     policy.DocumentedRuleDefault(
         name='delete_port',
         check_str=neutron_policy.policy_or(
-            base.ADMIN_OR_SERVICE,
+            lib_rules.ADMIN_OR_SERVICE,
             base.NET_OWNER_MEMBER,
-            base.PROJECT_MEMBER,
+            lib_rules.PROJECT_MEMBER,
         ),
         scope_types=['project'],
         description='Delete a port',
@@ -752,7 +755,7 @@ rules = [
         name='delete_port:tags',
         check_str=neutron_policy.policy_or(
             neutron_policy.RULE_ADVSVC,
-            base.PROJECT_MEMBER,
+            lib_rules.PROJECT_MEMBER,
             base.ADMIN_OR_NET_OWNER_MEMBER
         ),
         scope_types=['project'],
@@ -762,7 +765,7 @@ rules = [
             name='delete_ports_tags',
             check_str=neutron_policy.policy_or(
                 neutron_policy.RULE_ADVSVC,
-                base.PROJECT_MEMBER,
+                lib_rules.PROJECT_MEMBER,
                 base.ADMIN_OR_NET_OWNER_MEMBER
             ),
             deprecated_reason="Name of the rule is changed.",

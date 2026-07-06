@@ -16,7 +16,6 @@
         CIRROS_VERSION: 0.6.3
         DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
         DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
-        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
       devstack_services:
@@ -108,12 +107,6 @@
         br-ex-tcpdump: true
         br-int-flows: true
 
-# TODO(ralonsoh): remove this duplicated definition when "devstack",
-# "tempest" and "nova" adopt the new name.
-- job:
-    name: neutron-tempest-dvr
-    parent: neutron-ovs-tempest-dvr
-
 - job:
     name: neutron-ovs-tempest-iptables_hybrid
     parent: neutron-ovs-tempest-base
@@ -162,12 +155,6 @@
               image_is_advanced: true
               available_type_drivers: flat,geneve,vlan,gre,local,vxlan
 
-# TODO(ralonsoh): remove this duplicated definition when "nova" adopts the
-# new name.
-- job:
-    name: neutron-tempest-iptables_hybrid
-    parent: neutron-ovs-tempest-iptables_hybrid
-
 - job:
     name: neutron-ovn-tempest-mariadb-full
     parent: tempest-integrated-networking
@@ -182,7 +169,6 @@
         CIRROS_VERSION: 0.6.3
         DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
         DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
-        NEUTRON_DEPLOY_MOD_WSGI: true
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
@@ -309,7 +295,6 @@
         CIRROS_VERSION: 0.6.3
         DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
         DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
-        NEUTRON_DEPLOY_MOD_WSGI: true
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
@@ -394,7 +379,6 @@
         CIRROS_VERSION: 0.6.3
         DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
         DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
-        NEUTRON_DEPLOY_MOD_WSGI: true
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
@@ -504,7 +488,6 @@
         # sources, new job, inheriting from this one, should be created and
         # that option should be overwritten there.
         OVN_BUILD_FROM_SOURCE: False
-        NEUTRON_DEPLOY_MOD_WSGI: true
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron
       zuul_copy_output:
@@ -696,14 +679,11 @@
         NOVNC_FROM_PACKAGE: false
 
 - job:
-    name: neutron-ovn-tempest-ovs-master-centos-9-stream
-    description: Job testing for devstack/tempest testing Neutron with ovn driver and OVN master branch and CentOS 9-Stream
+    name: neutron-ovn-tempest-ovs-master-centos-stream
+    description: Job testing for devstack/tempest testing Neutron with ovn driver and OVN master branch and CentOS Stream latest
     parent: neutron-ovn-tempest-ovs-master
-    nodeset: devstack-single-node-centos-9-stream
+    nodeset: devstack-single-node-centos-10-stream
     vars:
-      devstack_localrc:
-        # NOTE(ykarel) remove python3 override with 10-stream switch
-        PYTHON3_VERSION: 3.12
       zuul_copy_output:
         '{{ devstack_base_dir }}/data/ovs': 'logs'
         '{{ devstack_base_dir }}/data/ovn': 'logs'
@@ -713,9 +693,9 @@
 - job:
     name: neutron-ovs-tempest-fips
     parent: neutron-ovs-tempest-base
-    nodeset: devstack-single-node-centos-9-stream
+    nodeset: devstack-single-node-centos-10-stream
     description: |
-      Scenario testing for a FIPS enabled Centos 9 system
+      Scenario testing for a FIPS enabled Centos 10 system
     pre-run: playbooks/enable-fips.yaml
     vars:
       nslookup_target: 'opendev.org'
@@ -723,9 +703,6 @@
       devstack_services:
         br-ex-tcpdump: true
         br-int-flows: true
-      devstack_localrc:
-        # NOTE(ykarel) remove python3 override with 10-stream switch
-        PYTHON3_VERSION: 3.12
       devstack_local_conf:
         test-config:
           "$TEMPEST_CONFIG":
@@ -735,16 +712,13 @@
 - job:
     name: neutron-ovn-tempest-ovs-release-fips
     parent: neutron-ovn-tempest-ovs-release
-    nodeset: devstack-single-node-centos-9-stream
+    nodeset: devstack-single-node-centos-10-stream
     description: |
-      Scenario testing for a FIPS enabled Centos 9 system
+      Scenario testing for a FIPS enabled Centos 10 system
     pre-run: playbooks/enable-fips.yaml
     vars:
       nslookup_target: 'opendev.org'
       configure_swap_size: 4096
-      devstack_localrc:
-        # NOTE(ykarel) remove python3 override with 10-stream switch
-        PYTHON3_VERSION: 3.12
       devstack_local_conf:
         test-config:
           "$TEMPEST_CONFIG":
@@ -764,7 +738,6 @@
         CIRROS_VERSION: 0.6.3
         DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
         DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
-        NEUTRON_DEPLOY_MOD_WSGI: true
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git
@@ -834,7 +807,6 @@
         CIRROS_VERSION: 0.6.3
         DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
         DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
-        NEUTRON_DEPLOY_MOD_WSGI: true
         Q_ML2_PLUGIN_MECHANISM_DRIVERS: ovn,logger
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron.git

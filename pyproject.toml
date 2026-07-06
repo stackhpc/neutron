@@ -156,6 +156,7 @@ qos = "neutron.agent.l2.extensions.qos:QosAgentExtension"
 fdb = "neutron.agent.l2.extensions.fdb_population:FdbPopulationAgentExtension"
 log = "neutron.services.logapi.agent.log_extension:LoggingExtension"
 dhcp = "neutron.agent.l2.extensions.dhcp.extension:DHCPAgentExtension"
+dns_forwarder = "neutron.agent.l2.extensions.dns_forwarder:DNSForwarderAgentExtension"
 local_ip = "neutron.agent.l2.extensions.local_ip:LocalIPAgentExtension"
 metadata_path = "neutron.agent.l2.extensions.metadata.metadata_path:MetadataPathAgentExtension"
 
@@ -304,7 +305,6 @@ neutron = "neutron.plugins.ml2.drivers.ovn.db_migration:migrate_neutron_database
 [project.scripts]
 neutron-db-manage = "neutron.db.migration.cli:main"
 neutron-dhcp-agent = "neutron.cmd.agents.dhcp:main"
-neutron-keepalived-state-change = "neutron.cmd.keepalived_state_change:main"
 neutron-ipset-cleanup = "neutron.cmd.ipset_cleanup:main"
 neutron-l3-agent = "neutron.cmd.agents.l3:main"
 neutron-macvtap-agent = "neutron.cmd.plugins.macvtap_neutron_agent:main"
@@ -330,6 +330,11 @@ neutron-sanitize-port-binding-profile-allocation = "neutron.cmd.sanitize_port_bi
 neutron-sanitize-port-mac-addresses = "neutron.cmd.sanitize_port_mac_addresses:main"
 neutron-remove-duplicated-port-bindings = "neutron.cmd.remove_duplicated_port_bindings:main"
 ml2ovn-trace = "neutron.cmd.ovn.ml2ovn_trace:main"
+
+[tool.setuptools]
+script-files = [
+    "bin/neutron-keepalived-state-change",
+]
 
 [tool.setuptools.packages.find]
 include = ["neutron*"]

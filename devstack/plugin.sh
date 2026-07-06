@@ -19,8 +19,10 @@ source $LIBDIR/tag_ports_during_bulk_creation
 source $LIBDIR/octavia
 source $LIBDIR/loki
 source $LIBDIR/local_ip
+source $LIBDIR/pvlan
 source $LIBDIR/port_trusted_vif
 source $LIBDIR/frr
+source $LIBDIR/dns_forwarder_ovs_ext
 
 # source the OVS/OVN compilation helper methods
 source $TOP_DIR/lib/neutron_plugins/ovs_source
@@ -72,6 +74,9 @@ if [[ "$1" == "stack" ]]; then
             if is_service_enabled neutron-segments; then
                 configure_segments_extension
             fi
+            if is_service_enabled neutron-pvlan; then
+                configure_pvlan
+            fi
             if is_service_enabled neutron-network-segment-range; then
                 configure_network_segment_range
             fi
@@ -83,6 +88,11 @@ if [[ "$1" == "stack" ]]; then
             if is_service_enabled q-metadata-path neutron-metadata-path; then
                 if [ $Q_AGENT = openvswitch ]; then
                     configure_ovs_metadata_path
+                fi
+            fi
+            if is_service_enabled q-dns-forwarder neutron-dns-forwarder; then
+                if [ $Q_AGENT = openvswitch ]; then
+                    configure_ovs_dns_forwarder
                 fi
             fi
             if is_service_enabled neutron-local-ip; then

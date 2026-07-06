@@ -103,6 +103,12 @@ GW_INFO = collections.namedtuple('GW_INFO', ['network_id', 'subnet_id',
 
 class OVNClient:
 
+    _LRP_MANAGED_OPTIONS = (
+        ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH,
+        ovn_const.OVN_ROUTER_PORT_GW_MTU_OPTION,
+        ovn_const.LRP_OPTIONS_REDIRECT_TYPE,
+    )
+
     def __init__(self, nb_idl, sb_idl):
         self._nb_idl = nb_idl
         self._sb_idl = sb_idl
@@ -320,16 +326,13 @@ class OVNClient:
             # NOTE(ralonsoh): OVN subports don't have host ID information.
             return
 
-        # NOTE(ralonsoh): instead of checking first the presence of the
-        # `Logical_Switch_Port`, the `lsp_get_up` could implement a `if_exists`
-        # check. This check is better than catching the `RowNotFound` exception
-        # in the middle of a transaction.
-        if not self._nb_idl.lookup('Logical_Switch_Port', db_port.id,
-                                   default=None):
+        lsp = self._nb_idl.lookup('Logical_Switch_Port', db_port.id,
+                                  default=None)
+        if not lsp:
             return
 
-        port_up = self._nb_idl.lsp_get_up(db_port.id).execute(
-            check_error=True)
+        # 'up' is optional in the OVN schema (list of 0 or 1 booleans).
+        port_up = next(iter(lsp.up), False)
         if up:
             if not port_up:
                 LOG.warning('Logical_Switch_Port %s host information not '
@@ -632,7 +635,7 @@ class OVNClient:
                 kwargs['ha_chassis_group'], _ = (
                     utils.sync_ha_chassis_group_network(
                         context, self._nb_idl, self._sb_idl, port['id'],
-                        port['network_id'], txn))
+                        port['network_id'], None))
 
             # NOTE(mjozefcz): Do not set addresses if the port is not
             # bound, has no device_owner and it is OVN LB VIP port.
@@ -770,7 +773,7 @@ class OVNClient:
                 columns_dict['ha_chassis_group'], _ = (
                     utils.sync_ha_chassis_group_network(
                         admin_context, self._nb_idl, self._sb_idl, port['id'],
-                        port['network_id'], txn))
+                        port['network_id'], None))
             else:
                 # Clear the ha_chassis_group field
                 columns_dict['ha_chassis_group'] = []
@@ -884,10 +887,13 @@ class OVNClient:
             if port_object and self.is_dns_required_for_port(port_object):
                 self.add_txns_to_remove_port_dns_records(txn, port_object)
 
-            # Check if the port being deleted is a virtual parent
+            # Check if the port being deleted is a virtual parent.
+            # Use lookup() instead of ls_get().execute() to avoid creating
+            # a nested read transaction; lookup() is a direct in-memory
+            # IDL access.
             if ovn_port.type != ovn_const.LSP_TYPE_VIRTUAL:
-                ls = self._nb_idl.ls_get(ovn_network_name).execute(
-                    check_error=True)
+                ls = self._nb_idl.lookup('Logical_Switch',
+                                         ovn_network_name)
                 cmd = self._nb_idl.unset_lswitch_port_to_virtual_type
                 for lsp in ls.ports:
                     if lsp.type != ovn_const.LSP_TYPE_VIRTUAL:
@@ -1036,7 +1042,7 @@ class OVNClient:
         ls = self._nb_idl.lookup(
             'Logical_Switch', utils.ovn_name(port['network_id']))
         for lb in ls.load_balancer:
-            for ext_id in lb.external_ids.keys():
+            for ext_id in lb.external_ids:
                 if ext_id.startswith(ovn_const.LB_EXT_IDS_POOL_PREFIX):
                     members = lb.external_ids[ext_id]
                     if not members:
@@ -1077,7 +1083,7 @@ class OVNClient:
                 continue
 
             # Find out IP addresses and subnets of configured members.
-            for ext_id in lb.external_ids.keys():
+            for ext_id in lb.external_ids:
                 if not ext_id.startswith(ovn_const.LB_EXT_IDS_POOL_PREFIX):
                     continue
                 members = lb.external_ids[ext_id]
@@ -1272,7 +1278,10 @@ class OVNClient:
                 with excutils.save_and_reraise_exception():
                     LOG.error('Unable to delete floating ip in gateway '
                               'router. Error: %s', e)
-        db_rev.delete_revision(context, fip_id, ovn_const.TYPE_FLOATINGIPS)
+            db_rev.delete_revision(context, fip_id, ovn_const.TYPE_FLOATINGIPS)
+        else:
+            LOG.warning('Unable to delete floating ip in gateway router. '
+                        'Floating ip %s not found.', fip_id)
 
     def disassociate_floatingip(self, context, floatingip, router_id):
         lrouter = utils.ovn_name(router_id)
@@ -1416,19 +1425,24 @@ class OVNClient:
         return added_ports
 
     def _check_external_ips_changed(self, context, ovn_snats,
-                                    ovn_static_routes, router):
+                                    ovn_static_routes, router,
+                                    ovn_gw_lrps):
         admin_context = context.elevated()
         ovn_gw_subnets = [
             getattr(route, 'external_ids', {}).get(
                 ovn_const.OVN_SUBNET_EXT_ID_KEY) for route in
             ovn_static_routes]
 
+        lrp_by_name = {lrp.name: lrp for lrp in ovn_gw_lrps}
+
         for gw_port in self._get_router_gw_ports(admin_context, router['id']):
             gw_infos = self._get_gw_info(admin_context, gw_port)
             if not gw_infos:
-                # The router is attached to a external network without a subnet
-                lrp = self._nb_idl.get_lrouter_port(
-                    utils.ovn_lrouter_port_name(gw_port['id']))
+                # The router is attached to an external network without
+                # a subnet; use the already-fetched LRP to check if the
+                # network name has changed.
+                lrp_name = utils.ovn_lrouter_port_name(gw_port['id'])
+                lrp = lrp_by_name.get(lrp_name)
                 if not lrp:
                     continue
                 lrp_ext_ids = getattr(lrp, 'external_ids', {})
@@ -1619,7 +1633,8 @@ class OVNClient:
                     ]
                     if (len(gateway_new) != len(ovn_router_ext_gw_lrps) or
                         self._check_external_ips_changed(
-                            context, ovn_snats, gateway_old, new_router)):
+                            context, ovn_snats, gateway_old, new_router,
+                            ovn_router_ext_gw_lrps)):
                         txn.add(self._nb_idl.delete_lrouter_ext_gw(
                             router_name))
                         if router_object:
@@ -1790,7 +1805,17 @@ class OVNClient:
         return reside_redir_ch
 
     def _gen_router_port_options(self, context, port):
-        options = {}
+        lrp_name = utils.ovn_lrouter_port_name(port['id'])
+        try:
+            options = dict(self._nb_idl.db_get(
+                'Logical_Router_Port', lrp_name,
+                'options').execute(check_error=True, log_errors=False))
+        except idlutils.RowNotFound:
+            options = {}
+
+        for key in self._LRP_MANAGED_OPTIONS:
+            options.pop(key, None)
+
         admin_context = context.elevated()
         ls_name = utils.ovn_name(port['network_id'])
         ls = self._nb_idl.ls_get(ls_name).execute(check_error=True)
@@ -2159,6 +2184,7 @@ class OVNClient:
     def create_provnet_port(self, context, network_id, segment, txn=None,
                             network=None):
         tag = segment.get(segment_def.SEGMENTATION_ID, [])
+        tag = [] if tag is None else tag
         physnet = segment.get(segment_def.PHYSICAL_NETWORK)
         fdb_enabled = ('true' if ovn_conf.is_learn_fdb_enabled()
                        else 'false')
@@ -2185,7 +2211,6 @@ class OVNClient:
             addresses=[ovn_const.UNKNOWN_ADDR],
             external_ids={ovn_const.OVN_PHYSNET_EXT_ID_KEY: physnet},
             type=ovn_const.LSP_TYPE_LOCALNET,
-            tag=tag,
             tag_request=tag,
             options=options)
         self._transaction([cmd], txn=txn)
@@ -2395,7 +2420,8 @@ class OVNClient:
                 tag = [] if tag is None else tag
                 lport_name = utils.ovn_provnet_port_name(segment['id'])
                 txn.add(self._nb_idl.set_lswitch_port(lport_name=lport_name,
-                                                      tag=tag, if_exists=True))
+                                                      tag_request=tag,
+                                                      if_exists=True))
 
             self._qos_driver.update_network(context, txn, network,
                                             original_network)
@@ -2694,7 +2720,7 @@ class OVNClient:
         if 'options' in new_options and 'options' in original_options:
             orig_dns_server = original_options['options'].get('dns_server')
             new_dns_server = new_options['options'].get('dns_server')
-            dns_server_changed = (orig_dns_server != new_dns_server)
+            dns_server_changed = orig_dns_server != new_dns_server
         else:
             dns_server_changed = False
 

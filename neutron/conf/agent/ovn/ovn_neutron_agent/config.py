@@ -18,6 +18,7 @@ import shlex
 
 from neutron.conf.agent import agent_extensions_manager as ext_manager_conf
 from neutron.conf.agent.metadata import config as meta_conf
+from neutron.conf.agent.ovn.evpn import config as evpn_conf
 from neutron.conf.agent import ovsdb_api
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from oslo_config import cfg
@@ -46,7 +47,9 @@ def list_ovn_neutron_agent_opts():
                                 ovsdb_api.API_OPTS,
                                 )
          ),
-        (meta_conf.RATE_LIMITING_GROUP, meta_conf.METADATA_RATE_LIMITING_OPTS)
+        (meta_conf.RATE_LIMITING_GROUP, meta_conf.METADATA_RATE_LIMITING_OPTS),
+        ('ovn_evpn', evpn_conf.EVPN_OPTS),
+        (meta_conf.HAPROXY_GROUP, meta_conf.METADATA_HAPROXY_OPTS),
     ]
 
 
@@ -54,6 +57,7 @@ def register_opts():
     cfg.CONF.register_opts(ovn_conf.ovn_opts, group='ovn')
     cfg.CONF.register_opts(OVS_OPTS, group='ovs')
     cfg.CONF.register_opts(ovsdb_api.API_OPTS, group='ovs')
+    evpn_conf.register_opts()
 
 
 def get_root_helper(conf):

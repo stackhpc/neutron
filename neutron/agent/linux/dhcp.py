@@ -714,9 +714,9 @@ class Dnsmasq(DhcpLocalProcess):
             else:
                 merged.append(fip)
 
-        for subnet_id in by_subnet:
+        for subnet_id, ips in by_subnet.items():
             addr6_list = ','.join([self._format_address_for_dnsmasq(ip)
-                                   for ip in by_subnet[subnet_id]])
+                                   for ip in ips])
             merged.append(NewFip(subnet_id=subnet_id,
                                  ip_address=addr6_list))
 
@@ -1754,8 +1754,8 @@ class DeviceManager:
         return dhcp_port
 
     def _update_dhcp_port(self, network, port):
-        for index in range(len(network.ports)):
-            if network.ports[index].id == port.id:
+        for index, n_port in enumerate(network.ports):
+            if n_port.id == port.id:
                 network.ports[index] = port
                 break
         else:

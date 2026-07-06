@@ -162,7 +162,7 @@ class NeutronDbPluginV2TestCase(testlib_api.WebTestCase):
                  for key, default in (service_plugins or {}).items()]
             )
 
-        cfg.CONF.set_override('base_mac', "12:34:56:78:00:00")
+        cfg.CONF.set_override('base_mac', "12:34:56:00:00:00")
         cfg.CONF.set_override('max_dns_nameservers', 2)
         cfg.CONF.set_override('max_subnet_host_routes', 2)
         resource_registry.ResourceRegistry._instance = None
@@ -3409,7 +3409,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
             req = self.new_create_request('subnets', data,
                                           self.fmt, context=ctx)
             res = req.get_response(self.api)
-            self._check_http_response(res, webob.exc.HTTPNotFound.code)
+            self._check_http_response(res, webob.exc.HTTPForbidden.code)
 
     def test_create_two_subnets(self):
         gateway_ips = ['10.0.0.1', '10.0.1.1']
@@ -3868,7 +3868,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
             self._create_subnet(self.fmt,
                                 network['network']['id'],
                                 '10.0.2.0/24',
-                                webob.exc.HTTPNotFound.code,
+                                webob.exc.HTTPForbidden.code,
                                 ip_version=constants.IP_VERSION_4,
                                 project_id='bad_project_id',
                                 gateway_ip='10.0.2.1',
@@ -5510,7 +5510,7 @@ class TestSubnetsV2(NeutronDbPluginV2TestCase):
                                 gateway_ip='10.0.1.1',
                                 cidr='10.0.1.11/24') as v2:
                 subnets = (v1, v2)
-                query_params = ('cidr=10.0.0.11/24&cidr=10.0.1.11/24')
+                query_params = 'cidr=10.0.0.11/24&cidr=10.0.1.11/24'
                 self._test_list_resources('subnet', subnets,
                                           query_params=query_params)
 
@@ -7414,7 +7414,7 @@ class TestNetworks(testlib_api.SqlTestCase):
 
         network['network']['shared'] = False
 
-        if (expected_exception):
+        if expected_exception:
             with testlib_api.ExpectedException(expected_exception):
                 plugin.update_network(ctx, net_id, network)
         else:

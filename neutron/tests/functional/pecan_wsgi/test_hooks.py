@@ -27,24 +27,9 @@ from oslo_serialization import jsonutils
 from neutron.db.quota import driver as quota_driver
 from neutron import manager
 from neutron.pecan_wsgi.controllers import resource
+from neutron.pecan_wsgi.hooks import policy_enforcement
 from neutron import policy
 from neutron.tests.functional.pecan_wsgi import test_functional
-
-
-class TestOwnershipHook(test_functional.PecanFunctionalTest):
-
-    def test_network_ownership_check(self):
-        net_response = self.app.post_json(
-            '/v2.0/networks.json',
-            params={'network': {'name': 'meh'}},
-            headers={'X-Project-Id': 'projid'})
-        network_id = jsonutils.loads(net_response.body)['network']['id']
-        port_response = self.app.post_json(
-            '/v2.0/ports.json',
-            params={'port': {'network_id': network_id,
-                             'admin_state_up': True}},
-            headers={'X-Project-Id': 'projid'})
-        self.assertEqual(201, port_response.status_int)
 
 
 class TestQueryParametersHook(test_functional.PecanFunctionalTest):
@@ -319,6 +304,55 @@ class TestPolicyEnforcementHook(test_functional.PecanFunctionalTest):
         self.assertEqual(200, response.status_int)
         json_response = jsonutils.loads(response.body)
         self.assertNotIn('restricted_attr', json_response['mehs'][0])
+
+    def test_after_on_list_excludes_admin_attribute_all_items(self):
+        self.mock_plugin.get_mehs.return_value = [
+            {'id': 'xxx', 'attr': 'meh1',
+             'restricted_attr': 'secret1', 'project_id': 'projid'},
+            {'id': 'xxx', 'attr': 'meh2',
+             'restricted_attr': 'secret2', 'project_id': 'projid'},
+            {'id': 'xxx', 'attr': 'meh3',
+             'restricted_attr': 'secret3', 'project_id': 'projid'},
+        ]
+        response = self.app.get('/v2.0/mehs',
+                                headers={'X-Project-Id': 'projid'})
+        self.assertEqual(200, response.status_int)
+        json_response = jsonutils.loads(response.body)
+        for item in json_response['mehs']:
+            self.assertNotIn('restricted_attr', item)
+            self.assertIn('attr', item)
+            self.assertIn('id', item)
+
+    def test_after_on_list_calls_exclude_attributes_once(self):
+        self.mock_plugin.get_mehs.return_value = [
+            {'id': 'xxx', 'attr': 'meh1',
+             'restricted_attr': '', 'project_id': 'projid'},
+            {'id': 'xxx', 'attr': 'meh2',
+             'restricted_attr': '', 'project_id': 'projid'},
+            {'id': 'xxx', 'attr': 'meh3',
+             'restricted_attr': '', 'project_id': 'projid'},
+        ]
+        orig = policy_enforcement.PolicyHook._exclude_attributes_by_policy
+        with mock.patch.object(
+                policy_enforcement.PolicyHook,
+                '_exclude_attributes_by_policy',
+                side_effect=orig, autospec=True) as mock_exclude:
+            response = self.app.get('/v2.0/mehs',
+                                    headers={'X-Project-Id': 'projid'})
+        self.assertEqual(200, response.status_int)
+        mock_exclude.assert_called_once()
+
+    def test_after_on_list_empty_skips_exclude_attributes(self):
+        self.mock_plugin.get_mehs.return_value = []
+        orig = policy_enforcement.PolicyHook._exclude_attributes_by_policy
+        with mock.patch.object(
+                policy_enforcement.PolicyHook,
+                '_exclude_attributes_by_policy',
+                side_effect=orig, autospec=True) as mock_exclude:
+            response = self.app.get('/v2.0/mehs',
+                                    headers={'X-Project-Id': 'projid'})
+        self.assertEqual(200, response.status_int)
+        mock_exclude.assert_not_called()
 
     def test_after_inits_policy(self):
         self.mock_plugin.get_mehs.return_value = [{

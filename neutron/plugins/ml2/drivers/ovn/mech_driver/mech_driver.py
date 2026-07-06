@@ -429,6 +429,9 @@ class OVNMechanismDriver(api.MechanismDriver):
         if worker_class == wsgi.WorkerService:
             self._setup_hash_ring()
 
+        if worker_class == worker.MaintenanceWorker:
+            worker_class.lock_name = ovn_const.MAINTENANCE_NB_IDL_LOCK_NAME
+
         # Initialize singleton agent cache and keep a copy.
         self._agent_cache = n_agent.AgentCache(self)
         self.nb_ovn, self.sb_ovn = impl_idl_ovn.get_ovn_idls(self, trigger)
@@ -1245,7 +1248,7 @@ class OVNMechanismDriver(api.MechanismDriver):
                     vif_details = copy.deepcopy(self.vif_details[vif_type])
                     vif_details[portbindings.VHOST_USER_SOCKET] = (
                         vhost_user_socket)
-                elif (vnic_type == portbindings.VNIC_VIRTIO_FORWARDER):
+                elif vnic_type == portbindings.VNIC_VIRTIO_FORWARDER:
                     vhost_user_socket = ovn_utils.ovn_vhu_sockpath(
                         ovn_conf.get_ovn_vhost_sock_dir(), port['id'])
                     vif_type = portbindings.VIF_TYPE_AGILIO_OVS

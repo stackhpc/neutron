@@ -51,6 +51,7 @@
       Q_BUILD_OVS_FROM_GIT: True
       MEMORY_TRACKER: True
       INSTALL_OVN: True
+      ENABLE_FRR: True
       devstack_services:
         # Ignore any default set by devstack. Emit a "disable_all_services".
         base: false
@@ -58,7 +59,6 @@
       devstack_localrc:
         INSTALL_TESTONLY_PACKAGES: true
         DATABASE_PASSWORD: stackdb
-        NEUTRON_DEPLOY_MOD_WSGI: true
       tox_envlist: dsvm-functional-gate
       tox_environment:
         PYTHONPATH: /opt/stack/data/venv/lib/python3.12/site-packages
@@ -79,17 +79,12 @@
 - job:
     name: neutron-functional-fips
     parent: neutron-functional
-    nodeset: devstack-single-node-centos-9-stream
+    nodeset: devstack-single-node-centos-10-stream
     description: |
-      Functional testing for a FIPS enabled Centos 9 system
+      Functional testing for a FIPS enabled Centos 10 system
     vars:
       nslookup_target: 'opendev.org'
       enable_fips: True
-      # NOTE(ykarel) remove python3 override with 10-stream switch
-      PYTHON3_VERSION: 3.12
-      ensure_pip_virtualenv_command: "/usr/bin/python3.12 -m venv"
-      tox_environment:
-        TOX_PYTHON: python3.12
       devstack_localrc:
         ISCSI_CHAP_ALGORITHMS: SHA3-256,SHA256
         Q_BUILD_OVS_FROM_GIT: true
@@ -185,13 +180,3 @@
       - openstack/neutron-lib
       - name: github.com/sqlalchemy/alembic
         override-checkout: main
-
-# NOTE(ralonsoh): to be removed in 2026.2, once the OVN Metadata agent
-# replacement finishes. See LP#2112313.
-- job:
-    name: neutron-tempest-plugin-ovn-with-ovn-metadata-agent
-    parent: neutron-tempest-plugin-ovn
-    vars:
-      devstack_services:
-        q-ovn-metadata-agent: true
-        q-ovn-agent: false

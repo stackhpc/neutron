@@ -22,6 +22,7 @@
         Q_BUILD_OVS_FROM_GIT={{ Q_BUILD_OVS_FROM_GIT }}
         MEMORY_TRACKER={{ MEMORY_TRACKER }}
         INSTALL_OVN={{ INSTALL_OVN }}
+        ENABLE_FRR={{ ENABLE_FRR | default(False) }}
         # This is DB USER used in mysql db
         DATABASE_USER=openstack_citest
         MYSQL_GATHER_PERFORMANCE={{ MYSQL_GATHER_PERFORMANCE | default(true) }}
@@ -29,14 +30,12 @@
 
         source $NEUTRON_DIR/tools/configure_for_func_testing.sh
         if is_fedora; then
+            # NOTE(ykarel) update configure-mirrors
+            sudo dnf config-manager --set-enabled crb
             # NOTE(slqweq) Running functional job e.g. on Centos requires to
             # have repo with rabbitmq-server and some other packages available
-            OPENSTACK_RELEASE=victoria
-            # For CentOS 9-Stream need to setup yoga repos
-            if [[ $os_VENDOR == "CentOSStream" && $os_RELEASE -gt 8 ]]; then
-                OPENSTACK_RELEASE=yoga
-            fi
-            install_package centos-release-openstack-${OPENSTACK_RELEASE}
+            # No Openstack Release on CentOS 10 yet so use dlrn repos
+            sudo wget https://trunk.rdoproject.org/centos10-master/delorean-deps.repo -O /etc/yum.repos.d/delorean-deps.repo
             install_package iproute-tc haproxy keepalived
 
             # NOTE(slaweq) On Fedora/CentOS systems make sure that SELinux is

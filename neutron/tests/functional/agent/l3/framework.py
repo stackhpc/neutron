@@ -346,7 +346,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
                           router_info=None):
         router_info = router_info or self.generate_router_info(
             enable_ha, ip_version, dual_stack=dual_stack,
-            v6_ext_gw_with_sub=(v6_ext_gw_with_sub))
+            v6_ext_gw_with_sub=v6_ext_gw_with_sub)
         return_copy = copy.deepcopy(router_info)
         router = self.manage_router(self.agent, router_info)
 
@@ -562,7 +562,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
 
     def _assert_metadata_chains(self, router):
         def metadata_port_filter(rule):
-            return (str(self.agent.conf.metadata_port) in rule.rule)
+            return str(self.agent.conf.metadata_port) in rule.rule
 
         self.assertTrue(self._get_rule(router.iptables_manager,
                                        'nat',
@@ -771,7 +771,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
             router.ns_name,
             ip_version=constants.IP_VERSION_4, )
 
-        actual_routes = [{key: route[key] for key in expected_route.keys()}
+        actual_routes = [{key: route[key] for key in expected_route}
                          for route in updated_route]
         self.assertIn(expected_route, actual_routes)
 
@@ -779,7 +779,7 @@ class L3AgentTestFramework(base.BaseSudoTestCase):
         updated_route = ip_lib.list_ip_routes(
             router.ns_name,
             ip_version=constants.IP_VERSION_4)
-        routes_actual = [{key: route[key] for key in expected_route.keys()}
+        routes_actual = [{key: route[key] for key in expected_route}
                          for route in updated_route]
         for entry in routes_actual:
             if entry['via']:

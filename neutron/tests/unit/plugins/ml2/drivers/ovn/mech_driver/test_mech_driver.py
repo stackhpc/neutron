@@ -1033,7 +1033,6 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
                 ovn_const.LSP_OPTIONS_MCAST_FLOOD:
                     ovs_conf.get_igmp_flood(),
                 ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'false'},
-            tag=2,
             tag_request=2,
             type='localnet')
 
@@ -2841,6 +2840,17 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
     def test__update_dnat_entry_if_needed_down_no_dvr(self):
         self._test__update_dnat_entry_if_needed(up=False, dvr=False)
 
+    @mock.patch.object(ovn_revision_numbers_db, 'delete_revision')
+    @mock.patch.object(ovn_client.OVNClient, '_delete_floatingip')
+    def test_delete_floatingip_not_exist_in_ovn(self, mock_del_fip,
+                                                mock_del_rev):
+        fip_id = uuidutils.generate_uuid()
+        self.nb_ovn.get_floatingip.return_value = None
+        self.mech_driver._ovn_client.delete_floatingip(self.context, fip_id)
+        # No matching nat entry found in ovn so revision row must be retained
+        mock_del_rev.assert_not_called()
+        mock_del_fip.assert_not_called()
+
     @mock.patch('neutron.objects.router.Router.get_object')
     @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.'
                 'ovn_client.OVNClient._get_router_ports')
@@ -3700,7 +3710,7 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         # Assert the tag was changed in the OVN database
         expected_call = mock.call(
             lport_name=ovn_utils.ovn_provnet_port_name(segment['id']),
-            tag=new_vlan_tag, if_exists=True)
+            tag_request=new_vlan_tag, if_exists=True)
         self.nb_ovn.set_lswitch_port.assert_has_calls([expected_call])
 
     @mock.patch.object(wsgi_utils, 'get_api_worker_id', return_value=1)
@@ -3822,7 +3832,6 @@ class TestOVNMechanismDriverNetworksV2(test_plugin.TestMl2NetworksV2,
         to allow OVS Agents and thus OVN Mechanism Driver to allow
         updation of Segmentation IDs. Till then the test  needs to be skipped
         """
-        pass
 
     def test__update_segmentation_id_ports(self):
         """Skip the Update Segmentation ID tests
@@ -3832,7 +3841,6 @@ class TestOVNMechanismDriverNetworksV2(test_plugin.TestMl2NetworksV2,
         to allow OVS Agents and thus OVN Mechanism Driver to allow
         updation of Segmentation IDs. Till then the test  needs to be skipped
         """
-        pass
 
 
 class TestOVNMechanismDriverSubnetsV2(test_plugin.TestMl2SubnetsV2,
@@ -4027,7 +4035,6 @@ class TestOVNMechanismDriverSegment(MechDriverSetupBase,
                 ovn_const.LSP_OPTIONS_MCAST_FLOOD:
                     ovs_conf.get_igmp_flood(),
                 ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'false'},
-            tag=200,
             tag_request=200,
             type='localnet')
         ovn_nb_api.create_lswitch_port.reset_mock()
@@ -4048,7 +4055,6 @@ class TestOVNMechanismDriverSegment(MechDriverSetupBase,
                 ovn_const.LSP_OPTIONS_MCAST_FLOOD:
                     ovs_conf.get_igmp_flood(),
                 ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'false'},
-            tag=300,
             tag_request=300,
             type='localnet')
         segments = segments_db.get_network_segments(
@@ -4774,7 +4780,7 @@ class TestOVNMechanismDriverDHCPOptions(OVNMechanismDriverTestCase):
                 'v6_snet_id_1': {'options': {}},
                 'v6_snet_id_3': {'options': {
                     ovn_const.DHCPV6_STATELESS_OPT: 'true'}}}
-            return [fake_rows[row] for row in fake_rows if row in subnets]
+            return [v for k, v in fake_rows.items() if k in subnets]
 
         self.mech_driver.nb_ovn.get_subnets_dhcp_options.side_effect = fake
 
@@ -5474,8 +5480,7 @@ class TestOVNVVirtualPort(OVNMechanismDriverTestCase):
                    'type': ovn_const.LSP_TYPE_VIRTUAL,
                    'options': {ovn_const.LSP_OPTIONS_VIRTUAL_PARENTS_KEY:
                                parent['id']}})
-        self.nb_idl.ls_get.return_value.execute.return_value = (
-            mock.Mock(ports=[fake_row]))
+        self.nb_idl.lookup.return_value = mock.Mock(ports=[fake_row])
 
         self.mech_driver._ovn_client.delete_port(self.context, parent['id'])
         self.nb_idl.unset_lswitch_port_to_virtual_type.assert_called_once_with(

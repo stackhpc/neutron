@@ -51,10 +51,14 @@ radvd: CommandFilter, radvd, root
 radvd_env: EnvFilter, env, root, PROCESS_TAG=, radvd
 keepalived: CommandFilter, keepalived, root
 keepalived_env: EnvFilter, env, root, PROCESS_TAG=, keepalived
-keepalived_state_change: CommandFilter, neutron-keepalived-state-change, root
-keepalived_state_change_env: EnvFilter, env, root, PROCESS_TAG=, neutron-keepalived-state-change
+neutron-keepalived-state-change: CommandFilter, neutron-keepalived-state-change, root
 conntrackd: CommandFilter, conntrackd, root
 conntrackd_env: EnvFilter, env, root, PROCESS_TAG=, conntrackd
+
+# FRR
+vtysh_cmd: RegExpFilter, vtysh, root, vtysh, --vty_socket, /[a-z/]+, -c, .*
+vtysh_dryrun: RegExpFilter, vtysh, root, vtysh, --vty_socket, /[a-z/]+, --dryrun, -f, .*
+vtysh_apply: RegExpFilter, vtysh, root, vtysh, --vty_socket, /[a-z/]+, -f, .*
 
 # OPEN VSWITCH
 ovs-ofctl: CommandFilter, ovs-ofctl, root

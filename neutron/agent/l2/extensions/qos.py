@@ -128,7 +128,7 @@ class QosAgentDriver(metaclass=abc.ABCMeta):
 
     def _rule_type_has_ingress_direction(self, rule_type):
         supported_rule = self.SUPPORTED_RULES[rule_type]
-        if qos_consts.DIRECTION not in supported_rule.keys():
+        if qos_consts.DIRECTION not in supported_rule:
             return False
         return (constants.INGRESS_DIRECTION in
                 supported_rule[qos_consts.DIRECTION]['type:values'])
@@ -295,3 +295,6 @@ class QosAgentExtension(l2_extension.L2AgentExtension):
     def _process_reset_port(self, port):
         self.policy_map.clean_by_port(port)
         self.qos_driver.delete(port)
+
+    def handle_switch_restart(self):
+        self.qos_driver.handle_switch_restart()

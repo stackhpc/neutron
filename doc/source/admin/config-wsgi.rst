@@ -58,6 +58,19 @@ Start neutron-api:
 
 .. end
 
+uWSGI Python API
+~~~~~~~~~~~~~~~~
+
+When Neutron API workers run under uWSGI with the ``python3`` plugin, the
+server injects a Python ``uwsgi`` module into each worker process at runtime.
+This module is not a Neutron dependency and cannot be installed separately
+with ``pip``; it exists only inside uWSGI-managed workers.
+
+Neutron uses this module (via ``neutron.common.wsgi_utils``) to read uWSGI
+configuration options such as ``start-time`` and to obtain the worker ID
+(``uwsgi.worker_id()``). For the full list of available functions, see the
+`uWSGI API documentation <https://uwsgi-docs.readthedocs.io/en/latest/API.html>`_.
+
 
 Start Neutron RPC server
 ------------------------
@@ -140,10 +153,11 @@ further limited by available memory, and the number of RPC workers is set to
 half that number.
 
 It is strongly recommended that all deployers set these values themselves,
-via the api_workers and rpc_workers configuration parameters.
+via the uWSGI ``processes`` and Neutron ``rpc_workers`` configuration
+parameters.
 
 For a cloud with a high load to a relatively small number of objects,
-a smaller value for api_workers will provide better performance than
+a smaller value for API workers will provide better performance than
 many (somewhere around 4-8.) For a cloud with a high load to lots of
 different objects, then the more the better. Budget neutron-server
 using about 2GB of RAM in steady-state.
@@ -167,5 +181,7 @@ in processing agents heartbeats.
 .. note::
    ML2/OVN uses the ``[uwsgi]start-time = %t`` parameter to create the OVN hash
    ring registers during the initialization process. This value is populated
-   by the uWSGi process with the start time. For more information, check
+   by the uWSGi process with the start time and read via the runtime ``uwsgi``
+   Python module (see the uWSGI Python API subsection above). For more
+   information, check
    `Configuring uWSGI <https://uwsgi-docs.readthedocs.io/en/latest/Configuration.html>`_.

@@ -28,27 +28,3 @@ class FSMIllegalTransition(Exception):
 
 class FSMMissingTransitionCallback(Exception):
     pass
-
-
-class SvdNoVxlanParent(Exception):
-    pass
-
-
-class SvdDeviceAlreadyExists(Exception):
-    pass
-
-
-class SvdDevsNotFound(Exception):
-    pass
-
-
-class SvdSviNotFound(Exception):
-    pass
-
-
-class SvdNotFound(Exception):
-    pass
-
-
-class SvdNetlinkError(Exception):
-    pass

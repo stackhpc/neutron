@@ -30,6 +30,7 @@ from sqlalchemy import text
 from neutron._i18n import _
 from neutron.common.ovn import exceptions as ovn_exc
 from neutron.common.ovn import utils as ovn_utils
+from neutron.conf.db import extraroute_db
 from neutron.conf.plugins.ml2 import config as ml2_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.conf import service as conf_service
@@ -201,6 +202,7 @@ class CoreChecks(upgrade_checks.BaseChecks):
 
     def __init__(self):
         super().__init__()
+        extraroute_db.register_db_extraroute_opts()
         ml2_conf.register_ml2_plugin_opts()
         ovn_conf.register_opts()
 
@@ -233,22 +235,24 @@ class CoreChecks(upgrade_checks.BaseChecks):
             (_('Floating IP Port forwarding and OVN L3 plugin configuration'),
              self.ovn_port_forwarding_configuration_check),
             (_('Existing tags exceeds limit per resource'),
-             self.tags_over_limit_check)
+             self.tags_over_limit_check),
+            (_('Deprecated max_routes configuration'),
+             self.max_routes_check),
         ]
 
     @staticmethod
     def worker_count_check(checker):
 
-        if cfg.CONF.api_workers and conf_service.get_rpc_workers():
+        if conf_service.get_rpc_workers():
             return upgradecheck.Result(
-                upgradecheck.Code.SUCCESS, _("Number of workers already "
+                upgradecheck.Code.SUCCESS, _("Number of RPC workers already "
                                              "defined in config"))
         return upgradecheck.Result(
             upgradecheck.Code.WARNING,
-            _("The default number of workers "
+            _("The default number of RPC workers "
               "has changed. Please see release notes for the new values, "
               "but it is strongly encouraged for deployers to manually "
-              "set the values for api_workers and rpc_workers."))
+              "set the values for rpc_workers."))
 
     @staticmethod
     def network_mtu_check(checker):
@@ -611,3 +615,29 @@ class CoreChecks(upgrade_checks.BaseChecks):
             upgradecheck.Code.SUCCESS,
             _('Number of tags for each resource is below the limit of %d. ') %
             tagging.MAX_TAGS_COUNT)
+
+    @staticmethod
+    def max_routes_check(checker):
+        """Check if the deprecated max_routes option is configured
+
+        The ``max_routes`` configuration option has been removed and
+        replaced by the ``quota_router_route`` quota in the [QUOTAS]
+        section. If the operator had set ``max_routes`` to a non-default
+        value, they need to configure the new quota instead.
+        """
+        default_max_routes = 30
+        if cfg.CONF.max_routes != default_max_routes:
+            return upgradecheck.Result(
+                upgradecheck.Code.WARNING,
+                _('The "max_routes" configuration option is set to '
+                  '%(value)d but this option has been removed. The '
+                  'per-router route limit is now enforced by the '
+                  '"quota_router_route" quota in the [QUOTAS] section '
+                  '(default: %(default)d). Please update the quota '
+                  'configuration and remove "max_routes" from the '
+                  'configuration file.') %
+                {'value': cfg.CONF.max_routes,
+                 'default': default_max_routes})
+        return upgradecheck.Result(
+            upgradecheck.Code.SUCCESS,
+            _('The deprecated "max_routes" option is not configured.'))

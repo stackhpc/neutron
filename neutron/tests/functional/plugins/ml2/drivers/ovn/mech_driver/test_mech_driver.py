@@ -54,7 +54,7 @@ OVS_VIF_DETAILS = {
     portbindings.VIF_DETAILS_BOUND_DRIVERS: {'0': 'ovn'},
     portbindings.VIF_DETAILS_BRIDGE_NAME: 'br-int',
     portbindings.OVS_DATAPATH_TYPE: 'system',
-    'ovs_create_tap': False,
+    'ovs_create_tap': True,
 }
 VHOSTUSER_VIF_DETAILS = {
     portbindings.CAP_PORT_FILTER: False,
@@ -236,7 +236,7 @@ class TestPortBinding(base.TestOVNFunctionalBase):
         expected_vif_details.pop('vhostuser_mode')
         expected_vif_details.pop('vhostuser_ovs_plug')
         expected_vif_details[portbindings.CAP_PORT_FILTER] = True
-        expected_vif_details['ovs_create_tap'] = False
+        expected_vif_details['ovs_create_tap'] = True
         port_id = self._create_or_update_port(hostname=self.invalid_dpdk_host)
         self._verify_vif_details(port_id, self.invalid_dpdk_host, 'ovs',
                                  expected_vif_details)
@@ -295,7 +295,7 @@ class TestPortBinding(base.TestOVNFunctionalBase):
         expected_vif_details.pop('vhostuser_mode')
         expected_vif_details.pop('vhostuser_ovs_plug')
         expected_vif_details[portbindings.CAP_PORT_FILTER] = True
-        expected_vif_details['ovs_create_tap'] = False
+        expected_vif_details['ovs_create_tap'] = True
         self._verify_vif_details(port_id, self.invalid_dpdk_host, 'ovs',
                                  expected_vif_details)
 
@@ -1130,13 +1130,17 @@ class TestProvnetPorts(base.TestOVNFunctionalBase):
         seg_db = self.get_segments(n1['id'])
         ovn_localnetport = self._find_port_row_by_name(
             utils.ovn_provnet_port_name(seg_db[0]['id']))
-        self.assertEqual(ovn_localnetport.tag, [100])
+        self.assertEqual(ovn_localnetport.tag_request, [100])
+        n_utils.wait_until_true(lambda: ovn_localnetport.tag == [100],
+                                timeout=5)
         self.assertEqual(ovn_localnetport.options['network_name'], 'physnet1')
         seg_2 = self.create_segment(n1['id'], 'physnet2', '222')
         ovn_localnetport = self._find_port_row_by_name(
             utils.ovn_provnet_port_name(seg_2['id']))
         self.assertEqual(ovn_localnetport.options['network_name'], 'physnet2')
-        self.assertEqual(ovn_localnetport.tag, [222])
+        self.assertEqual(ovn_localnetport.tag_request, [222])
+        n_utils.wait_until_true(lambda: ovn_localnetport.tag == [222],
+                                timeout=5)
 
         # Delete segments and ensure that localnet
         # ports are deleted.
@@ -1618,7 +1622,7 @@ class TestNATRuleGatewayPort(_TestRouter):
 
 class TestRouterGWPort(_TestRouter):
 
-    def _test_create_and_delete_router_gw_port(self, nested_snat=False):
+    def _test_create_and_delete_router_gw_port(self, nested_snat=True):
         ext_net = self._make_network(
             self.fmt, 'ext_networktest', True, as_admin=True,
             arg_list=('router:external',
@@ -1676,11 +1680,12 @@ class TestRouterGWPort(_TestRouter):
         self.assertIsNone(_find_ext_gw_lrp(lr))
 
     def test_create_and_delete_router_gw_port(self):
-        self._test_create_and_delete_router_gw_port()
+        ovn_conf.cfg.CONF.set_override(
+            'ovn_router_indirect_snat', False, 'ovn')
+        self._test_create_and_delete_router_gw_port(nested_snat=False)
 
     def test_create_and_delete_router_gw_port_nested_snat(self):
-        ovn_conf.cfg.CONF.set_override('ovn_router_indirect_snat', True, 'ovn')
-        self._test_create_and_delete_router_gw_port(nested_snat=True)
+        self._test_create_and_delete_router_gw_port()
 
 
 class TestHAChassisGroupSync(base.TestOVNFunctionalBase):

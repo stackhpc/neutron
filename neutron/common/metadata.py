@@ -64,11 +64,11 @@ defaults
     option http-server-close
     option forwardfor
     retries                 3
-    timeout http-request    30s
-    timeout connect         30s
-    timeout client          32s
-    timeout server          32s
-    timeout http-keep-alive 30s
+    timeout http-request    %(timeout_http_request)ss
+    timeout connect         %(timeout_connect)ss
+    timeout client          %(timeout_client)ss
+    timeout server          %(timeout_server)ss
+    timeout http-keep-alive %(timeout_http_keep_alive)ss
 """
 
 RATE_LIMITED_CONFIG_TEMPLATE = """
@@ -166,21 +166,36 @@ class MetadataProxyHandlerBaseSocketServer(
         metaclass=abc.ABCMeta):
     @staticmethod
     def _http_response(http_response, request):
-        headerlist = list(http_response.headers.items())
-        # We detect if content is compressed by magic signature,
-        # when `content-encoding` is not present.
-        if not http_response.headers.get('content-encoding'):
-            if http_response.content[:3] == CONTENT_ENCODERS['gzip']:
-                headerlist.append(('content-encoding', 'gzip'))
+        resp_headers = http_response.headers.copy()
+        resp_body_encoding = resp_headers.get('content-encoding')
+        resp_content_magic = http_response.content[:3]
+        if resp_content_magic == CONTENT_ENCODERS["gzip"]:
+            # python-requests asks for and unpacks the gzip itself,
+            # but leaves the content-encoding header in response untouched.
+            # however, specifically user_data could itself be gzipped still.
+            resp_headers['content-encoding'] = 'gzip'
+        elif (
+            resp_content_magic not in CONTENT_ENCODERS.values() and
+            resp_body_encoding in CONTENT_ENCODERS
+        ):
+            # content-encoding is set but content is not actually encoded,
+            # this is normal for how `requests` behaves, it decodes gzip
+            # itself but not removes the content-encoding header from response.
+            resp_headers.pop('content-encoding', None)
 
+        # remove content-length and transfer-encoding, possibly from original
+        # gzip/deflate (python-requests does not modify those headers),
+        # let webob recalculate these.
+        resp_headers.pop('content-length', None)
+        resp_headers.pop('transfer-encoding', None)
         _res = webob.Response(
             body=http_response.content,
             status=http_response.status_code,
-            headerlist=headerlist)
+            headerlist=list(resp_headers.items()))
         # The content of the response is decoded depending on the
         # "Context-Enconding" header, if present. The operation is limited to
         # ("gzip", "deflate"), as is in the ``webob.response.Response`` class.
-        if _res.content_encoding in CONTENT_ENCODERS.keys():
+        if _res.content_encoding in CONTENT_ENCODERS:
             _res.decode_content()
 
         # NOTE(ralonsoh): there should be a better way to format the HTTP

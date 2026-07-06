@@ -47,7 +47,7 @@ class Test_has_separate_snat_per_subnet(base.BaseTestCase):
             'enable_snat': True,
             l3.EXTERNAL_GW_INFO: mock.Mock(),  # irrelevant value
         }
-        # ovn_router_indirect_snat default is False
+        cfg.CONF.set_override('ovn_router_indirect_snat', False, 'ovn')
         self.assertTrue(ovn_client._has_separate_snat_per_subnet(fake_router))
 
     def test_snat_off_nested_off(self):
@@ -56,7 +56,7 @@ class Test_has_separate_snat_per_subnet(base.BaseTestCase):
             'enable_snat': False,
             l3.EXTERNAL_GW_INFO: mock.Mock(),  # irrelevant value
         }
-        # ovn_router_indirect_snat default is False
+        cfg.CONF.set_override('ovn_router_indirect_snat', False, 'ovn')
         self.assertFalse(ovn_client._has_separate_snat_per_subnet(fake_router))
 
     def test_snat_on_nested_on(self):
@@ -65,7 +65,7 @@ class Test_has_separate_snat_per_subnet(base.BaseTestCase):
             'enable_snat': True,
             l3.EXTERNAL_GW_INFO: mock.Mock(),  # irrelevant value
         }
-        cfg.CONF.set_override('ovn_router_indirect_snat', True, 'ovn')
+        # ovn_router_indirect_snat default is True
         self.assertFalse(ovn_client._has_separate_snat_per_subnet(fake_router))
 
     def test_snat_off_nested_on(self):
@@ -74,7 +74,7 @@ class Test_has_separate_snat_per_subnet(base.BaseTestCase):
             'enable_snat': False,
             l3.EXTERNAL_GW_INFO: mock.Mock(),  # irrelevant value
         }
-        cfg.CONF.set_override('ovn_router_indirect_snat', True, 'ovn')
+        # ovn_router_indirect_snat default is True
         self.assertFalse(ovn_client._has_separate_snat_per_subnet(fake_router))
 
 
@@ -256,12 +256,14 @@ class TestOVNClient(TestOVNClientBase):
         port_binding = mock.Mock(host=host_id)
         db_port = mock.Mock(id=port_id, port_bindings=[port_binding])
         self.get_pb_bsah.return_value = port_binding
+        self.nb_idl.lookup.return_value = mock.Mock(up=[True])
 
         self.ovn_client.update_lsp_host_info(context, db_port)
 
         self.nb_idl.db_set.assert_called_once_with(
             'Logical_Switch_Port', port_id,
             ('external_ids', {constants.OVN_HOST_ID_EXT_ID_KEY: host_id}))
+        self.nb_idl.lsp_get_up.assert_not_called()
 
     def test_update_lsp_host_info_up_retry(self):
         context = mock.MagicMock()
@@ -272,6 +274,7 @@ class TestOVNClient(TestOVNClientBase):
         db_port_no_host = mock.Mock(
             id=port_id, port_bindings=[port_binding_no_host])
         self.get_pb_bsah.return_value = None
+        self.nb_idl.lookup.return_value = mock.Mock(up=[True])
 
         with mock.patch.object(
                 self.ovn_client,
@@ -293,6 +296,7 @@ class TestOVNClient(TestOVNClientBase):
         db_port_no_host = mock.Mock(
             id=port_id, port_bindings=[mock.Mock(host="")])
         self.get_pb_bsah.return_value = None
+        self.nb_idl.lookup.return_value = mock.Mock(up=[True])
 
         with mock.patch.object(
                 self.ovn_client,
@@ -310,13 +314,14 @@ class TestOVNClient(TestOVNClientBase):
         context = mock.MagicMock()
         port_id = 'fake-port-id'
         db_port = mock.Mock(id=port_id)
-        self.nb_idl.lsp_get_up.return_value.execute.return_value = False
+        self.nb_idl.lookup.return_value = mock.Mock(up=[False])
 
         self.ovn_client.update_lsp_host_info(context, db_port, up=False)
 
         self.nb_idl.db_remove.assert_called_once_with(
             'Logical_Switch_Port', port_id, 'external_ids',
             constants.OVN_HOST_ID_EXT_ID_KEY, if_exists=True)
+        self.nb_idl.lsp_get_up.assert_not_called()
 
     def test_update_lsp_host_info_trunk_subport(self):
         context = mock.MagicMock()
@@ -376,6 +381,7 @@ class TestOVNClient(TestOVNClientBase):
 
     def test__get_snat_cidrs_for_external_router_nested_snat_off(self):
         ctx = ncontext.Context()
+        cfg.CONF.set_override('ovn_router_indirect_snat', False, 'ovn')
         per_subnet_cidrs = ['10.0.0.0/24', '20.0.0.0/24']
         with mock.patch.object(
                 self.ovn_client, '_get_v4_network_of_all_router_ports',
@@ -386,7 +392,7 @@ class TestOVNClient(TestOVNClientBase):
 
     def test__get_snat_cidrs_for_external_router_nested_snat_on(self):
         ctx = ncontext.Context()
-        cfg.CONF.set_override('ovn_router_indirect_snat', True, 'ovn')
+        # ovn_router_indirect_snat default is True
         per_subnet_cidrs = ['10.0.0.0/24', '20.0.0.0/24']
         with mock.patch.object(
                 self.ovn_client, '_get_v4_network_of_all_router_ports',
@@ -394,6 +400,154 @@ class TestOVNClient(TestOVNClientBase):
             cidrs = self.ovn_client._get_snat_cidrs_for_external_router(
                 ctx, 'fake-id')
         self.assertEqual([const.IPv4_ANY], cidrs)
+
+    def _make_ovn_lrp(self, port_id, network_name, subnet_ids='',
+                      networks=None):
+        lrp = mock.Mock()
+        lrp.name = 'lrp-' + port_id
+        lrp.networks = networks or []
+        lrp.external_ids = {
+            constants.OVN_NETWORK_NAME_EXT_ID_KEY: network_name,
+            constants.OVN_ROUTER_IS_EXT_GW: 'True',
+            constants.OVN_SUBNET_EXT_IDS_KEY: subnet_ids,
+        }
+        return lrp
+
+    def test__check_external_ips_changed_no_change(self):
+        """No change detected when new ports match OVN state."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        subnet = {'id': 'sub1', 'gateway_ip': '10.0.0.1',
+                  'ip_version': const.IP_VERSION_4}
+        plugin.get_subnets_by_network.return_value = [subnet]
+        gw_port = fakes.FakePort().create_one_port(
+            attrs={'id': 'gw-port-1', 'network_id': 'ext-net',
+                   'fixed_ips': [{'subnet_id': 'sub1',
+                                  'ip_address': '10.0.0.5'}]})
+        self.ovn_client._get_router_gw_ports = mock.Mock(
+            return_value=[gw_port])
+
+        ovn_snat = mock.Mock(external_ip='10.0.0.5')
+        ovn_route = mock.Mock(
+            external_ids={constants.OVN_SUBNET_EXT_ID_KEY: 'sub1'},
+            bfd=[])
+        ovn_lrp = self._make_ovn_lrp('gw-port-1', 'neutron-ext-net',
+                                     subnet_ids='sub1')
+        router = {'id': 'rtr1'}
+        ctx = mock.MagicMock()
+
+        result = self.ovn_client._check_external_ips_changed(
+            ctx, [ovn_snat], [ovn_route], router, [ovn_lrp])
+        self.assertFalse(result)
+        self.nb_idl.get_lrouter_port.assert_not_called()
+
+    def test__check_external_ips_changed_subnet_changed(self):
+        """Detected when new port has a subnet not in OVN routes."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        subnet = {'id': 'sub-new', 'gateway_ip': '10.0.0.1',
+                  'ip_version': const.IP_VERSION_4}
+        plugin.get_subnets_by_network.return_value = [subnet]
+        gw_port = fakes.FakePort().create_one_port(
+            attrs={'id': 'gw-port-1', 'network_id': 'ext-net',
+                   'fixed_ips': [{'subnet_id': 'sub-new',
+                                  'ip_address': '10.0.0.5'}]})
+        self.ovn_client._get_router_gw_ports = mock.Mock(
+            return_value=[gw_port])
+
+        ovn_route = mock.Mock(
+            external_ids={constants.OVN_SUBNET_EXT_ID_KEY: 'sub-old'},
+            bfd=[])
+        ovn_lrp = self._make_ovn_lrp('gw-port-1', 'neutron-ext-net')
+        router = {'id': 'rtr1'}
+        ctx = mock.MagicMock()
+
+        result = self.ovn_client._check_external_ips_changed(
+            ctx, [], [ovn_route], router, [ovn_lrp])
+        self.assertTrue(result)
+
+    def test__check_external_ips_changed_snat_ip_changed(self):
+        """Detected when SNAT external_ip differs from new router IP."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        subnet = {'id': 'sub1', 'gateway_ip': '10.0.0.1',
+                  'ip_version': const.IP_VERSION_4}
+        plugin.get_subnets_by_network.return_value = [subnet]
+        gw_port = fakes.FakePort().create_one_port(
+            attrs={'id': 'gw-port-1', 'network_id': 'ext-net',
+                   'fixed_ips': [{'subnet_id': 'sub1',
+                                  'ip_address': '10.0.0.99'}]})
+        self.ovn_client._get_router_gw_ports = mock.Mock(
+            return_value=[gw_port])
+
+        ovn_snat = mock.Mock(external_ip='10.0.0.5')
+        ovn_route = mock.Mock(
+            external_ids={constants.OVN_SUBNET_EXT_ID_KEY: 'sub1'},
+            bfd=[])
+        ovn_lrp = self._make_ovn_lrp('gw-port-1', 'neutron-ext-net')
+        router = {'id': 'rtr1'}
+        ctx = mock.MagicMock()
+
+        result = self.ovn_client._check_external_ips_changed(
+            ctx, [ovn_snat], [ovn_route], router, [ovn_lrp])
+        self.assertTrue(result)
+
+    def test__check_external_ips_changed_no_subnet_network_changed(self):
+        """No-subnet edge case uses passed-in LRP, not OVN re-fetch."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        plugin.get_subnets_by_network.return_value = []
+        gw_port = fakes.FakePort().create_one_port(
+            attrs={'id': 'gw-port-1', 'network_id': 'new-ext-net',
+                   'fixed_ips': []})
+        self.ovn_client._get_router_gw_ports = mock.Mock(
+            return_value=[gw_port])
+
+        ovn_lrp = self._make_ovn_lrp(
+            'gw-port-1', 'neutron-old-ext-net')
+        router = {'id': 'rtr1'}
+        ctx = mock.MagicMock()
+
+        result = self.ovn_client._check_external_ips_changed(
+            ctx, [], [], router, [ovn_lrp])
+        self.assertTrue(result)
+        self.nb_idl.get_lrouter_port.assert_not_called()
+
+    def test__check_external_ips_changed_no_subnet_network_same(self):
+        """No-subnet edge case returns False when network matches."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        plugin.get_subnets_by_network.return_value = []
+        gw_port = fakes.FakePort().create_one_port(
+            attrs={'id': 'gw-port-1', 'network_id': 'ext-net',
+                   'fixed_ips': []})
+        self.ovn_client._get_router_gw_ports = mock.Mock(
+            return_value=[gw_port])
+
+        ovn_lrp = self._make_ovn_lrp('gw-port-1', 'neutron-ext-net')
+        router = {'id': 'rtr1'}
+        ctx = mock.MagicMock()
+
+        result = self.ovn_client._check_external_ips_changed(
+            ctx, [], [], router, [ovn_lrp])
+        self.assertFalse(result)
+        self.nb_idl.get_lrouter_port.assert_not_called()
+
+    def test__check_external_ips_changed_bfd_mismatch(self):
+        """BFD state change detected."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        plugin.get_subnets_by_network.return_value = []
+        self.ovn_client._get_router_gw_ports = mock.Mock(return_value=[])
+
+        ovn_route = mock.Mock(
+            external_ids={}, bfd=[])
+        router = {'id': 'rtr1', 'enable_default_route_bfd': True}
+        ctx = mock.MagicMock()
+
+        result = self.ovn_client._check_external_ips_changed(
+            ctx, [], [ovn_route], router, [])
+        self.assertTrue(result)
 
     def test__get_nets_and_ipv6_ra_confs_ipv4_only(self):
         """Single bulk get_subnets call for all fixed IPs."""
@@ -563,6 +717,112 @@ class TestOVNClient(TestOVNClientBase):
         plugin.get_subnets.assert_called_once_with(
             ctx, filters={'id': []})
         plugin.get_network.assert_not_called()
+
+    def _make_fake_lsp(self, name, lsp_type='', options=None):
+        lsp = mock.Mock()
+        lsp.name = name
+        lsp.type = lsp_type
+        lsp.options = options or {}
+        return lsp
+
+    def _setup_delete_port_mocks(self, ovn_port, ls):
+        def _lookup(table, name, **kwargs):
+            if table == 'Logical_Switch_Port':
+                return ovn_port
+            if table == 'Logical_Switch':
+                return ls
+            raise ValueError("Unexpected lookup: %s %s" % (table, name))
+
+        self.nb_idl.lookup.side_effect = _lookup
+        self.ovn_client._qos_driver = mock.Mock()
+
+    def test__delete_port_unsets_virtual_children(self):
+        """Deleting a non-virtual port unsets it from virtual children."""
+        port_id = 'parent-port'
+        ovn_network_name = 'neutron-net1'
+
+        ovn_port = self._make_fake_lsp(port_id)
+        ovn_port.external_ids = {
+            constants.OVN_NETWORK_NAME_EXT_ID_KEY: ovn_network_name}
+
+        virtual_lsp = self._make_fake_lsp(
+            'virtual-port', constants.LSP_TYPE_VIRTUAL,
+            {constants.LSP_OPTIONS_VIRTUAL_PARENTS_KEY:
+             'parent-port,other-port'})
+        normal_lsp = self._make_fake_lsp('normal-port')
+        ls = mock.Mock()
+        ls.ports = [normal_lsp, virtual_lsp]
+
+        self._setup_delete_port_mocks(ovn_port, ls)
+
+        ctx = ncontext.Context()
+        self.ovn_client._delete_port(ctx, port_id)
+
+        self.nb_idl.unset_lswitch_port_to_virtual_type.assert_called_once_with(
+            'virtual-port', port_id, if_exists=True)
+        self.nb_idl.ls_get.assert_not_called()
+
+    def test__delete_port_no_virtual_children(self):
+        """No virtual ports on the LS means no unset call."""
+        port_id = 'normal-port'
+        ovn_network_name = 'neutron-net1'
+
+        ovn_port = self._make_fake_lsp(port_id)
+        ovn_port.external_ids = {
+            constants.OVN_NETWORK_NAME_EXT_ID_KEY: ovn_network_name}
+
+        other_lsp = self._make_fake_lsp('other-port')
+        ls = mock.Mock()
+        ls.ports = [other_lsp]
+
+        self._setup_delete_port_mocks(ovn_port, ls)
+
+        ctx = ncontext.Context()
+        self.ovn_client._delete_port(ctx, port_id)
+
+        self.nb_idl.unset_lswitch_port_to_virtual_type.assert_not_called()
+
+    def test__delete_port_virtual_port_skips_parent_check(self):
+        """Deleting a virtual port skips the parent check entirely."""
+        port_id = 'virtual-port'
+        ovn_network_name = 'neutron-net1'
+
+        ovn_port = self._make_fake_lsp(
+            port_id, constants.LSP_TYPE_VIRTUAL)
+        ovn_port.external_ids = {
+            constants.OVN_NETWORK_NAME_EXT_ID_KEY: ovn_network_name}
+
+        self._setup_delete_port_mocks(ovn_port, ls=None)
+
+        ctx = ncontext.Context()
+        self.ovn_client._delete_port(ctx, port_id)
+
+        calls = [c for c in self.nb_idl.lookup.call_args_list
+                 if c[0][0] == 'Logical_Switch']
+        self.assertEqual([], calls)
+        self.nb_idl.unset_lswitch_port_to_virtual_type.assert_not_called()
+
+    def test__delete_port_virtual_child_different_parent(self):
+        """Virtual port referencing a different parent is not affected."""
+        port_id = 'my-port'
+        ovn_network_name = 'neutron-net1'
+
+        ovn_port = self._make_fake_lsp(port_id)
+        ovn_port.external_ids = {
+            constants.OVN_NETWORK_NAME_EXT_ID_KEY: ovn_network_name}
+
+        virtual_lsp = self._make_fake_lsp(
+            'virtual-port', constants.LSP_TYPE_VIRTUAL,
+            {constants.LSP_OPTIONS_VIRTUAL_PARENTS_KEY: 'other-parent'})
+        ls = mock.Mock()
+        ls.ports = [virtual_lsp]
+
+        self._setup_delete_port_mocks(ovn_port, ls)
+
+        ctx = ncontext.Context()
+        self.ovn_client._delete_port(ctx, port_id)
+
+        self.nb_idl.unset_lswitch_port_to_virtual_type.assert_not_called()
 
 
 class TestOVNClientFairMeter(TestOVNClientBase,

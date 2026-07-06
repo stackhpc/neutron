@@ -300,7 +300,7 @@ class SriovNicSwitchAgent:
         if device_info.get('removed'):
             resync_b = self.treat_devices_removed(device_info['removed'])
         # If one of the above operations fails => resync with plugin
-        return (resync_a | resync_b)
+        return resync_a | resync_b
 
     def treat_device(self, device_info, admin_state_up, spoofcheck=True,
                      propagate_uplink_state=False):
@@ -521,8 +521,8 @@ class SriovNicSwitchAgent:
                 self.activated_bindings |= activated_bindings_copy
 
             # sleep till end of polling interval
-            elapsed = (time.time() - start)
-            if (elapsed < self.polling_interval):
+            elapsed = time.time() - start
+            if elapsed < self.polling_interval:
                 self.daemon_loop_event.wait(self.polling_interval - elapsed)
             else:
                 LOG.debug("Loop iteration exceeded interval "
@@ -567,7 +567,7 @@ class SriovNicAgentConfigParser:
         """
         dev_net_set = set(itertools.chain.from_iterable(
             self.device_mappings.values()))
-        for dev_name in self.exclude_devices.keys():
+        for dev_name in self.exclude_devices:
             if dev_name not in dev_net_set:
                 raise ValueError(_(
                     "Invalid exclude_devices: "

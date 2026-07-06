@@ -62,6 +62,8 @@ from neutron_lib.api.definitions import rbac_address_groups as rbac_ag_apidef
 from neutron_lib.api.definitions import rbac_address_scope
 from neutron_lib.api.definitions import rbac_security_groups as rbac_sg_apidef
 from neutron_lib.api.definitions import rbac_subnetpool
+from neutron_lib.api.definitions import security_groups_default_statefulness \
+    as sg_ds_def
 from neutron_lib.api.definitions import security_groups_normalized_cidr
 from neutron_lib.api.definitions import security_groups_port_filtering
 from neutron_lib.api.definitions import security_groups_remote_address_group
@@ -260,6 +262,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                     sg_rules_default_sg.ALIAS,
                                     subnet_ext_net_def.ALIAS,
                                     qinq_apidef.ALIAS,
+                                    sg_ds_def.ALIAS,
                                     ]
 
     # List of agent types for which all binding_failed ports should try to be
@@ -1413,7 +1416,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             net_id: driver_context.NetworkContext(
                 self, context, nets_by_netid[net_id],
                 segments=segments_by_netid[net_id])
-            for net_id in nets_by_netid.keys()
+            for net_id in nets_by_netid
         }
         return netctxs_by_netid
 
@@ -2679,7 +2682,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
             network_db = self._get_network(context, network_id)
             network_db.mtu = self._get_network_mtu(
                 network_db,
-                validate=(event != events.PRECOMMIT_DELETE))
+                validate=event != events.PRECOMMIT_DELETE)
             network_db.save(session=context.session)
 
         try:
@@ -2886,7 +2889,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                 port_db.port_bindings, host)
             if not original_binding:
                 raise exc.PortBindingNotFound(port_id=port_id, host=host)
-            is_active_binding = (original_binding.status == const.ACTIVE)
+            is_active_binding = original_binding.status == const.ACTIVE
             network = self.get_network(context, port_db['network_id'])
             port_dict = self._make_port_dict(port_db)
             mech_context = driver_context.PortContext(self, context, port_dict,

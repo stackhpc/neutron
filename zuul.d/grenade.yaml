@@ -50,7 +50,6 @@
           Q_AGENT: openvswitch
           Q_ML2_TENANT_NETWORK_TYPE: vxlan
           Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
-          NEUTRON_DEPLOY_MOD_WSGI: True
       devstack_services:
         etcd: false
         br-ex-tcpdump: true
@@ -109,12 +108,6 @@
               agent:
                 debug_iptables_rules: True
 
-# TODO(ralonsoh): remove this duplicated definition when "devstack" and
-# "tempest" adopt the new name.
-- job:
-    name: neutron-grenade-multinode
-    parent: neutron-ovs-grenade-multinode
-
 - job:
     name: neutron-ovs-grenade-dvr-multinode
     parent: grenade-multinode
@@ -131,7 +124,6 @@
           Q_AGENT: openvswitch
           Q_ML2_TENANT_NETWORK_TYPE: vxlan
           Q_ML2_PLUGIN_MECHANISM_DRIVERS: openvswitch
-          NEUTRON_DEPLOY_MOD_WSGI: True
       devstack_services:
         etcd: false
         br-ex-tcpdump: true
@@ -310,7 +302,6 @@
           OVN_L3_CREATE_PUBLIC_NETWORK: true
           OVN_DBS_LOG_LEVEL: dbg
           OVN_IGMP_SNOOPING_ENABLE: True
-          NEUTRON_DEPLOY_MOD_WSGI: True
       devstack_plugins:
         neutron: https://opendev.org/openstack/neutron
         neutron-tempest-plugin: https://opendev.org/openstack/neutron-tempest-plugin
@@ -434,13 +425,3 @@
       grenade_from_branch: stable/2025.2
       grenade_localrc:
         NOVA_ENABLE_UPGRADE_WORKAROUND: True
-
-# NOTE(ralonsoh): to be removed in 2026.2, once the OVN Metadata agent
-# replacement finishes. See LP#2112313.
-- job:
-    name: neutron-ovn-grenade-multinode-ovn-metadata-agent
-    parent: neutron-ovn-grenade-multinode
-    vars:
-      devstack_services:
-        q-ovn-metadata-agent: true
-        q-ovn-agent: false

@@ -59,8 +59,11 @@ class _TestMaintenanceHelper(base.TestOVNFunctionalBase):
         ext_mgr = test_extraroute.ExtraRouteTestExtensionManager()
         self.ext_api = test_extensions.setup_extensions_middleware(ext_mgr)
         self.maint = maintenance.DBInconsistenciesPeriodics(self._ovn_client)
-        # Release the unneeded lock
+        # Release the unneeded lock and simulate holding it for tests
         self.maint._idl.set_lock(None)
+        mock.patch.object(type(self.maint), 'has_lock',
+                          new_callable=mock.PropertyMock,
+                          return_value=True).start()
         self.context = n_context.get_admin_context()
         # Always verify inconsistencies for all objects.
         db_rev.INCONSISTENCIES_OLDER_THAN = -1
@@ -1034,7 +1037,7 @@ class TestMaintenance(_TestMaintenanceHelper):
         # Assert the router snat rule is still there
         snat_rule = self._find_nat_rule(
             router['id'], '100.0.0.2', nat_type='snat')
-        self.assertEqual(subnet1['cidr'], snat_rule['logical_ip'])
+        self.assertEqual('0.0.0.0/0', snat_rule['logical_ip'])
 
     def test_port_forwarding(self):
         def fip_attrs(args):

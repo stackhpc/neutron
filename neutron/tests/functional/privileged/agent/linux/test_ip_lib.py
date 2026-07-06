@@ -532,8 +532,8 @@ class RouteTestCase(functional_base.BaseSudoTestCase):
 
             for mp in rta_multipath:
                 mp['gateway'] = linux_utils.get_attr(mp, 'RTA_GATEWAY')
-                for key in to_check:
-                    if to_check[key] != mp[key]:
+                for key, expected in to_check.items():
+                    if expected != mp[key]:
                         break
                 else:
                     break
@@ -581,7 +581,7 @@ class RouteTestCase(functional_base.BaseSudoTestCase):
         scope = 0
         routes = priv_ip_lib.list_ip_routes(self.namespace, ip_version)
         for route in routes:
-            if not (linux_utils.get_attr(route, 'RTA_GATEWAY') == gateway):
+            if not linux_utils.get_attr(route, 'RTA_GATEWAY') == gateway:
                 continue
             self.assertEqual(table, route['table'])
             self.assertEqual(

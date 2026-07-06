@@ -45,7 +45,6 @@ suggestion-mode=yes
 # with a local disable)
 disable=
 # "F" Fatal errors that prevent further processing
- import-error,
 # "I" Informational noise
 # "E" Error for important programming issues (likely bugs)
  access-member-before-definition,
@@ -67,27 +66,20 @@ disable=
  redefined-outer-name,
  signature-differs,
  super-init-not-called,
- unpacking-non-sequence,
  unused-argument,
  unused-import,
  unused-variable,
- unnecessary-pass,
  raise-missing-from,
  arguments-renamed,
  broad-exception-raised,
  unspecified-encoding,
  unused-private-member,
 # "C" Coding convention violations
- consider-iterating-dictionary,
- consider-using-enumerate,
  invalid-name,
  missing-docstring,
- singleton-comparison,
- superfluous-parens,
  ungrouped-imports,
  wrong-import-order,
  consider-using-f-string,
- consider-using-dict-items,
 # "R" Refactor recommendations
  duplicate-code,
  inconsistent-return-statements,
@@ -100,7 +92,6 @@ disable=
  too-many-instance-attributes,
  too-many-lines,
  too-many-locals,
- too-many-nested-blocks,
  too-many-positional-arguments,
  too-many-public-methods,
  too-many-return-statements,
