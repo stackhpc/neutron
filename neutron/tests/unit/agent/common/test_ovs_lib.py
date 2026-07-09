@@ -582,7 +582,7 @@ class OVS_Lib_Test(base.BaseTestCase):
     def test_get_local_port_mac_raises_exception_for_missing_mac(self):
         with mock.patch('neutron.agent.linux.ip_lib.IpLinkCommand',
                         return_value=mock.Mock(address=None)):
-            with testtools.ExpectedException(Exception):
+            with testtools.ExpectedException(RuntimeError):
                 self.br.get_local_port_mac()
 
     def test_delete_egress_bw_limit_for_port(self):
@@ -751,7 +751,7 @@ class TestDeferredOVSBridge(base.BaseTestCase):
                 deferred_br.add_flow(**self.add_flow_dict1)
                 deferred_br.mod_flow(**self.mod_flow_dict1)
                 deferred_br.delete_flows(**self.del_flow_dict1)
-                raise Exception()
+                raise RuntimeError()
         except Exception:
             self._verify_mock_call([])
 

@@ -29,7 +29,7 @@ class FaultyAgentMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     """
 
     def __init__(self):
-        raise Exception("Using a faulty driver for testing purposes.")
+        raise RuntimeError("Using a faulty driver for testing purposes.")
 
     def get_allowed_network_types(self, agent):
         pass

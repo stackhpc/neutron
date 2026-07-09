@@ -247,7 +247,8 @@ class MetadataProxyHandlerBase(metaclass=abc.ABCMeta):
         if resp.status_code in (400, 404, 409, 502, 503, 504):
             webob_exc_cls = webob.exc.status_map.get(resp.status_code)
             return webob_exc_cls()
-        raise Exception(_('Unexpected response code: %s') % resp.status_code)
+        raise RuntimeError(_('Unexpected response code: %s') %
+                           resp.status_code)
 
 
 class UnixDomainMetadataProxyBase(metaclass=abc.ABCMeta):

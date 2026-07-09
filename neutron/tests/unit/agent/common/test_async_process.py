@@ -108,7 +108,7 @@ class TestAsyncProcess(base.BaseTestCase):
                 mock_spawn.assert_not_called()
 
     def _watch_process_exception(self):
-        raise Exception('Error!')
+        raise RuntimeError('Error!')
 
     def _test__watch_process(self, callback, kill_event):
         self.proc._is_running = True

@@ -85,7 +85,7 @@ class TestHelper(base.BaseSudoTestCase):
             self.iptables_firewall.iptables.get_rules_for_table('filter'))
         for line in iptables_rules:
             if tap_name in line:
-                raise Exception("port {} still has iptables rules "
+                raise RuntimeError("port {} still has iptables rules "
                                 "in {}".format(tap_name, line))
 
     def test_migration(self):

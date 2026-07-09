@@ -114,7 +114,7 @@ class NeutronManager(metaclass=profiler.TracedMeta):
         msg = validate_pre_plugin_load()
         if msg:
             LOG.critical(msg)
-            raise Exception(msg)
+            raise RuntimeError(msg)
 
         # NOTE(jkoelker) Testing for the subclass with the __subclasshook__
         #                breaks tach monitoring. It has been removed

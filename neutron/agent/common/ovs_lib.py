@@ -238,7 +238,7 @@ OF_PROTOCOL_TO_VERSION = {
 
 def version_from_protocol(protocol):
     if protocol not in OF_PROTOCOL_TO_VERSION:
-        raise Exception(_("unknown OVS protocol string, cannot compare: "
+        raise RuntimeError(_("unknown OVS protocol string, cannot compare: "
                           "%(protocol)s, (known: %(known)s)") %
                         {'protocol': protocol,
                          'known': list(OF_PROTOCOL_TO_VERSION)})
@@ -540,8 +540,9 @@ class OVSBridge(BaseOVS):
                     # cookie to match flows whatever their cookie is
                     kw.pop('cookie')
                     if kw.get('cookie_mask'):  # non-zero cookie mask
-                        raise Exception(_("cookie=COOKIE_ANY but cookie_mask "
-                                          "set to %s") % kw.get('cookie_mask'))
+                        raise RuntimeError(_("cookie=COOKIE_ANY but "
+                                          "cookie_mask set to %s") %
+                                          kw.get('cookie_mask'))
                 elif 'cookie' in kw:
                     # a cookie was specified, use it
                     kw['cookie'] = check_cookie_mask(kw['cookie'])
@@ -822,7 +823,7 @@ class OVSBridge(BaseOVS):
         if address:
             return address
         msg = _('Unable to determine mac address for %s') % self.br_name
-        raise Exception(msg)
+        raise RuntimeError(msg)
 
     def set_controllers_inactivity_probe(self, interval):
         """Set bridge controllers inactivity probe interval.

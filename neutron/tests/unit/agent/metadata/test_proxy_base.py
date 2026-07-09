@@ -141,7 +141,7 @@ class TestMetadataProxyHandlerBase(base.BaseTestCase):
                               webob.exc.HTTPGatewayTimeout)
 
     def test_proxy_request_other_code(self):
-        with testtools.ExpectedException(Exception):
+        with testtools.ExpectedException(RuntimeError):
             self._proxy_request_test_helper(302)
 
     def test_proxy_request_connection_error(self):

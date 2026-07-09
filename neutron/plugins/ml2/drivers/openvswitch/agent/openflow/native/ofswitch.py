@@ -165,9 +165,8 @@ class OpenFlowSwitchMixin:
         if cookie == ovs_lib.COOKIE_ANY:
             cookie = 0
             if cookie_mask != 0:
-                raise Exception(_("cookie=COOKIE_ANY but cookie_mask set to "
-                                  "%s") %
-                                cookie_mask)
+                raise RuntimeError(_("cookie=COOKIE_ANY but cookie_mask set "
+                                  "to %s") % cookie_mask)
         elif cookie == COOKIE_DEFAULT:
             cookie = self._default_cookie
             cookie_mask = ovs_lib.UINT64_BITMASK

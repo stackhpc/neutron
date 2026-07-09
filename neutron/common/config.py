@@ -107,7 +107,7 @@ def init(args, default_config_files=None, **kwargs):
     msg = validators.validate_regex(cfg.CONF.base_mac, validators.MAC_PATTERN)
     if msg:
         msg = _("Base MAC: %s") % msg
-        raise Exception(msg)
+        raise RuntimeError(msg)
 
 
 def setup_logging():

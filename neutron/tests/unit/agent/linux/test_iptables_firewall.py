@@ -1949,7 +1949,7 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
     def test_filter_defer_with_exception(self):
         try:
             with self.firewall.defer_apply():
-                raise Exception("same exception")
+                raise RuntimeError("same exception")
         except Exception:
             pass
         self.iptables_inst.assert_has_calls([mock.call.defer_apply_on(),
