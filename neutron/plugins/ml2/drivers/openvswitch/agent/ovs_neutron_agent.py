@@ -517,8 +517,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     self.available_local_vlans.remove(local_vlan)
                     # Restore the br-tun flood output ports
                     # See LP #1978088
-                    tun_ofports = self.tun_br.get_flood_to_tun_ofports(
-                        local_vlan)
+                    tun_ofports = set()
+                    if self.enable_tunneling:
+                        tun_ofports = self.tun_br.get_flood_to_tun_ofports(
+                            local_vlan)
                     self._local_vlan_hints[key] = {
                         'vlan': local_vlan,
                         'tun_ofports': tun_ofports}
@@ -1489,7 +1491,15 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         if not lvm.vif_ports:
             self.reclaim_local_vlan(net_uuid, lvm.segmentation_id)
 
+    @staticmethod
+    def _has_valid_ofport(port):
+        return port.ofport and port.ofport != ovs_lib.INVALID_OFPORT
+
     def port_alive(self, port, log_errors=True):
+        if not self._has_valid_ofport(port):
+            LOG.warning("port_alive skipped for port %s: invalid ofport %s",
+                        port.port_name, port.ofport)
+            return
         cur_tag = self.int_br.db_get_val("Port", port.port_name, "tag",
                                          log_errors=log_errors)
         # Port normal vlan tag is set correctly, remove the drop flows
@@ -1505,6 +1515,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
         :param port: an ovs_lib.VifPort object.
         '''
+        if not self._has_valid_ofport(port):
+            LOG.warning("port_dead skipped for port %s: invalid ofport %s",
+                        port.port_name, port.ofport)
+            return
         # Don't kill a port if it's already dead
         cur_tag = self.int_br.db_get_val("Port", port.port_name, "tag",
                                          log_errors=log_errors)
@@ -1856,9 +1870,11 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 iface_id = self.int_br.portid_from_external_ids(
                     port['external_ids'])
                 if iface_id:
-                    if port['ofport'] == ovs_lib.UNASSIGNED_OFPORT:
-                        LOG.debug("Port %s not ready yet on the bridge",
-                                  iface_id)
+                    if port['ofport'] in (ovs_lib.UNASSIGNED_OFPORT,
+                                          ovs_lib.INVALID_OFPORT):
+                        LOG.debug("Port %s not ready yet on the bridge "
+                                  "(ofport=%s)",
+                                  iface_id, port['ofport'])
                         ports_not_ready_yet.add(port['name'])
                         return
                     # check if port belongs to ancillary bridge
@@ -1964,19 +1980,12 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                        physical_network, segmentation_id, admin_state_up,
                        fixed_ips, device_owner, provisioning_needed):
         port_needs_binding = True
-        if not vif_port.ofport:
-            # Log an error if the VIF port has no ofport, which indicates
-            # that the port might not be able to transmit traffic.
-            LOG.error("VIF port: %s has no ofport and might not "
-                      "be able to transmit.", vif_port.vif_id)
-        elif vif_port.ofport == ovs_lib.INVALID_OFPORT:
-            # When the ofport is set to INVALID_OFPORT, it indicates that
-            # the port is in a transitional state and has not yet been fully
-            # configured.
-            LOG.info("VIF port: %s is in a transitional state and has not "
-                     "yet been assigned a valid ofport. This is expected "
-                     "during port initialization. (ofport=%s)",
-                     vif_port.vif_id, vif_port.ofport)
+        if not self._has_valid_ofport(vif_port):
+            LOG.warning("VIF port: %s has no valid ofport (ofport=%s), "
+                        "skipping OF operations; the port will be "
+                        "retried on the next iteration.",
+                        vif_port.vif_id, vif_port.ofport)
+            return False
         if admin_state_up:
             port_needs_binding = self.port_bound(
                 vif_port, network_id, network_type,
