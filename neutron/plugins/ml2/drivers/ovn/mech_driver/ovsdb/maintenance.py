@@ -540,9 +540,8 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
         run_immediately=True)
     @log_maintenance_task(
-        start_message=(
-            'Check missing prefix router_name',
-            'in external_ids of LRPs.'))
+        start_message='Check missing prefix router_name in external_ids '
+                      'of LRPs.')
     def update_lrouter_ports_ext_ids_name_prefix(self):
         """Update OVN logical router ports if missing external ids
         "neutron-" prefix for router name.
@@ -862,10 +861,9 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
 
         config_fdb_age_threshold = ovn_conf.get_fdb_age_threshold()
         # Get provider networks
-        nets = self._ovn_client._plugin.get_networks(context)
+        nets = self._ovn_client._plugin.get_networks(
+            context, {pnet.NETWORK_TYPE: n_const.TYPE_PHYSICAL})
         for net in nets:
-            if not utils.is_provider_network(net):
-                continue
             ls_name = utils.ovn_name(net['id'])
             ls = self._nb_idl.get_lswitch(ls_name)
             ls_fdb_age_threshold = ls.other_config.get(

@@ -18,6 +18,7 @@ from unittest import mock
 from neutron_lib.api.definitions import l3
 from neutron_lib import constants as const
 from neutron_lib import context as ncontext
+from neutron_lib import exceptions as n_exc
 from neutron_lib.services.logapi import constants as log_const
 from neutron_lib.services.trunk import constants as trunk_const
 from oslo_config import cfg
@@ -331,6 +332,21 @@ class TestOVNClient(TestOVNClientBase):
         self.ovn_client.update_lsp_host_info(context, db_port)
         self.nb_idl.db_remove.assert_not_called()
         self.nb_idl.db_set.assert_not_called()
+
+    def test_update_lsp_host_info_router_port(self):
+        context = mock.MagicMock()
+        for device_owner in (const.DEVICE_OWNER_ROUTER_INTF,
+                             const.DEVICE_OWNER_DVR_INTERFACE,
+                             const.DEVICE_OWNER_ROUTER_HA_INTF,
+                             const.DEVICE_OWNER_HA_REPLICATED_INT,
+                             ):
+            self.nb_idl.reset_mock()
+            db_port = mock.Mock(id='fake-port-id',
+                                device_owner=device_owner)
+            self.ovn_client.update_lsp_host_info(context, db_port)
+            self.nb_idl.lookup.assert_not_called()
+            self.nb_idl.db_remove.assert_not_called()
+            self.nb_idl.db_set.assert_not_called()
 
     @mock.patch.object(ml2_db, 'get_port')
     def test__wait_for_active_port_bindings_host(self, mock_get_port):
@@ -718,6 +734,62 @@ class TestOVNClient(TestOVNClientBase):
             ctx, filters={'id': []})
         plugin.get_network.assert_not_called()
 
+    def test__get_nets_and_ipv6_ra_confs_metadata_route_info(self):
+        """route_info advertises metadata IPv6 address when enabled."""
+        cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        subnets = [
+            {'id': 'sub-v6', 'cidr': 'fd00::/64',
+             'network_id': 'net1', 'ipv6_address_mode': 'slaac'},
+        ]
+        plugin.get_subnets.return_value = subnets
+        network = {'id': 'net1', 'mtu': 1500,
+                   'router:external': False}
+        plugin.get_network.return_value = network
+        port = {
+            'fixed_ips': [
+                {'subnet_id': 'sub-v6', 'ip_address': 'fd00::5'},
+            ],
+            'device_owner': const.DEVICE_OWNER_ROUTER_INTF,
+        }
+
+        ctx = ncontext.Context()
+        _, ipv6_ra_configs = (
+            self.ovn_client._get_nets_and_ipv6_ra_confs_for_router_port(
+                ctx, port))
+
+        self.assertIn('route_info', ipv6_ra_configs)
+        self.assertEqual('MEDIUM-%s' % const.METADATA_V6_CIDR,
+                         ipv6_ra_configs['route_info'])
+
+    def test__get_nets_and_ipv6_ra_confs_no_route_info_metadata_disabled(self):
+        """route_info is absent when metadata is disabled."""
+        cfg.CONF.set_override('ovn_metadata_enabled', False, group='ovn')
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        subnets = [
+            {'id': 'sub-v6', 'cidr': 'fd00::/64',
+             'network_id': 'net1', 'ipv6_address_mode': 'slaac'},
+        ]
+        plugin.get_subnets.return_value = subnets
+        network = {'id': 'net1', 'mtu': 1500,
+                   'router:external': False}
+        plugin.get_network.return_value = network
+        port = {
+            'fixed_ips': [
+                {'subnet_id': 'sub-v6', 'ip_address': 'fd00::5'},
+            ],
+            'device_owner': const.DEVICE_OWNER_ROUTER_INTF,
+        }
+
+        ctx = ncontext.Context()
+        _, ipv6_ra_configs = (
+            self.ovn_client._get_nets_and_ipv6_ra_confs_for_router_port(
+                ctx, port))
+
+        self.assertNotIn('route_info', ipv6_ra_configs)
+
     def _make_fake_lsp(self, name, lsp_type='', options=None):
         lsp = mock.Mock()
         lsp.name = name
@@ -823,6 +895,104 @@ class TestOVNClient(TestOVNClientBase):
         self.ovn_client._delete_port(ctx, port_id)
 
         self.nb_idl.unset_lswitch_port_to_virtual_type.assert_not_called()
+
+    @mock.patch('neutron.db.ovn_revision_numbers_db.bump_revision')
+    def test_update_virtual_port_parent_host_with_chassis(self,
+                                                          mock_bump_rev):
+        """Updating a virtual port parent host resolves hostname from SB."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        fake_port = {'id': 'vip-port', 'revision_number': 5}
+        plugin.get_port.return_value = fake_port
+
+        mock_db_get = mock.Mock()
+        mock_db_get.execute.return_value = 'compute-0'
+        self.sb_idl.db_get.return_value = mock_db_get
+
+        check_rev_cmd = mock.Mock()
+        check_rev_cmd.result = constants.TXN_COMMITTED
+        self.nb_idl.check_revision_number.return_value = check_rev_cmd
+
+        ctx = ncontext.Context()
+        self.ovn_client.update_virtual_port_parent_host(
+            ctx, 'vip-port', chassis_id='chassis-uuid')
+
+        self.sb_idl.db_get.assert_called_once_with(
+            'Chassis', 'chassis-uuid', 'hostname')
+        plugin.update_virtual_port_parent_host.assert_called_once_with(
+            ctx, 'vip-port', 'compute-0')
+        plugin.get_port.assert_called_once_with(ctx, 'vip-port')
+        self.nb_idl.db_set.assert_called_once_with(
+            'Logical_Switch_Port', 'vip-port',
+            ('external_ids',
+             {constants.OVN_PARENT_HOSTNAME_EXT_ID_KEY: 'compute-0'}))
+        mock_bump_rev.assert_called_once_with(
+            ctx, fake_port, constants.TYPE_PORTS)
+
+    @mock.patch('neutron.db.ovn_revision_numbers_db.bump_revision')
+    def test_update_virtual_port_parent_host_with_hostname(self,
+                                                           mock_bump_rev):
+        """Updating a virtual port parent host with explicit hostname."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        fake_port = {'id': 'vip-port', 'revision_number': 5}
+        plugin.get_port.return_value = fake_port
+
+        check_rev_cmd = mock.Mock()
+        check_rev_cmd.result = constants.TXN_COMMITTED
+        self.nb_idl.check_revision_number.return_value = check_rev_cmd
+
+        ctx = ncontext.Context()
+        self.ovn_client.update_virtual_port_parent_host(
+            ctx, 'vip-port', hostname='compute-1')
+
+        self.sb_idl.db_get.assert_not_called()
+        plugin.update_virtual_port_parent_host.assert_called_once_with(
+            ctx, 'vip-port', 'compute-1')
+        plugin.get_port.assert_called_once_with(ctx, 'vip-port')
+        mock_bump_rev.assert_called_once_with(
+            ctx, fake_port, constants.TYPE_PORTS)
+
+    @mock.patch('neutron.db.ovn_revision_numbers_db.bump_revision')
+    def test_update_virtual_port_parent_host_no_chassis_no_hostname(
+            self, mock_bump_rev):
+        """Clearing virtual port parent host when no chassis/hostname."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        fake_port = {'id': 'vip-port', 'revision_number': 5}
+        plugin.get_port.return_value = fake_port
+
+        check_rev_cmd = mock.Mock()
+        check_rev_cmd.result = constants.TXN_COMMITTED
+        self.nb_idl.check_revision_number.return_value = check_rev_cmd
+
+        ctx = ncontext.Context()
+        self.ovn_client.update_virtual_port_parent_host(ctx, 'vip-port')
+
+        plugin.update_virtual_port_parent_host.assert_called_once_with(
+            ctx, 'vip-port', '')
+        self.nb_idl.db_set.assert_called_once_with(
+            'Logical_Switch_Port', 'vip-port',
+            ('external_ids',
+             {constants.OVN_PARENT_HOSTNAME_EXT_ID_KEY: ''}))
+        mock_bump_rev.assert_called_once_with(
+            ctx, fake_port, constants.TYPE_PORTS)
+
+    def test_update_virtual_port_parent_host_port_not_found(self):
+        """PortNotFound is handled gracefully when port is already deleted."""
+        plugin = mock.MagicMock()
+        self.get_plugin.return_value = plugin
+        plugin.get_port.side_effect = n_exc.PortNotFound(port_id='vip-port')
+
+        ctx = ncontext.Context()
+        self.ovn_client.update_virtual_port_parent_host(
+            ctx, 'vip-port', hostname='compute-0')
+
+        plugin.update_virtual_port_parent_host.assert_called_once_with(
+            ctx, 'vip-port', 'compute-0')
+        plugin.get_port.assert_called_once_with(ctx, 'vip-port')
+        self.nb_idl.check_revision_number.assert_not_called()
+        self.nb_idl.db_set.assert_not_called()
 
 
 class TestOVNClientFairMeter(TestOVNClientBase,

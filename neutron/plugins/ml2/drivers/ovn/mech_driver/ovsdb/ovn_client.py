@@ -326,6 +326,17 @@ class OVNClient:
             # NOTE(ralonsoh): OVN subports don't have host ID information.
             return
 
+        if db_port.device_owner in (const.DEVICE_OWNER_ROUTER_INTF,
+                                    const.DEVICE_OWNER_DVR_INTERFACE,
+                                    const.DEVICE_OWNER_ROUTER_HA_INTF,
+                                    const.DEVICE_OWNER_HA_REPLICATED_INT,
+                                    ):
+            # NOTE(ralonsoh): router ports in OVN are never bound to a host.
+            # In ML2/OVN, only ``DEVICE_OWNER_ROUTER_INTF`` applies to
+            # non-gateway LRPs; the others could come from ML2/OVS migrated
+            # environments. See LP#2159632.
+            return
+
         lsp = self._nb_idl.lookup('Logical_Switch_Port', db_port.id,
                                   default=None)
         if not lsp:
@@ -856,7 +867,12 @@ class OVNClient:
         # Updates neutron database with hostname for virtual port
         self._plugin.update_virtual_port_parent_host(context, port_id,
                                                      hostname)
-        db_port = self._plugin.get_port(context, port_id)
+        try:
+            db_port = self._plugin.get_port(context, port_id)
+        except n_exc.PortNotFound:
+            LOG.debug('Port %s not found, skipping virtual port parent '
+                      'host update in OVN NB', port_id)
+            return
         check_rev_cmd = self._nb_idl.check_revision_number(
             port_id, db_port, ovn_const.TYPE_PORTS)
         # Updates OVN NB database with the parent hostname for LSP virtual port
@@ -1373,6 +1389,10 @@ class OVNClient:
                 if is_gw_port and utils.is_external_network(net):
                     ipv6_ra_configs['send_periodic'] = 'false'
                 ipv6_ra_configs['mtu'] = str(net['mtu'])
+
+        if ipv6_ra_configs and ovn_conf.is_ovn_metadata_enabled():
+            ipv6_ra_configs['route_info'] = (
+                'MEDIUM-%s' % const.METADATA_V6_CIDR)
 
         return list(networks), ipv6_ra_configs
 

@@ -58,9 +58,13 @@ core_opts = [
                        "a resource is empty, availability zone is "
                        "considered for high availability while scheduling "
                        "the resource.")),
-    cfg.IntOpt('max_dns_nameservers', default=5,
+    cfg.IntOpt('max_dns_nameservers',
+               default=5,
+               min=0,
                help=_("Maximum number of DNS nameservers per subnet")),
-    cfg.IntOpt('max_subnet_host_routes', default=20,
+    cfg.IntOpt('max_subnet_host_routes',
+               default=20,
+               min=0,
                help=_("Maximum number of host routes per subnet")),
     cfg.BoolOpt('ipv6_pd_enabled', default=False,
                 help=_("Warning: This feature is experimental with low test "
@@ -80,7 +84,9 @@ core_opts = [
                     "There is no reference implementation for the feature for "
                     "any of in-tree drivers."),
                 ),
-    cfg.IntOpt('dhcp_lease_duration', default=86400,
+    cfg.IntOpt('dhcp_lease_duration',
+               default=86400,
+               min=-1,
                help=_("DHCP lease duration (in seconds). Use -1 to tell "
                       "dnsmasq to use infinite lease times.")),
     cfg.StrOpt('dns_domain',
@@ -107,7 +113,9 @@ core_opts = [
     cfg.BoolOpt('notify_nova_on_port_data_changes', default=True,
                 help=_("Send notification to Nova when port data (fixed_ips/"
                        "floatingip) changes so Nova can update its cache.")),
-    cfg.IntOpt('send_events_interval', default=2,
+    cfg.IntOpt('send_events_interval',
+               default=2,
+               min=1,
                help=_('Number of seconds between sending events to Nova if '
                       'there are any events to send.')),
     cfg.StrOpt('setproctitle',
@@ -149,7 +157,8 @@ core_opts = [
                        'whether to perform validations on filter parameters. '
                        'Filter validation is enabled if this config '
                        'is turned on and it is supported by all plugins')),
-    cfg.IntOpt('global_physnet_mtu', default=constants.DEFAULT_NETWORK_MTU,
+    cfg.IntOpt('global_physnet_mtu',
+               default=constants.DEFAULT_NETWORK_MTU,
                help=_('MTU of the underlying physical network. Neutron uses '
                       'this value to calculate MTU for all virtual network '
                       'components. For flat and VLAN networks, neutron uses '
