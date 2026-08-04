@@ -1,0 +1,17 @@
+---
+features:
+  - |
+    Command line tool ``neutron-ovn-db-sync-util`` now supports plugin-specific
+    configuration file CLI options. Sync plugins can register options such as
+    ``--octavia-config-file`` that load configuration into isolated oslo.config
+    objects, avoiding conflicts with Neutron settings when third-party config
+    files are provided.
+deprecations:
+  - |
+    Support for OVN DB sync plugins that do not accept the ``plugin_conf``
+    argument in ``__init__`` is deprecated. Such plugins can still be used by
+    ``neutron-ovn-db-sync-util``, but plugin-specific configuration files
+    (for example ``--octavia-config-file``) will not be loaded for them. This
+    backward-compatible behavior will be removed in the ``2027.2 (J)`` release.
+    Sync plugin authors should update their plugins to accept ``plugin_conf``
+    and forward it to ``BaseOvnDbSynchronizer.__init__``.

@@ -171,6 +171,51 @@ Key implementation guidelines
   * ``self.ovn_driver``: OVN mechanism driver
   * ``self.mode``: Current sync mode
 
+Plugin-specific configuration files
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Third-party sync plugins often need configuration from their own config files
+(e.g. ``/etc/octavia/octavia.conf``). Do **not** pass those files via
+``--config-file``, because oslo.config merges all config files into the global
+``cfg.CONF`` object and values in common sections (such as ``[database]``) can
+overwrite Neutron settings.
+
+Instead, plugins register dedicated CLI options and load configuration into an
+isolated ``cfg.ConfigOpts`` object exposed as ``self.plugin_conf``.
+
+Example::
+
+    from oslo_config import cfg
+    from neutron_lib.ovn import db_sync
+
+    class OctaviaOvnSynchronizer(db_sync.BaseOvnDbSynchronizer):
+        @classmethod
+        def register_additional_cli_opts(cls, conf):
+            conf.register_cli_opts([
+                cfg.ListOpt('octavia-config-file', default=[],
+                            help='Path(s) to Octavia configuration file(s).'),
+            ])
+
+        @classmethod
+        def register_plugin_config_opts(cls, conf):
+            octavia_conf.register_opts(conf)
+
+        @classmethod
+        def get_plugin_config_files(cls, global_conf):
+            return global_conf.octavia_config_file
+
+        def do_sync(self):
+            # self.plugin_conf holds octavia settings
+            ...
+
+Operators can then run::
+
+    neutron-ovn-db-sync-util \
+        --config-file /etc/neutron/neutron.conf \
+        --config-file /etc/neutron/plugins/ml2/ml2_conf.ini \
+        --octavia-config-file /etc/octavia/octavia.conf \
+        --ovn-neutron_sync_mode repair
+
 OVS to OVN migration
 --------------------
 

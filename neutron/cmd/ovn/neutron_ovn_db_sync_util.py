@@ -105,6 +105,7 @@ def setup_conf():
     db_group, neutron_db_opts = db_options.list_opts()[0]
     cfg.CONF.register_cli_opts(neutron_db_opts, db_group)
     sync_conf.register_ovn_db_sync_cli_opts(cfg.CONF)
+    sync_conf.register_sync_plugins_additional_cli_opts(cfg.CONF)
     # Override Nova notify configuration LP: #1882020
     cfg.CONF.set_override('notify_nova_on_port_status_changes', False)
     cfg.CONF.set_override('notify_nova_on_port_data_changes', False)
@@ -179,14 +180,58 @@ def configure_ml2_extension_drivers(conf, mgr):
     conf.set_override('extension_drivers', extension_drivers, 'ml2')
 
 
-def synchronize_ovn_dbs(mgr, core_plugin, ovn_driver, mode):
+def _accepts_plugin_conf(sync_plugin):
+    """Return True if sync_plugin.__init__ accepts plugin_conf."""
+    try:
+        sig = inspect.signature(sync_plugin.__init__)
+    except (TypeError, ValueError):
+        return False
+    for name, param in sig.parameters.items():
+        if name == 'plugin_conf':
+            return True
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return False
+
+
+def _create_sync_obj(sync_plugin, sync_driver_name, core_plugin,
+                     ovn_driver, mode, plugin_conf=None):
+    """Create a sync plugin instance with backward-compatible kwargs."""
+    if not _accepts_plugin_conf(sync_plugin):
+        LOG.warning(
+            'Support for OVN DB sync plugins that do not accept the '
+            'plugin_conf argument in __init__ is deprecated and will be '
+            'removed in the 2027.2 (J) release. Sync plugin %(name)s '
+            '(%(class)s) should be updated to accept plugin_conf and '
+            'forward it to BaseOvnDbSynchronizer.__init__ for compatibility '
+            'with plugin-specific configuration files.',
+            {'name': sync_driver_name, 'class': sync_plugin.__name__})
+        if plugin_conf is not None:
+            LOG.warning(
+                'Plugin-specific configuration for sync plugin %(name)s '
+                'will not be loaded because the plugin does not support '
+                'plugin_conf. This backward-compatible behavior is '
+                'deprecated and will be removed in the 2027.2 (J) release.',
+                {'name': sync_driver_name})
+        return sync_plugin(core_plugin, ovn_driver, mode)
+
+    return sync_plugin(
+        core_plugin, ovn_driver, mode, plugin_conf=plugin_conf)
+
+
+def synchronize_ovn_dbs(mgr, core_plugin, ovn_driver, mode,
+                        plugin_configs=None):
+    plugin_configs = plugin_configs or {}
     LOG.info('Neutron OVN DBs sync started with mode: %s', mode)
     sorted_drivers = sorted(
         mgr, key=lambda ext: getattr(ext.plugin, '_sync_order', 0))
     for sync_driver in sorted_drivers:
         LOG.info('Starting synchronize with %s driver',
                  sync_driver.name)
-        sync_obj = sync_driver.plugin(core_plugin, ovn_driver, mode)
+        sync_obj = _create_sync_obj(
+            sync_driver.plugin, sync_driver.name,
+            core_plugin, ovn_driver, mode,
+            plugin_conf=plugin_configs.get(sync_driver.name))
         sync_obj.do_sync()
         LOG.info('Driver %s sync completed', sync_driver.name)
     LOG.info('Neutron OVN DBs sync completed')
@@ -228,6 +273,9 @@ def main():
         raise SystemExit(1)
 
     LOG.info('Loaded sync plugins: %s', ', '.join(sync_ext_mgr.names()))
+
+    plugin_configs = sync_conf.load_sync_plugins_configuration(
+        conf, sync_ext_mgr)
 
     mode = ovn_conf.get_ovn_neutron_sync_mode()
     # Migrate mode will run as repair mode in the synchronizer
@@ -291,7 +339,7 @@ def main():
     ovn_driver._post_fork_event.set()
 
     synchronize_ovn_dbs(
-        sync_ext_mgr, core_plugin, ovn_driver, mode
+        sync_ext_mgr, core_plugin, ovn_driver, mode, plugin_configs
     )
 
     # TODO(slaweq): add drivers for the ovs2ovn migration

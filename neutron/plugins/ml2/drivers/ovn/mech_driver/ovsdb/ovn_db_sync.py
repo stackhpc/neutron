@@ -61,9 +61,11 @@ class OvnNbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
     ]
     _required_ml2_ext_drivers = ['qos']
 
-    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False):
+    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False,
+                 plugin_conf=None):
         super().__init__(
-            core_plugin, ovn_driver, mode, is_maintenance)
+            core_plugin, ovn_driver, mode, is_maintenance,
+            plugin_conf=plugin_conf)
         self.l3_plugin = directory.get_plugin(plugin_constants.L3)
         self.pf_plugin = directory.get_plugin(plugin_constants.PORTFORWARDING)
         if not self.pf_plugin:
@@ -1822,9 +1824,11 @@ class OvnSbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
     ]
     _required_ml2_ext_drivers = ['qos']
 
-    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False):
+    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False,
+                 plugin_conf=None):
         super().__init__(
-            core_plugin, ovn_driver, mode, is_maintenance)
+            core_plugin, ovn_driver, mode, is_maintenance,
+            plugin_conf=plugin_conf)
         self.l3_plugin = directory.get_plugin(plugin_constants.L3)
         self.agent_cache = neutron_agent.AgentCache(self.ovn_driver)
 

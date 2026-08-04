@@ -11,10 +11,13 @@
 #    under the License.
 
 from importlib.metadata import entry_points
+import inspect
 
 from oslo_config import cfg
+from stevedore import enabled
 
 from neutron._i18n import _
+from neutron_lib.ovn import db_sync as db_sync_base
 
 
 SYNC_ENTRYPOINTS = 'neutron.ovn.db_sync'
@@ -47,5 +50,35 @@ CORE_OPTS = [
 ]
 
 
+def _load_sync_entrypoints(driver_name=None):
+    def load_driver(ext):
+        if (inspect.isclass(ext.plugin) and
+                not issubclass(ext.plugin,
+                               db_sync_base.BaseOvnDbSynchronizer)):
+            return False
+        if driver_name is None:
+            return True
+        return ext.name == driver_name
+
+    return enabled.EnabledExtensionManager(
+        SYNC_ENTRYPOINTS,
+        check_func=load_driver,
+        invoke_on_load=False)
+
+
 def register_ovn_db_sync_cli_opts(conf):
     conf.register_cli_opts(CORE_OPTS)
+
+
+def register_sync_plugins_additional_cli_opts(conf):
+    for ext in _load_sync_entrypoints():
+        ext.plugin.register_additional_cli_opts(conf)
+
+
+def load_sync_plugins_configuration(conf, mgr):
+    plugin_configs = {}
+    for ext in mgr:
+        plugin_conf = ext.plugin.load_plugin_configuration(conf)
+        if plugin_conf is not None:
+            plugin_configs[ext.name] = plugin_conf
+    return plugin_configs
