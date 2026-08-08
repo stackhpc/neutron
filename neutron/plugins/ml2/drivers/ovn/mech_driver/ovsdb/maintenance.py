@@ -238,7 +238,7 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         self._resources_func_map = {
             ovn_const.TYPE_NETWORKS: {
                 'neutron_get': self._ovn_client._plugin.get_network,
-                'ovn_get': self._nb_idl.get_lswitch,
+                'ovn_get': self._get_lswitch,
                 'ovn_create': self._ovn_client.create_network,
                 'ovn_update': self._ovn_client.update_network,
                 'ovn_delete': self._ovn_client.delete_network,
@@ -488,6 +488,13 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                               'resource %(res_uuid)s (type: %(res_type)s)',
                               {'res_uuid': row.resource_uuid,
                                'res_type': row.resource_type})
+
+    def _get_lswitch(self, net_id):
+        # NOTE: ``get_lswitch`` requires the Logical_Switch name, not the
+        # Neutron network ID. A Logical_Switch created before persist_uuid
+        # was used has a random register UUID that does not match the
+        # network ID; such register is only found by its name.
+        return self._nb_idl.get_lswitch(utils.ovn_name(net_id))
 
     def _create_lrouter_port(self, context, port):
         router_id = port['device_id']

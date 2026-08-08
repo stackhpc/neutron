@@ -145,18 +145,28 @@ class AddNetworkCommand(command.AddCommand):
         table = self.api.tables[self.table_name]
         try:
             ls = table.rows[self.network_uuid]
+        except KeyError:
+            # NOTE: a Logical_Switch created before persist_uuid was used has
+            # a random register UUID and is only found by its name. The
+            # Logical_Switch table has no index in the OVN_Northbound schema,
+            # thus ovsdb-server accepts a second register with the same name.
+            ls = idlutils.row_by_value(self.api.idl, self.table_name, 'name',
+                                       utils.ovn_name(self.network_uuid),
+                                       None)
+
+        if ls is not None:
             if self.may_exist:
                 self.result = rowview.RowView(ls)
                 return
             msg = _("Switch %s already exists") % self.network_uuid
             raise RuntimeError(msg)
-        except KeyError:
-            # Adding a new LS
-            if utils.ovs_persist_uuid_supported(txn.idl):
-                ls = txn.insert(table, new_uuid=self.network_uuid,
-                                persist_uuid=True)
-            else:
-                ls = txn.insert(table)
+
+        # Adding a new LS
+        if utils.ovs_persist_uuid_supported(txn.idl):
+            ls = txn.insert(table, new_uuid=self.network_uuid,
+                            persist_uuid=True)
+        else:
+            ls = txn.insert(table)
         self.set_columns(ls, **self.columns)
         ls.name = utils.ovn_name(self.network_uuid)
         self.result = ls.uuid
