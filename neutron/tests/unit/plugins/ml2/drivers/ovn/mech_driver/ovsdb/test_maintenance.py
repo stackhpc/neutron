@@ -846,7 +846,7 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         self.fake_ovn_client._nb_idl.db_set.assert_called_once_with(
             'Logical_Switch', 'neutron-foo',
             ('other_config',
-             {constants.LS_OPTIONS_BROADCAST_ARPS_ROUTERS: 'true'}))
+             {constants.LS_OPTIONS_BROADCAST_ARPS_ROUTERS: str(True)}))
 
     def test_check_network_broadcast_arps_to_all_routers_already_set(self):
         cfg.CONF.set_override('broadcast_arps_to_all_routers', 'false',
@@ -854,7 +854,7 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         networks = [{'id': 'foo', external_net.EXTERNAL: True}]
         self.fake_ovn_client._plugin.get_networks.return_value = networks
         fake_ls = mock.Mock(other_config={
-            constants.LS_OPTIONS_BROADCAST_ARPS_ROUTERS: 'false'})
+            constants.LS_OPTIONS_BROADCAST_ARPS_ROUTERS: str(False)})
         self.fake_ovn_client._nb_idl.get_lswitch.return_value = fake_ls
 
         self.assertRaises(
@@ -887,6 +887,18 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
 
         self.fake_ovn_client._nb_idl.dns_set_options.assert_called_once_with(
             dns.uuid, **dns_options)
+
+    @mock.patch.object(maintenance.LOG, 'error')
+    def test_update_neutron_pg_drop_priority_missing_port_group(self, m_error):
+        self.fake_ovn_client._nb_idl.lookup.return_value = None
+
+        self.assertRaises(periodics.NeverAgain,
+                          self.periodic.update_neutron_pg_drop_priority)
+
+        self.fake_ovn_client._nb_idl.lookup.assert_called_once_with(
+            'Port_Group', constants.OVN_DROP_PORT_GROUP_NAME, default=None)
+        m_error.assert_called_once()
+        self.fake_ovn_client._nb_idl.db_set.assert_not_called()
 
     def test_set_ovn_owned_dns_option_already_set(self):
         cfg.CONF.set_override('dns_records_ovn_owned', 'true',

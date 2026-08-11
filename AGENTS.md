@@ -50,6 +50,13 @@ and controlled (partially) by the Neutron team:
 - [pyroute2](https://github.com/svinota/pyroute2)
 
 
+## Agent links
+
+- Neutron code review: [.agents/neutron-code-review.md](.agents/neutron-code-review.md)
+- Launchpad bug triage: [.agents/neutron-lp-bug-triage.md](.agents/neutron-lp-bug-triage.md)
+- Git commit messages: [.agents/git-commit-messages.md](.agents/git-commit-messages.md)
+
+
 ## Guardrails
 
 - **Tools:** Do not install missing tools with a package manager or `pip`

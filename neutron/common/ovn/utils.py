@@ -864,16 +864,17 @@ def get_ovn_bridge_from_chassis_private(chassis_private):
             n_const.DEFAULT_BR_INT)
 
 
-def get_datapath_type(hostname, sb_idl):
+def get_datapath_type(sb_idl, hostname=None, _uuid=None):
     """Return the local OVS integration bridge datapath type
 
     If the datapath type is not stored in the ``Chassis`` register or
     the register is still not created, the default value returned is "".
     """
+    col, val = ('hostname', hostname) if hostname else ('_uuid', _uuid)
     chassis = sb_idl.db_find(
-        'Chassis', ('hostname', '=', hostname)).execute(check_error=True)
+        'Chassis', (col, '=', val)).execute(check_error=True)
     return (
-        chassis[0].get('other_config', {}).get(constants.OVN_DATAPATH_TYPE, '')
+        chassis[0]['other_config'].get(constants.OVN_DATAPATH_TYPE, '')
         if chassis else '')
 
 
@@ -1057,7 +1058,7 @@ def create_neutron_pg_drop():
                 "action": "drop",
                 "direction": "to-lport",
                 "match": "outport == @neutron_pg_drop && ip",
-                "priority": 1001
+                "priority": constants.ACL_PRIORITY_DROP
             },
             "uuid-name": "droptoport"
         }, {
@@ -1067,7 +1068,7 @@ def create_neutron_pg_drop():
                 "action": "drop",
                 "direction": "from-lport",
                 "match": "inport == @neutron_pg_drop && ip",
-                "priority": 1001
+                "priority": constants.ACL_PRIORITY_DROP
             },
             "uuid-name": "dropfromport"
         }, {

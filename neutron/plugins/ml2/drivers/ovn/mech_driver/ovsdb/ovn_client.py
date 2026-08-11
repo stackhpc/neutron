@@ -186,6 +186,12 @@ class OVNClient:
                                    allowed_address['mac_address'],
                                    allowed_address['ip_address']))
                 allowed_addresses.add(vrrpv3)
+                # Plain VMAC+IP entry: allows traffic with the VRRP MAC
+                # as dl_src (e.g. keepalived "use_vmac" sends ARP/GARP
+                # with the virtual MAC as Ethernet source).
+                vmac_entry = ' '.join((allowed_address['mac_address'],
+                                      allowed_address['ip_address']))
+                allowed_addresses.add(vmac_entry)
                 new_macs.add(allowed_address['mac_address'])
 
         allowed_addresses.add(addresses)
@@ -212,8 +218,8 @@ class OVNClient:
                     # in _get_ovn_dhcpv6_opts, so entries in DHCP_Options table
                     # should have unicode type 'true' if they were defined as
                     # dhcpv6 stateless.
-                    if opts['options'].get(
-                            ovn_const.DHCPV6_STATELESS_OPT) != 'true':
+                    if not strutils.bool_from_string(opts['options'].get(
+                            ovn_const.DHCPV6_STATELESS_OPT)):
                         return opts
             return get_opts[0]
 

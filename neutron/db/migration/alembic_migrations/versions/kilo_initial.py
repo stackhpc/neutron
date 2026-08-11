@@ -17,15 +17,12 @@ from neutron.db import migration
 from neutron.db.migration.alembic_migrations import agent_init_ops
 from neutron.db.migration.alembic_migrations import core_init_ops
 from neutron.db.migration.alembic_migrations import dvr_init_opts
-from neutron.db.migration.alembic_migrations import firewall_init_ops
 from neutron.db.migration.alembic_migrations import l3_init_ops
-from neutron.db.migration.alembic_migrations import loadbalancer_init_ops
 from neutron.db.migration.alembic_migrations import metering_init_ops
 from neutron.db.migration.alembic_migrations import ml2_init_ops
 from neutron.db.migration.alembic_migrations import other_extensions_init_ops
 from neutron.db.migration.alembic_migrations import portsec_init_ops
 from neutron.db.migration.alembic_migrations import secgroup_init_ops
-from neutron.db.migration.alembic_migrations import vpn_init_ops
 
 
 # kilo_initial
@@ -48,7 +45,4 @@ def upgrade():
     other_extensions_init_ops.upgrade()
     ml2_init_ops.upgrade()
     dvr_init_opts.upgrade()
-    firewall_init_ops.upgrade()
-    loadbalancer_init_ops.upgrade()
-    vpn_init_ops.upgrade()
     metering_init_ops.upgrade()

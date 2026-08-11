@@ -52,6 +52,7 @@ OVN_QOS_POLICY_EXT_ID_KEY = 'neutron:qos_policy_id'
 OVN_SG_IDS_EXT_ID_KEY = 'neutron:security_group_ids'
 OVN_DEVICE_OWNER_EXT_ID_KEY = 'neutron:device_owner'
 OVN_LIVENESS_CHECK_EXT_ID_KEY = 'neutron:liveness_check_at'
+OVN_NB_CFG_BUMP_EXT_ID_KEY = 'neutron:nb_cfg_bump_at'
 METADATA_LIVENESS_CHECK_EXT_ID_KEY = 'neutron:metadata_liveness_check_at'
 OVN_PORT_BINDING_PROFILE = portbindings.PROFILE
 OVN_HOST_ID_EXT_ID_KEY = 'neutron:host_id'
@@ -107,11 +108,13 @@ OVN_AGENT_TYPES = (OVN_CONTROLLER_AGENT,
 
 # OVN ACLs have priorities.  The highest priority ACL that matches is the one
 # that takes effect.  Our choice of priority numbers is arbitrary, but it
-# leaves room above and below the ACLs we create.  We only need two priorities.
-# The first is for all the things we allow.  The second is for dropping traffic
-# by default.
+# leaves room above and below the ACLs we create.  We need three priorities.
+# The first is for all the things we allow.  The second is for per-security
+# group drop ACLs used for network logging.  The third is for the global
+# default drop in neutron_pg_drop.
 ACL_PRIORITY_ALLOW = 1002
-ACL_PRIORITY_DROP = 1001
+ACL_PRIORITY_LOG_DROP = 1001
+ACL_PRIORITY_DROP = 1000
 
 ACL_ACTION_DROP = 'drop'
 ACL_ACTION_REJECT = 'reject'
@@ -424,6 +427,7 @@ LSP_OPTIONS_QOS_MAX_RATE = 'qos_max_rate'
 LSP_OPTIONS_QOS_BURST = 'qos_burst'
 LSP_OPTIONS_QOS_MIN_RATE = 'qos_min_rate'
 LSP_OPTIONS_LOCALNET_LEARN_FDB = 'localnet_learn_fdb'
+LSP_OPTIONS_ARP_PROXY = 'arp_proxy'
 
 LR_OPTIONS_MAC_AGE_LIMIT = 'mac_binding_age_threshold'
 LR_OPTIONS_DR_VRF_NAME = 'dynamic-routing-vrf-name'
@@ -431,10 +435,10 @@ LR_OPTIONS_DR_VRF_NAME = 'dynamic-routing-vrf-name'
 LS_OTHER_CFG_DR_VNI = 'dynamic-routing-vni'
 LS_OTHER_CFG_DR_BRIDGE_IFNAME = 'dynamic-routing-bridge-ifname'
 LS_OTHER_CFG_DR_VXLAN_IFNAME = 'dynamic-routing-vxlan-ifname'
+LS_OTHER_CFG_DR_AD_IFNAME = 'dynamic-routing-advertise-ifname'
 
 LRP_OPTIONS_RESIDE_REDIR_CH = 'reside-on-redirect-chassis'
 LRP_OPTIONS_REDIRECT_TYPE = 'redirect-type'
-LRP_OPTIONS_ARP_PROXY = 'arp_proxy'
 BRIDGE_REDIRECT_TYPE = "bridged"
 
 # FDB AGE Settings
