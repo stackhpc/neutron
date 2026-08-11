@@ -186,8 +186,8 @@ class MAC(Interface):
 
 
 _FROM_TO_TYPES = {'server': ServerInterface, 'router': RouterInterface}
-_MAC_TYPES = dict(mac=MAC, **_FROM_TO_TYPES)
-_IP_TYPES = dict(ip=IP, **_FROM_TO_TYPES)
+_MAC_TYPES = {'mac': MAC, **_FROM_TO_TYPES}
+_IP_TYPES = {'ip': IP, **_FROM_TO_TYPES}
 
 
 def _parse_obj_value(value, types, default_type):

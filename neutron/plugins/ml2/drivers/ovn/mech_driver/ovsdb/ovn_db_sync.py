@@ -1402,9 +1402,9 @@ class OvnNbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
         LOG.debug('OVN-NB Sync metadata ports started')
         for net in self.core_plugin.get_networks(ctx):
             metadata_ports = self.core_plugin.get_ports(
-                ctx, filters=dict(
-                    network_id=[net['id']],
-                    device_owner=[constants.DEVICE_OWNER_DISTRIBUTED]))
+                ctx, filters={'network_id': [net['id']],
+                              'device_owner': [
+                                  constants.DEVICE_OWNER_DISTRIBUTED]})
 
             if not metadata_ports:
                 LOG.warning('Missing metadata port found in Neutron for '

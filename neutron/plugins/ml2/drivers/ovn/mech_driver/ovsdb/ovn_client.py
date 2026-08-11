@@ -2953,9 +2953,9 @@ class OVNClient:
             return
 
         ports = self._plugin.get_ports(
-            context, filters=dict(
-                network_id=[network_id],
-                device_owner=[const.DEVICE_OWNER_DISTRIBUTED]),
+            context, filters={
+                'network_id': [network_id],
+                'device_owner': [const.DEVICE_OWNER_DISTRIBUTED]},
             limit=1)
 
         if ports:
@@ -3043,9 +3043,10 @@ class OVNClient:
             return True
 
         # Retrieve all subnets in this network
-        subnets = self._plugin.get_subnets(context, filters=dict(
-            network_id=[network_id], ip_version=[const.IP_VERSION_4],
-            enable_dhcp=[True]))
+        subnets = self._plugin.get_subnets(
+            context, filters={'network_id': [network_id],
+                              'ip_version': [const.IP_VERSION_4],
+                              'enable_dhcp': [True]})
 
         subnet_ids = {s['id'] for s in subnets}
 

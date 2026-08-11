@@ -69,7 +69,7 @@ class Extensionattribute(api_extensions.ExtensionDescriptor):
         plugin = directory.get_plugin()
         resource_name = 'ext_test_resource'
         collection_name = resource_name + "s"
-        params = RESOURCE_ATTRIBUTE_MAP.get(collection_name, dict())
+        params = RESOURCE_ATTRIBUTE_MAP.get(collection_name, {})
 
         resource_registry.register_resource_by_name(resource_name)
 

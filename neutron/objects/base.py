@@ -246,7 +246,7 @@ class NeutronObject(obj_base.VersionedObject,
         # both)
         if objname not in NeutronObjectRegistry.obj_classes():
             LOG.error('Unable to instantiate unregistered object type '
-                      '%(objtype)s', dict(objtype=objname))
+                      '%(objtype)s', {'objtype': objname})
             raise obj_exception.UnsupportedObjectError(objtype=objname)
 
         # NOTE(comstud): If there's not an exact match, return the highest

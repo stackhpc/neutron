@@ -66,7 +66,7 @@ class RootController:
         ]
         builder = versions_view.get_view_builder(pecan.request)
         versions = [builder.build(version) for version in version_objs]
-        return dict(versions=versions)
+        return {'versions': versions}
 
     @utils.when(index, method='HEAD')
     @utils.when(index, method='POST')

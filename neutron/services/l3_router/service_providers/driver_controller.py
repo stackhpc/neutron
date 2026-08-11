@@ -311,4 +311,4 @@ def _ensure_driver_supports_request(drv, router_body):
         if not getattr(drv, attr).is_compatible(flag):
             raise lib_exc.InvalidInput(error_message=(
                 _("Provider %(name)s does not support %(key)s=%(flag)s")
-                % dict(name=drv.name, key=key, flag=flag)))
+                % {'name': drv.name, 'key': key, 'flag': flag}))

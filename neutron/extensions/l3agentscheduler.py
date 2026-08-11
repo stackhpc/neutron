@@ -141,16 +141,14 @@ class L3agentscheduler(api_extensions.ExtensionDescriptor):
     def get_resources(cls):
         """Returns Ext Resources."""
         exts = []
-        parent = dict(member_name="agent",
-                      collection_name="agents")
+        parent = {'member_name': "agent", 'collection_name': "agents"}
 
         controller = resource.Resource(RouterSchedulerController(),
                                        faults.FAULT_MAP)
         exts.append(extensions.ResourceExtension(
             L3_ROUTERS, controller, parent))
 
-        parent = dict(member_name="router",
-                      collection_name="routers")
+        parent = {'member_name': "router", 'collection_name': "routers"}
 
         controller = resource.Resource(L3AgentsHostingRouterController(),
                                        faults.FAULT_MAP)

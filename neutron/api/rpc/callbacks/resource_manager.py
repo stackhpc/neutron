@@ -83,7 +83,7 @@ class ResourceCallbacksManager(metaclass=abc.ABCMeta):
 
 class ProducerResourceCallbacksManager(ResourceCallbacksManager):
 
-    _callbacks = dict()
+    _callbacks = {}
 
     def _add_callback(self, callback, resource_type):
         if resource_type in self._callbacks:
@@ -97,7 +97,7 @@ class ProducerResourceCallbacksManager(ResourceCallbacksManager):
             raise rpc_exc.CallbackNotFound(resource_type=resource_type)
 
     def clear(self):
-        self._callbacks = dict()
+        self._callbacks = {}
 
     def get_callback(self, resource_type):
         _validate_resource_type(resource_type)

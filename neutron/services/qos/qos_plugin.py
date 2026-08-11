@@ -274,9 +274,9 @@ class QoSPlugin(qos.QoSPluginBase):
     @resource_extend.extends([port_def.COLLECTION_NAME_BULK])
     def _extend_port_resource_request_bulk(ports_res, noop):
         """Add resource request to a list of ports."""
-        min_bw_rules = dict()
-        min_pps_rules = dict()
-        net_segments = dict()
+        min_bw_rules = {}
+        min_pps_rules = {}
+        net_segments = {}
 
         for port_res in ports_res:
             if port_res.get('resource_request') is None:
@@ -823,7 +823,7 @@ class QoSPlugin(qos.QoSPluginBase):
 
         :returns: QosPolicy objects meeting the search criteria
         """
-        filters = filters or dict()
+        filters = filters or {}
         pager = base_obj.Pager(sorts, limit, page_reverse, marker)
         return policy_object.QosPolicy.get_objects(context, _pager=pager,
                                                    **filters)
@@ -1072,7 +1072,7 @@ class QoSPlugin(qos.QoSPluginBase):
         with db_api.CONTEXT_READER.using(context):
             # Ensure we have access to the policy.
             policy_object.QosPolicy.get_policy_obj(context, policy_id)
-            filters = filters or dict()
+            filters = filters or {}
             filters[qos_consts.QOS_POLICY_ID] = policy_id
             pager = base_obj.Pager(sorts, limit, page_reverse, marker)
             return rule_cls.get_objects(context, _pager=pager, **filters)

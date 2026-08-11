@@ -39,7 +39,7 @@ def Resource(controller, faults=None, deserializers=None, serializers=None,
     default_deserializers = {'application/json': wsgi.JSONDeserializer()}
     default_serializers = {'application/json': wsgi.JSONDictSerializer()}
     format_types = {'json': 'application/json'}
-    action_status = action_status or dict(create=201, delete=204)
+    action_status = action_status or {'create': 201, 'delete': 204}
 
     default_deserializers.update(deserializers or {})
     default_serializers.update(serializers or {})

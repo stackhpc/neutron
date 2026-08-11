@@ -324,7 +324,7 @@ class DictSerializerTest(base.BaseTestCase):
 class JSONDictSerializerTest(base.BaseTestCase):
 
     def test_json(self):
-        input_dict = dict(servers=dict(a=(2, 3)))
+        input_dict = {'servers': {'a': (2, 3)}}
         expected_json = b'{"servers":{"a":[2,3]}}'
         serializer = wsgi.JSONDictSerializer()
         result = serializer.serialize(input_dict)
@@ -333,7 +333,7 @@ class JSONDictSerializerTest(base.BaseTestCase):
         self.assertEqual(expected_json, result)
 
     def test_json_with_unicode(self):
-        input_dict = dict(servers=dict(a=(2, '\u7f51\u7edc')))
+        input_dict = {'servers': {'a': (2, '\u7f51\u7edc')}}
         expected_json = b'{"servers":{"a":[2,"\\u7f51\\u7edc"]}}'
         serializer = wsgi.JSONDictSerializer()
         result = serializer.serialize(input_dict)

@@ -65,7 +65,7 @@ class TagPlugin(tagging.TagPluginBase):
     def get_tags(self, context, resource, resource_id):
         res = self._get_resource(context, resource, resource_id)
         tags = [tag_db.tag for tag_db in res.standard_attr.tags]
-        return dict(tags=tags)
+        return {'tags': tags}
 
     @log_helpers.log_method_call
     def get_tag(self, context, resource, resource_id, tag):

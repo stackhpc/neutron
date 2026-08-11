@@ -1578,15 +1578,15 @@ class NeutronDbPluginV2(db_base_plugin_common.DbBasePluginCommon,
                 context, p.get('device_owner'), p.get('device_id'),
                 project_id)
 
-        port_data = dict(project_id=project_id,
-                         name=p['name'],
-                         id=port_id,
-                         network_id=network_id,
-                         admin_state_up=p['admin_state_up'],
-                         status=p.get('status', constants.PORT_STATUS_ACTIVE),
-                         device_id=p['device_id'],
-                         device_owner=p['device_owner'],
-                         description=p.get('description'))
+        port_data = {'project_id': project_id,
+                     'name': p['name'],
+                     'id': port_id,
+                     'network_id': network_id,
+                     'admin_state_up': p['admin_state_up'],
+                     'status': p.get('status', constants.PORT_STATUS_ACTIVE),
+                     'device_id': p['device_id'],
+                     'device_owner': p['device_owner'],
+                     'description': p.get('description')}
         if p.get('mac_address') is not constants.ATTR_NOT_SPECIFIED:
             port_data['mac_address'] = p.get('mac_address')
         with db_api.CONTEXT_WRITER.using(context):

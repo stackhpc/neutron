@@ -1144,7 +1144,7 @@ class TestOvsNeutronAgent:
             self.assertTrue(treat_vif_port.called)
 
     def _mock_treat_devices_removed(self, port_exists):
-        details = dict(exists=port_exists)
+        details = {'exists': port_exists}
         with mock.patch.object(self.agent.plugin_rpc,
                                'update_device_list',
                                return_value={'devices_up': [],
@@ -2792,7 +2792,7 @@ class TestOvsNeutronAgent:
             self.agent.vlan_manager.add('bar', 1, 2, 3, 4)
         bridge = mock.Mock()
         tunnel_type = 'vxlan'
-        self.agent.tun_br_ofports = {tunnel_type: dict()}
+        self.agent.tun_br_ofports = {tunnel_type: {}}
         self.agent.l2_pop = False
         self.agent.vlan_manager.add('foo', 4, tunnel_type, 2, 1)
         self.agent.local_ip = '2.3.4.5'

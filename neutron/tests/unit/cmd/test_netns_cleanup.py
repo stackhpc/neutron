@@ -168,11 +168,10 @@ class TestNetnsCleanup(base.BaseTestCase):
         def _find_parent(x):
             return _get_element(parents, x)
 
-        utils_mock = dict(
-            find_fork_top_parent=mock.DEFAULT,
-            find_child_pids=mock.DEFAULT,
-            get_cmdline_from_pid=mock.DEFAULT,
-            kill_process=mock.DEFAULT)
+        utils_mock = {'find_fork_top_parent': mock.DEFAULT,
+                      'find_child_pids': mock.DEFAULT,
+                      'get_cmdline_from_pid': mock.DEFAULT,
+                      'kill_process': mock.DEFAULT}
 
         self.log_mock = mock.patch.object(util, 'LOG').start()
         with mock.patch.multiple('neutron.agent.linux.utils', **utils_mock)\
@@ -305,10 +304,9 @@ class TestNetnsCleanup(base.BaseTestCase):
             with mock.patch('time.sleep') as time_sleep:
                 conf = mock.Mock()
                 conf.force = False
-                methods_to_mock = dict(
-                    eligible_for_deletion=mock.DEFAULT,
-                    destroy_namespace=mock.DEFAULT,
-                    setup_conf=mock.DEFAULT)
+                methods_to_mock = {'eligible_for_deletion': mock.DEFAULT,
+                                   'destroy_namespace': mock.DEFAULT,
+                                   'setup_conf': mock.DEFAULT}
 
                 with mock.patch.multiple(util, **methods_to_mock) as mocks:
                     mocks['eligible_for_deletion'].return_value = True
@@ -337,10 +335,9 @@ class TestNetnsCleanup(base.BaseTestCase):
             with mock.patch('time.sleep') as time_sleep:
                 conf = mock.Mock()
                 conf.force = False
-                methods_to_mock = dict(
-                    eligible_for_deletion=mock.DEFAULT,
-                    destroy_namespace=mock.DEFAULT,
-                    setup_conf=mock.DEFAULT)
+                methods_to_mock = {'eligible_for_deletion': mock.DEFAULT,
+                                   'destroy_namespace': mock.DEFAULT,
+                                   'setup_conf': mock.DEFAULT}
 
                 with mock.patch.multiple(util, **methods_to_mock) as mocks:
                     mocks['eligible_for_deletion'].return_value = False

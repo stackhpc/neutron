@@ -28,7 +28,7 @@ class Auto_allocated_topology(api_extensions.APIExtensionDescriptor):
     @classmethod
     def get_resources(cls):
         params = auto_allocated_topology.RESOURCE_ATTRIBUTE_MAP.get(
-            auto_allocated_topology.COLLECTION_NAME, dict())
+            auto_allocated_topology.COLLECTION_NAME, {})
         controller = base.create_resource(
             auto_allocated_topology.COLLECTION_NAME,
             auto_allocated_topology.ALIAS,

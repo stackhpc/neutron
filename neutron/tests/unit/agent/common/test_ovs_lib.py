@@ -714,12 +714,12 @@ class TestDeferredOVSBridge(base.BaseTestCase):
         self.mock_do_action_flows_by_group_id = mock.patch.object(
             self.br, 'do_action_flows_by_group_id').start()
 
-        self.add_flow_dict1 = dict(in_port=11, actions='drop')
-        self.add_flow_dict2 = dict(in_port=12, actions='drop')
-        self.mod_flow_dict1 = dict(in_port=21, actions='drop')
-        self.mod_flow_dict2 = dict(in_port=22, actions='drop')
-        self.del_flow_dict1 = dict(in_port=31)
-        self.del_flow_dict2 = dict(in_port=32)
+        self.add_flow_dict1 = {'in_port': 11, 'actions': 'drop'}
+        self.add_flow_dict2 = {'in_port': 12, 'actions': 'drop'}
+        self.mod_flow_dict1 = {'in_port': 21, 'actions': 'drop'}
+        self.mod_flow_dict2 = {'in_port': 22, 'actions': 'drop'}
+        self.del_flow_dict1 = {'in_port': 31}
+        self.del_flow_dict2 = {'in_port': 32}
 
     def test_right_allowed_passthroughs(self):
         expected_passthroughs = ('add_port', 'add_tunnel_port', 'delete_port')

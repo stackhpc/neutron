@@ -1705,7 +1705,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     def allocate_macs_and_ips_for_ports(self, context, ports):
         macs = self._generate_macs(len(ports))
-        network_cache = dict()
+        network_cache = {}
         for port in ports:
             port['port']['id'] = (
                 port['port'].get('id') or uuidutils.generate_uuid())
@@ -1781,15 +1781,15 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                     self._enforce_device_owner_not_router_intf_or_device_id(
                         context, pdata.get('device_owner'),
                         pdata.get('device_id'), project_id)
-                bulk_port_data = dict(
-                    project_id=project_id,
-                    name=pdata.get('name'),
-                    network_id=network_id,
-                    admin_state_up=pdata.get('admin_state_up'),
-                    status=pdata.get('status', const.PORT_STATUS_ACTIVE),
-                    device_id=pdata.get('device_id'),
-                    device_owner=pdata.get('device_owner'),
-                    description=pdata.get('description'))
+                bulk_port_data = {
+                    'project_id': project_id,
+                    'name': pdata.get('name'),
+                    'network_id': network_id,
+                    'admin_state_up': pdata.get('admin_state_up'),
+                    'status': pdata.get('status', const.PORT_STATUS_ACTIVE),
+                    'device_id': pdata.get('device_id'),
+                    'device_owner': pdata.get('device_owner'),
+                    'description': pdata.get('description')}
 
                 network = network_cache[network_id]
 

@@ -298,8 +298,10 @@ class BundledOpenFlowBridge:
             under = getattr(self.br, name)
             if self.active_bundle is None:
                 return under
-            return functools.partial(under, active_bundle=dict(
-                id=self.active_bundle, bundle_flags=self.bundle_flags))
+            return functools.partial(
+                under,
+                active_bundle={'id': self.active_bundle,
+                               'bundle_flags': self.bundle_flags})
         raise AttributeError(_("Only install_* or uninstall_* methods "
                                "can be used"))
 

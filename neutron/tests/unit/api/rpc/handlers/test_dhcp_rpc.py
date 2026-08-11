@@ -398,7 +398,7 @@ class TestDhcpRpcCallback(base.BaseTestCase):
         self.assertFalse(ret)
 
     def test_release_dhcp_port(self):
-        port_retval = dict(id='port_id', fixed_ips=[dict(subnet_id='a')])
+        port_retval = {'id': 'port_id', 'fixed_ips': [{'subnet_id': 'a'}]}
         self.plugin.get_ports.return_value = [port_retval]
 
         self.callbacks.release_dhcp_port(mock.ANY, network_id='netid',

@@ -44,8 +44,7 @@ class Network_segment_range(api_extensions.APIExtensionDescriptor):
         """Returns extension resources"""
         plugin = directory.get_plugin(plugin_constants.NETWORK_SEGMENT_RANGE)
         collection_name = apidef.COLLECTION_NAME.replace('_', '-')
-        params = apidef.RESOURCE_ATTRIBUTE_MAP.get(apidef.COLLECTION_NAME,
-                                                   dict())
+        params = apidef.RESOURCE_ATTRIBUTE_MAP.get(apidef.COLLECTION_NAME, {})
         controller = base.create_resource(collection_name,
                                           apidef.RESOURCE_NAME,
                                           plugin, params, allow_bulk=True,

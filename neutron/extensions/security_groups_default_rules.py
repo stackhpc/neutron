@@ -166,7 +166,7 @@ class Security_groups_default_rules(api_extensions.ExtensionDescriptor):
         """Returns Ext Resources."""
         plugin = directory.get_plugin()
         collection_name = COLLECTION_NAME.replace('_', '-')
-        params = RESOURCE_ATTRIBUTE_MAP.get(COLLECTION_NAME, dict())
+        params = RESOURCE_ATTRIBUTE_MAP.get(COLLECTION_NAME, {})
         controller = base.create_resource(COLLECTION_NAME,
                                           RESOURCE_NAME,
                                           plugin, params,

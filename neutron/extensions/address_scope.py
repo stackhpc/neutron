@@ -32,7 +32,7 @@ class Address_scope(api_extensions.APIExtensionDescriptor):
         plugin = directory.get_plugin()
         collection_name = apidef.COLLECTION_NAME.replace('_', '-')
         params = apidef.RESOURCE_ATTRIBUTE_MAP.get(
-            apidef.COLLECTION_NAME, dict())
+            apidef.COLLECTION_NAME, {})
         controller = base.create_resource(collection_name,
                                           apidef.RESOURCE_NAME,
                                           plugin, params, allow_bulk=True,

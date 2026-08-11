@@ -35,7 +35,7 @@ class Local_ip(api_extensions.APIExtensionDescriptor):
         plugin = directory.get_plugin(PLUGIN_TYPE)
         collection_name = local_ip_apidef.COLLECTION_NAME.replace('_', '-')
         params = local_ip_apidef.RESOURCE_ATTRIBUTE_MAP.get(
-            local_ip_apidef.COLLECTION_NAME, dict())
+            local_ip_apidef.COLLECTION_NAME, {})
         controller = base.create_resource(collection_name,
                                           local_ip_apidef.RESOURCE_NAME,
                                           plugin, params,
