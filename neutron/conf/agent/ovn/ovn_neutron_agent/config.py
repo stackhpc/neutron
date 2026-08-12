@@ -16,15 +16,15 @@
 import itertools
 import shlex
 
+from oslo_config import cfg
+from oslo_privsep import priv_context
+
+from neutron._i18n import _
 from neutron.conf.agent import agent_extensions_manager as ext_manager_conf
 from neutron.conf.agent.metadata import config as meta_conf
 from neutron.conf.agent.ovn.evpn import config as evpn_conf
 from neutron.conf.agent import ovsdb_api
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
-from oslo_config import cfg
-from oslo_privsep import priv_context
-
-from neutron._i18n import _
 
 
 OVS_OPTS = [

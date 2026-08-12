@@ -15,12 +15,12 @@ from unittest import mock
 
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import priority_group
+from neutron_lib import constants
 from neutron_lib import fixture
 
 from neutron.plugins.ml2.drivers.openvswitch.agent import ovs_capabilities
 from neutron.services.trunk.drivers.openvswitch.agent import driver
 from neutron.tests import base
-from neutron_lib import constants
 
 
 class CapabilitiesTest(base.BaseTestCase):

@@ -15,15 +15,15 @@
 
 import sys
 
-from neutron.common import config
-from neutron.common import utils
-from neutron.conf import common as common_config
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_service import service
 
 from neutron.agent.ovn.agent import ovn_neutron_agent
+from neutron.common import config
+from neutron.common import utils
 from neutron.conf.agent.ovn.ovn_neutron_agent import config as config_ovn_agent
+from neutron.conf import common as common_config
 
 
 LOG = logging.getLogger(__name__)

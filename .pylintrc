@@ -77,7 +77,6 @@ disable=
 # "C" Coding convention violations
  invalid-name,
  missing-docstring,
- ungrouped-imports,
  wrong-import-order,
  consider-using-f-string,
 # "R" Refactor recommendations

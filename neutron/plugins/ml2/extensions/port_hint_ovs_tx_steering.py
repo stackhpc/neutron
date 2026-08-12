@@ -12,11 +12,10 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-from neutron_lib.plugins.ml2 import api
-from oslo_log import log as logging
-
 from neutron_lib.api.definitions import port_hint_ovs_tx_steering \
     as phint_txs_def
+from neutron_lib.plugins.ml2 import api
+from oslo_log import log as logging
 
 
 LOG = logging.getLogger(__name__)

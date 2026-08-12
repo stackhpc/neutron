@@ -15,14 +15,14 @@
 import itertools
 
 import netaddr
+from neutron_lib import constants as lib_const
 from neutron_lib.db import api as db_api
 from neutron_lib.objects import common_types
+from oslo_versionedobjects import fields as obj_fields
 
 from neutron.db.models import l3
 from neutron.db.models import port_forwarding as models
 from neutron.objects import base
-from neutron_lib import constants as lib_const
-from oslo_versionedobjects import fields as obj_fields
 
 FIELDS_NOT_SUPPORT_FILTER = ['internal_ip_address', 'internal_port']
 

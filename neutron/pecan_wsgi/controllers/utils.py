@@ -18,6 +18,7 @@ import functools
 
 from neutron_lib.api import attributes
 from neutron_lib.db import api as db_api
+from neutron_lib import exceptions
 from oslo_log import log as logging
 from oslo_utils import excutils
 import pecan
@@ -26,7 +27,6 @@ from pecan import request
 from neutron._i18n import _
 from neutron.api import api_common
 from neutron import manager
-from neutron_lib import exceptions
 
 # Utility functions for Pecan controllers.
 

@@ -12,11 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.api.definitions import filter_validation as apidef
 from neutron_lib.api import extensions
 from oslo_config import cfg
 from oslo_log import log as logging
-
-from neutron_lib.api.definitions import filter_validation as apidef
 
 
 LOG = logging.getLogger(__name__)

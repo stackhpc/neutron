@@ -20,7 +20,6 @@ import threading
 
 import futurist
 from futurist import periodics
-from neutron.common import wsgi_utils
 from neutron_lib.api.definitions import external_net
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net as pnet
@@ -39,6 +38,7 @@ from ovsdbapp.backend.ovs_idl import rowview
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
+from neutron.common import wsgi_utils
 from neutron.conf.agent import ovs_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db import ovn_hash_ring_db as hash_ring_db

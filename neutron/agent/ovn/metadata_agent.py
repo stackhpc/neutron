@@ -13,12 +13,12 @@
 #    under the License.
 import sys
 
-from neutron.common import config
-from neutron.common import utils
 from oslo_config import cfg
 from oslo_log import log as logging
 
 from neutron.agent.ovn.metadata import agent
+from neutron.common import config
+from neutron.common import utils
 from neutron.conf.agent.metadata import config as meta
 from neutron.conf.agent.ovn.metadata import config as ovn_meta
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
