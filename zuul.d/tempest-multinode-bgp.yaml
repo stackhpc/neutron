@@ -218,9 +218,6 @@
         #   test_network_basic_ops, test_subnet_details:
         #     ping external gw IP from VM, which is not reachable
         #     with the current BGP implementation
-        # - test_reuse_ip_address_with_other_fip_on_other_router:
-        #     FIP reassignment across routers causes stale BGP
-        #     routes
         # - test_server_connectivity_rebuild: rebuilds with
         #     image_ref_alt (ubuntu 2.2GB) which exceeds m1.nano
         #     1GB disk; also image_alt_ssh_user mismatches
@@ -233,7 +230,6 @@
           (^neutron_tempest_plugin.scenario.test_multiple_gws)|\
           (^neutron_tempest_plugin.scenario.test_floatingip.DefaultSnatToExternal.test_snat_external_ip)|\
           (^neutron_tempest_plugin.scenario.*test_default_sec_grp_scenarios)|\
-          (^neutron_tempest_plugin.scenario.test_floatingip.FloatingIpMultipleRoutersTest.test_reuse_ip_address_with_other_fip_on_other_router)|\
           (^tempest.scenario.test_network_basic_ops.TestNetworkBasicOps.test_connectivity_between_vms_on_different_networks)|\
           (^tempest.scenario.test_network_basic_ops.TestNetworkBasicOps.test_network_basic_ops)|\
           (^tempest.scenario.test_network_basic_ops.TestNetworkBasicOps.test_subnet_details)|\
