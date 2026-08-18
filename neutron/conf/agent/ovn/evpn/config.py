@@ -29,6 +29,13 @@ EVPN_OPTS = [
         help=_('The local interface name (e.g. eth2) on which to establish '
                'BGP peer session')),
     cfg.StrOpt(
+        'bgp_password',
+        default=None,
+        secret=True,
+        help=_('BGP neighbor password used when the EVPN agent creates the '
+               'fallback FRR BGP router. If unset, no password is '
+               'configured.')),
+    cfg.StrOpt(
         'frr_vty_socket',
         default='/run/frr',
         help=_('Path to the vtysh socket directory. This is passed '

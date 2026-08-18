@@ -36,6 +36,7 @@ class EVPNRouterConfig:
     bgp_router_id: str
     vrf_name: str
     vni: int
+    bgp_password: str | None = None
 
 
 class EVPNRouterDriver(abc.ABC):

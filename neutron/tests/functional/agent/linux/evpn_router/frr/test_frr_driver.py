@@ -204,12 +204,14 @@ class NamespacedVRFHandler(interface.EVPNRouterVrfHandler):
         self._delete_device(vrf_name, step='ensure_vrf_deleted')
 
 
-def make_evpn_config(vni, bgp_router_id='10.0.0.1', vrf_name_prefix='vrf-'):
+def make_evpn_config(vni, bgp_router_id='10.0.0.1', vrf_name_prefix='vrf-',
+                     bgp_password=None):
     return interface.EVPNRouterConfig(
         asn=65000,
         bgp_router_id=bgp_router_id,
         vrf_name=vrf_name_prefix + str(vni),
         vni=vni,
+        bgp_password=bgp_password,
     )
 
 
@@ -275,6 +277,17 @@ class TestFrrVtyshDriverConfiguration(base.BaseSudoTestCase):
         self.assertIn('bgp router-id 10.0.0.1', running_config)
         self.assertIn('router bgp 65000 vrf vrf-100', running_config)
         self.assertIn('vni 100', running_config)
+        self.assertNotIn('password', running_config)
+
+    def test_create_evpn_router_with_bgp_password(self):
+        password = 's3cret'
+        config = make_evpn_config(vni=100, bgp_password=password)
+        self.driver.create_evpn_router(config)
+
+        running_config = self._get_running_config()
+        self.assertIn('router bgp 65000', running_config)
+        self.assertIn(
+            'neighbor lo password %s' % password, running_config)
 
     def test_delete_evpn_router(self):
         config = make_evpn_config(vni=100)
@@ -433,6 +446,35 @@ class TestFrrVtyshDriverOperation(base.BaseSudoTestCase):
         assert_routes(self.ns_b, table_id=vni, present=advertised_routes_v4)
         assert_routes(self.ns_b, table_id=vni, present=advertised_routes_v6,
                       ip_version=6)
+
+    def test_routes_not_advertised_with_mismatched_bgp_password(self):
+        vni = 10
+        advertised_routes = {'11.1.1.1/32', '12.1.1.0/32'}
+        password_a = 'password-a'
+        password_b = 'password-b'
+        conf_a = make_evpn_config(
+            vni=vni, bgp_router_id=self.vtep_ip_a, bgp_password=password_a)
+        conf_b = make_evpn_config(
+            vni=vni, bgp_router_id=self.vtep_ip_b, bgp_password=password_a)
+
+        self.driver_a.create_evpn_router(conf_a)
+        self.driver_b.create_evpn_router(conf_b)
+
+        add_blackhole_routes(
+            self.ns_a, advertised_routes, table_id=vni)
+        assert_routes(self.ns_b, table_id=vni, present=advertised_routes)
+
+        self.driver_b.delete_evpn_router(conf_b)
+        # The neighbor password is set only when creating the base BGP
+        # router. Remove it so recreate applies the mismatched password.
+        self.driver_b.executor.execute_cmds(
+            self.driver_b.cmd_builder.delete_bgp_router_cmds(conf_b))
+
+        conf_b = make_evpn_config(
+            vni=vni, bgp_router_id=self.vtep_ip_b, bgp_password=password_b)
+        self.driver_b.create_evpn_router(conf_b)
+
+        assert_routes(self.ns_b, table_id=vni, absent=advertised_routes)
 
     def test_multiple_routers_then_delete_one(self):
         vni_1 = 10

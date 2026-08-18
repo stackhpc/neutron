@@ -50,22 +50,20 @@ class FsmFrrVtyshDriver(frr_driver.FrrVtyshDriver):
     def __init__(self, peer_interface: str, bgp_router_id: str):
         self._asn = cfg.CONF.ovn_evpn.bgp_as
         self._bgp_router_id = bgp_router_id
+        self._bgp_password = cfg.CONF.ovn_evpn.bgp_password
         super().__init__(peer_interface, FsmFrrVrfHandler())
 
-    def create_router(self, vrf_name, vni) -> None:
-        config = evpn_interface.EVPNRouterConfig(
+    def _router_config(self, vrf_name, vni) -> evpn_interface.EVPNRouterConfig:
+        return evpn_interface.EVPNRouterConfig(
             asn=self._asn,
             bgp_router_id=self._bgp_router_id,
             vrf_name=vrf_name,
             vni=vni,
+            bgp_password=self._bgp_password,
         )
-        return super().create_evpn_router(config)
+
+    def create_router(self, vrf_name, vni) -> None:
+        return self.create_evpn_router(self._router_config(vrf_name, vni))
 
     def delete_router(self, vrf_name, vni) -> None:
-        config = evpn_interface.EVPNRouterConfig(
-            asn=self._asn,
-            bgp_router_id=self._bgp_router_id,
-            vrf_name=vrf_name,
-            vni=vni,
-        )
-        return super().delete_evpn_router(config)
+        return self.delete_evpn_router(self._router_config(vrf_name, vni))

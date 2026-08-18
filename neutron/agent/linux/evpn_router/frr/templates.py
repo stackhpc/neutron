@@ -73,6 +73,9 @@ router bgp {{ asn }}
  bgp router-id {{ bgp_router_id }}
  no bgp ebgp-requires-policy
  neighbor {{ peer_interface }} interface remote-as internal
+{% if bgp_password %}
+ neighbor {{ peer_interface }} password {{ bgp_password }}
+{% endif %}
 """
 
 BGP_AF_IPV4_UNICAST = """\
