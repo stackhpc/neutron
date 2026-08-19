@@ -19,6 +19,7 @@ import datetime
 import functools
 import multiprocessing
 import operator
+import os
 import threading
 import types
 import uuid
@@ -45,7 +46,6 @@ from oslo_db import exception as os_db_exc
 from oslo_log import log
 from oslo_service import service as oslo_service
 from oslo_utils import timeutils
-from oslo_utils import uuidutils
 from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron._i18n import _
@@ -195,16 +195,6 @@ class OVNMechanismDriver(api.MechanismDriver):
             return self._start_time
 
         self._start_time = wsgi_utils.get_start_time()
-        if not self._start_time:
-            LOG.warning('uWSGI must provide a start time using the '
-                        'configuration parameter "start-time %t" in the '
-                        'configuration file')
-            # NOTE(ralonsoh): this is happening if the uWSGI configuration file
-            # does not have the "start-time %t" parameter or when using the
-            # Neutron API eventlet server, still in use in the grenade
-            # skip-level jobs. This should be removed in the F release.
-            self._start_time = wsgi_utils.get_start_time(current_time=True)
-
         return self._start_time
 
     @property
@@ -212,20 +202,8 @@ class OVNMechanismDriver(api.MechanismDriver):
         if self._node_uuid:
             return self._node_uuid
 
-        worker_id = wsgi_utils.get_api_worker_id()
-        if worker_id is None:
-            # NOTE(ralonsoh): the hash ring node UUID should be based on the
-            # Neutron API worker ID. Right now only uWSGI mode is supported.
-            # The worker ID is provided via ``uwsgi`` library. If other loader
-            # is used, a random node UUID will be provided.
-            LOG.warning('uWSGI is the only supported loader for the Neutron '
-                        'API; it provides, via ``uwsgi`` library, the worker '
-                        'ID. If other loader is used, a random hash ring node '
-                        'UUID will be provided')
-            self._node_uuid = uuidutils.generate_uuid()
-        else:
-            self._node_uuid = ovn_hash_ring_db.get_node_uuid(
-                self.hash_ring_group, cfg.CONF.host, worker_id)
+        self._node_uuid = ovn_hash_ring_db.get_node_uuid(
+            self.hash_ring_group, cfg.CONF.host, os.getpid())
 
         return self._node_uuid
 
