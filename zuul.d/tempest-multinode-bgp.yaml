@@ -89,6 +89,9 @@
       - openstack/devstack
     vars:
       devstack_localrc:
+        CIRROS_VERSION: 0.6.3
+        DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+        DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
         ENABLE_TLS: True
         PUBLIC_SUBNET_ENABLE_DHCP: True
         OVN_BUILD_FROM_SOURCE: True
@@ -121,6 +124,9 @@
       # We must repeat the base subnode settings needed by stack.sh.
       tempest:
         devstack_localrc: &subnode_localrc
+          CIRROS_VERSION: 0.6.3
+          DEFAULT_IMAGE_NAME: cirros-0.6.3-x86_64-uec
+          DEFAULT_IMAGE_FILE_NAME: cirros-0.6.3-x86_64-uec.tar.gz
           DATABASE_PASSWORD: secretdatabase
           RABBIT_PASSWORD: secretrabbit
           ADMIN_PASSWORD: secretadmin
