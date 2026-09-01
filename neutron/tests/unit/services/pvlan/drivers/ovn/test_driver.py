@@ -18,10 +18,12 @@ from unittest import mock
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import resources
 from neutron_lib.services.pvlan import constants as pvlan_const
+from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_utils import uuidutils
 
 from neutron.common.ovn import constants as ovn_const
+from neutron.common.ovn import utils as ovn_utils
 from neutron.services.pvlan.drivers.ovn import driver as pvlan_ovn
 from neutron.tests import base
 
@@ -64,6 +66,22 @@ class TestRegister(base.BaseTestCase):
         self.trigger.register_driver.assert_not_called()
         mock_subscribe.assert_called_once_with(
             mock.ANY, pvlan_ovn.PVLAN_PLUGIN, events.BEFORE_SPAWN)
+
+
+@mock.patch.object(ovn_utils.OvsdbClientTransactCommand, 'run')
+class TestInitializePvlanPgDrop(base.BaseTestCase):
+
+    _OVSDB_ERROR = processutils.ProcessExecutionError(
+        'ovsdb unavailable', '-1')
+
+    def test_initialize_pvlan_pg_drop_success(self, mock_run):
+        pvlan_ovn._initialize_pvlan_pg_drop(None, None, None)
+        mock_run.assert_called_once()
+
+    def test_initialize_pvlan_pg_drop_retries_then_succeeds(self, mock_run):
+        mock_run.side_effect = [self._OVSDB_ERROR, None]
+        pvlan_ovn._initialize_pvlan_pg_drop(None, None, None)
+        self.assertEqual(2, mock_run.call_count)
 
 
 class TestPVLANDriverBase(base.BaseTestCase):

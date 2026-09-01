@@ -37,6 +37,7 @@ PVLAN_PREFIXES = (ISOLATED_PORT_GROUP_PREFIX, COMMUNITY_PORT_GROUP_PREFIX,
     PROMISCUOUS_PORT_GROUP_PREFIX, DROP_PORT_GROUP_NAME)
 
 
+@ovn_utils.retry()
 def create_pvlan_pg_drop():
     """Create pvlan_pg_drop Port Group.
 
