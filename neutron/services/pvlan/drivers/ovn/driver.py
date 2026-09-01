@@ -19,6 +19,7 @@ from oslo_log import log as logging
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils as ovn_utils
+from neutron.common import wsgi_utils
 from neutron.objects import ports as port_objects
 from neutron.services.pvlan import exceptions as pvlan_exc
 
@@ -44,6 +45,12 @@ def create_pvlan_pg_drop():
     Same pattern as neutron_pg_drop but at higher priority to override
     security group allows for PVLAN ports.
     """
+    if not wsgi_utils.is_first_api_worker():
+        # NOTE(ralonsoh): the creation operation of the ``pvlan_pg_drop``
+        # Port_Group needs to be executed only once. Only worker 1 will execute
+        # it.
+        return
+
     pg_name = DROP_PORT_GROUP_NAME
     command = [
         "OVN_Northbound", {
