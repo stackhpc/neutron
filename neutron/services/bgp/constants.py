@@ -62,3 +62,4 @@ class BGPReconcilerResource(Enum):
     CHASSIS_BGP_BRIDGES = 'bgp-bridges'
     PROVIDER_SWITCH = 'provider-switch'
     GATEWAY_IP = 'gateway-ip'
+    FLOATING_IP = 'floating-ip'
