@@ -175,6 +175,8 @@ The following Neutron API extensions are supported with OVN:
      - floating-ip-port-forwarding
    * - Floating IP Pools
      - floatingip-pools
+   * - Floating IP Router (writable)
+     - floating-ip-router-writable
    * - Firewall as a Service v2
      - fwaas_v2
    * - IP Allocation

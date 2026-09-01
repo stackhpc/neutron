@@ -1643,7 +1643,7 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             mock_router_fip.return_value = 'router_id'
             self.assertRaises(
                 exceptions.BadRequest,
-                self.mixin._get_assoc_data, self.ctx, mock.ANY, mock.Mock())
+                self.mixin._get_assoc_data, self.ctx, {}, mock.Mock())
 
     def test__delete_dvr_internal_ports(self):
         payload = mock.Mock()

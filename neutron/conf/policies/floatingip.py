@@ -76,6 +76,18 @@ rules = [
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='create_floatingip:router_id',
+        check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
+        description='Specify the hosting router of a floating IP on create',
+        operations=[
+            {
+                'method': 'POST',
+                'path': COLLECTION_PATH,
+            },
+        ],
+        scope_types=['project'],
+    ),
+    policy.DocumentedRuleDefault(
         name='create_floatingip:tags',
         check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
         description='Create the floating IP tags',
@@ -137,6 +149,18 @@ rules = [
             check_str=neutron_policy.RULE_ADMIN_OR_OWNER,
             deprecated_reason=DEPRECATION_REASON,
             deprecated_since=versionutils.deprecated.WALLABY)
+    ),
+    policy.DocumentedRuleDefault(
+        name='update_floatingip:router_id',
+        check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
+        description='Specify the hosting router of a floating IP on update',
+        operations=[
+            {
+                'method': 'PUT',
+                'path': RESOURCE_PATH,
+            },
+        ],
+        scope_types=['project'],
     ),
     policy.DocumentedRuleDefault(
         name='update_floatingip:tags',
