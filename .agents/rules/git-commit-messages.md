@@ -2,8 +2,8 @@
 description: >-
   Git commit message formatting rules for the Neutron repository: mandatory
   trailers (Assisted-By, Signed-off-by, Change-Id), trailer ordering and
-  preservation, heredoc quoting, and style conventions. Use when creating,
-  amending, or rewording git commits.
+  preservation, 72-character line wrapping, heredoc quoting, and style
+  conventions. Use when creating, amending, or rewording git commits.
 alwaysApply: false
 ---
 
@@ -72,6 +72,9 @@ Change-Id: I<generated or preserved>
 
 ## Commit message style
 
+- Limit every line to 72 characters, including the title. Wrap body text at
+  word boundaries; break long bullet items and code references across lines
+  when needed.
 - Wrap method, function, and variable names in double backticks
   (``` `` ```), e.g. ``_delete_port()``, ``ls_get()``.
 - The title may include a lowercase prefix followed by `:` to indicate the
