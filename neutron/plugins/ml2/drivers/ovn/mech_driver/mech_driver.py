@@ -1223,6 +1223,39 @@ class OVNMechanismDriver(api.MechanismDriver):
         self._ovn_client.delete_port(context.plugin_context, port['id'],
                                      port_object=port)
 
+    def _get_subnets_from_fixed_ips(self, context):
+        subnets = []
+        for data in context.current.get('fixed_ips', []):
+            subnet_id = data.get('subnet_id')
+            if subnet_id:
+                subnets.append(self._plugin.get_subnet(
+                    context.plugin_context, subnet_id))
+        return subnets
+
+    def _get_allowed_binding_segments(self, context):
+        needs_ls = ovn_utils.network_needs_lswitch(
+            context._plugin_context,
+            network=context.network.current)
+        allowed_binding_segments = []
+        subnets = self._get_subnets_from_fixed_ips(context)
+        if not subnets and not needs_ls:
+            # NOTE(ralonsoh): this check keeps the behaviour of
+            # 559e50ac8a0849d6a43b4ddda844ad348583d2d3: if the port has no
+            # subnets and this is a routed provider network with multiple
+            # segments, an empty list is returned.
+            pass
+        elif subnets:
+            for segment in context.segments_to_bind:
+                for subnet in subnets:
+                    seg_id = subnet.get('segment_id')
+                    # If subnet is not attached to any segment, let's use
+                    # default behavior.
+                    if seg_id is None or seg_id == segment[api.ID]:
+                        allowed_binding_segments.append(segment)
+        else:
+            allowed_binding_segments = context.segments_to_bind
+        return allowed_binding_segments
+
     def bind_port(self, context):
         """Attempt to bind a port.
 
@@ -1315,23 +1348,7 @@ class OVNMechanismDriver(api.MechanismDriver):
         iface_types = other_config.get('iface-types', '')
         iface_types = iface_types.split(',') if iface_types else []
         chassis_physnets = self.sb_ovn._get_chassis_physnets(chassis)
-        if not ovn_utils.network_needs_lswitch(
-                context._plugin_context,
-                network=context.network.current):
-            allowed_binding_segments = []
-            for data in port.get('fixed_ips', []):
-                subnet_id = data.get('subnet_id')
-                if subnet_id:
-                    subnet = self._plugin.get_subnet(
-                        context._plugin_context, subnet_id)
-                    seg_id = subnet.get('segment_id')
-                    for segment in context.segments_to_bind:
-                        if seg_id is None or seg_id == segment[api.ID]:
-                            allowed_binding_segments.append(segment)
-        else:
-            allowed_binding_segments = context.segments_to_bind
-
-        for segment_to_bind in allowed_binding_segments:
+        for segment_to_bind in self._get_allowed_binding_segments(context):
             network_type = segment_to_bind['network_type']
             segmentation_id = segment_to_bind['segmentation_id']
             physical_network = segment_to_bind['physical_network']

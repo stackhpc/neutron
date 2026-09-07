@@ -1391,7 +1391,10 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         fake_host = 'host'
         fake_port_context = fakes.FakePortContext(
             fake_port, fake_host, fake_segments)
-        self.mech_driver.bind_port(fake_port_context)
+        with mock.patch.object(self.mech_driver,
+                               '_get_allowed_binding_segments',
+                               return_value=fake_segments):
+            self.mech_driver.bind_port(fake_port_context)
         neutron_agent.AgentCache().get_agents.assert_called_once_with(
             {'host': fake_host,
              'agent_type': ovn_const.OVN_CONTROLLER_TYPES})
@@ -1429,7 +1432,10 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         fake_host = 'host'
         fake_port_context = fakes.FakePortContext(
             fake_port, fake_host, fake_segments)
-        self.mech_driver.bind_port(fake_port_context)
+        with mock.patch.object(self.mech_driver,
+                               '_get_allowed_binding_segments',
+                               return_value=fake_segments):
+            self.mech_driver.bind_port(fake_port_context)
         neutron_agent.AgentCache().get_agents.assert_called_once_with(
             {'host': fake_host,
              'agent_type': ovn_const.OVN_CONTROLLER_TYPES})
@@ -1453,7 +1459,10 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         fake_host = 'host'
         fake_port_context = fakes.FakePortContext(
             fake_port, fake_host, fake_segments)
-        self.mech_driver.bind_port(fake_port_context)
+        with mock.patch.object(self.mech_driver,
+                               '_get_allowed_binding_segments',
+                               return_value=fake_segments):
+            self.mech_driver.bind_port(fake_port_context)
         neutron_agent.AgentCache().get_agents.assert_called_once_with(
             {'host': fake_host,
              'agent_type': ovn_const.OVN_CONTROLLER_TYPES})
@@ -1474,7 +1483,10 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         fake_host = 'host'
         fake_port_context = fakes.FakePortContext(
             fake_port, fake_host, fake_segments)
-        self.mech_driver.bind_port(fake_port_context)
+        with mock.patch.object(self.mech_driver,
+                               '_get_allowed_binding_segments',
+                               return_value=fake_segments):
+            self.mech_driver.bind_port(fake_port_context)
 
         vif_details = copy.deepcopy(
             self.mech_driver.vif_details[portbindings.VIF_TYPE_AGILIO_OVS])
@@ -1519,7 +1531,10 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         fake_host = 'host'
         fake_port_context = fakes.FakePortContext(
             fake_port, fake_host, fake_segments)
-        self.mech_driver.bind_port(fake_port_context)
+        with mock.patch.object(self.mech_driver,
+                               '_get_allowed_binding_segments',
+                               return_value=fake_segments):
+            self.mech_driver.bind_port(fake_port_context)
         neutron_agent.AgentCache().get_agents.assert_called_once_with(
             {'host': fake_smartnic_dpu,
              'agent_type': ovn_const.OVN_CONTROLLER_TYPES})
@@ -1547,7 +1562,10 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         fake_host = 'host'
         fake_port_context = fakes.FakePortContext(
             fake_port, fake_host, fake_segments)
-        self.mech_driver.bind_port(fake_port_context)
+        with mock.patch.object(self.mech_driver,
+                               '_get_allowed_binding_segments',
+                               return_value=fake_segments):
+            self.mech_driver.bind_port(fake_port_context)
         neutron_agent.AgentCache().get_agents.assert_called_once_with(
             {'host': fake_host,
              'agent_type': ovn_const.OVN_CONTROLLER_TYPES})
@@ -1626,6 +1644,70 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         fake_segments = \
             [fakes.FakeSegment.create_one_segment(attrs=segment_attrs).info()]
         self._test_bind_port(fake_segments)
+
+    def test_bind_port_vlan_filters_by_subnet_segment_id(self):
+        """Bind to the segment matching the port's subnet segment_id."""
+        segment_attrs_1 = {'network_type': 'vlan',
+                           'physical_network': 'fake-physnet',
+                           'segmentation_id': 23}
+        segment_attrs_2 = {'network_type': 'vlan',
+                           'physical_network': 'fake-physnet',
+                           'segmentation_id': 42}
+        fake_segments = [
+            fakes.FakeSegment.create_one_segment(
+                attrs=segment_attrs_1).info(),
+            fakes.FakeSegment.create_one_segment(
+                attrs=segment_attrs_2).info()]
+        fake_chassis = fakes.FakeChassis.create(datapath_type=DEFAULT_DP_TYPE)
+        self.sb_ovn.db_find.return_value.execute.return_value = [
+            {'other_config': fake_chassis.other_config}]
+        fake_port = fakes.FakePort.create_one_port().info()
+        fake_host = 'host'
+        fake_port_context = fakes.FakePortContext(
+            fake_port, fake_host, fake_segments)
+        with mock.patch.object(
+                self.mech_driver, '_get_subnets_from_fixed_ips',
+                return_value=[{'segment_id': fake_segments[1]['id']}]):
+            self.mech_driver.bind_port(fake_port_context)
+        vif_details = copy.deepcopy(
+            self.mech_driver.vif_details[portbindings.VIF_TYPE_OVS])
+        vif_details[
+            portbindings.VIF_DETAILS_BRIDGE_NAME] = n_const.DEFAULT_BR_INT
+        vif_details[portbindings.OVS_DATAPATH_TYPE] = DEFAULT_DP_TYPE
+        fake_port_context.set_binding.assert_called_once_with(
+            fake_segments[1]['id'], portbindings.VIF_TYPE_OVS, vif_details)
+
+    def test_bind_port_vlan_subnet_without_segment_id(self):
+        """Bind to first compatible segment when subnet has no segment_id."""
+        segment_attrs_1 = {'network_type': 'vlan',
+                           'physical_network': 'fake-physnet',
+                           'segmentation_id': 23}
+        segment_attrs_2 = {'network_type': 'vlan',
+                           'physical_network': 'fake-physnet',
+                           'segmentation_id': 42}
+        fake_segments = [
+            fakes.FakeSegment.create_one_segment(
+                attrs=segment_attrs_1).info(),
+            fakes.FakeSegment.create_one_segment(
+                attrs=segment_attrs_2).info()]
+        fake_chassis = fakes.FakeChassis.create(datapath_type=DEFAULT_DP_TYPE)
+        self.sb_ovn.db_find.return_value.execute.return_value = [
+            {'other_config': fake_chassis.other_config}]
+        fake_port = fakes.FakePort.create_one_port().info()
+        fake_host = 'host'
+        fake_port_context = fakes.FakePortContext(
+            fake_port, fake_host, fake_segments)
+        with mock.patch.object(
+                self.mech_driver, '_get_subnets_from_fixed_ips',
+                return_value=[{'segment_id': None}]):
+            self.mech_driver.bind_port(fake_port_context)
+        vif_details = copy.deepcopy(
+            self.mech_driver.vif_details[portbindings.VIF_TYPE_OVS])
+        vif_details[
+            portbindings.VIF_DETAILS_BRIDGE_NAME] = n_const.DEFAULT_BR_INT
+        vif_details[portbindings.OVS_DATAPATH_TYPE] = DEFAULT_DP_TYPE
+        fake_port_context.set_binding.assert_called_once_with(
+            fake_segments[0]['id'], portbindings.VIF_TYPE_OVS, vif_details)
 
     def test_bind_virtio_forwarder_port_vxlan(self):
         """Test binding a VIRTIO_FORWARDER port to a vxlan segment."""
