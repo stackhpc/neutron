@@ -14,7 +14,6 @@
 import datetime
 import functools
 import subprocess
-import time
 from unittest import mock
 
 import fixtures as og_fixtures
@@ -513,7 +512,7 @@ class TestNBDbMonitor(base.TestOVNFunctionalBase):
         # only to virtual ports. This check is done for virtual ports in
         # ``update_virtual_port_parent_host``.
         port = self.create_port()
-        self._delete('ports', port['id'])
+        self._delete('ports', port['id'], as_admin=True)
         # We actively wait for 5 seconds for the ``Port_Binding`` event to
         # arrive and be processed, but the port host must not be updated.
         self.assertRaises(n_utils.WaitTimeout, n_utils.wait_until_true,
@@ -1160,21 +1159,30 @@ class TestLogicalSwitchPortUpdateLogicalRouterPortEvent(
                                       self.subnet['subnet']['id'], None)
         self.assertTrue(lsp_event.wait())
         self.assertTrue(lrp_event.wait())
-        # Wait for the
-        # ``LogicalSwitchPortUpdateLogicalRouterPortEvent.run`` call.
-        time.sleep(1)
 
     def test_create_router_port(self):
         with mock.patch.object(self.l3_plugin._ovn_client,
                                'update_router_port') as mock_update_rp:
             self._set_logical_port_events_add_subnet_to_router()
-            mock_update_rp.assert_called()
+            n_utils.wait_until_true(
+                    lambda: mock_update_rp.called,
+                    timeout=10,
+                    exception=Exception(
+                        'LogicalSwitchPortUpdateLogicalRouterPortEvent.run '
+                        'was not called'))
 
     def test_create_router_port_port_deleted_concurrently(self):
         with mock.patch.object(self.l3_plugin._ovn_client,
                                'update_router_port') as mock_update_rp, \
-                mock.patch.object(self.plugin, 'get_ports', return_value=[]):
+                mock.patch.object(self.plugin, 'get_ports',
+                                  return_value=[]) as mock_get_ports:
             self._set_logical_port_events_add_subnet_to_router()
+            n_utils.wait_until_true(
+                    lambda: mock_get_ports.called,
+                    timeout=10,
+                    exception=Exception(
+                        'LogicalSwitchPortUpdateLogicalRouterPortEvent.run '
+                        'was not called'))
             mock_update_rp.assert_not_called()
 
     def test_create_non_router_port(self):

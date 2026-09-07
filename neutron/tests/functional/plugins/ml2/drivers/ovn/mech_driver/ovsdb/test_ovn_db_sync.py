@@ -38,14 +38,21 @@ from neutron.common.ovn import acl as acl_utils
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf as ovn_config
+from neutron.db import evpn_db
 from neutron.plugins.ml2.drivers.ovn.agent import neutron_agent
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb.extensions \
     import qos as qos_extension
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import maintenance
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_db_sync
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovsdb_monitor
+from neutron.services.bgp import constants as bgp_const
+from neutron.services.evpn import commands as evpn_commands
+from neutron.services.evpn import constants as evpn_const
+from neutron.services.evpn import db_sync as evpn_db_sync
+from neutron.services.evpn import helpers as evpn_helpers
 from neutron.services.portforwarding.drivers.ovn.driver import \
     OVNPortForwarding as ovn_pf
+from neutron.services.pvlan.drivers.ovn import driver as pvlan_ovn
 from neutron.services.revisions import revision_plugin
 from neutron.services.segments import db as segments_db
 from neutron.tests.functional import base
@@ -698,7 +705,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
                 'floating_ip_address': '100.0.0.32',
                 'subnet_id': None,
                 'port_id': n4_port_dict['p3']}})
-        self._delete('ports', n4_port_dict['p3'])
+        self._delete('ports', n4_port_dict['p3'], as_admin=True)
 
         self.create_lrouters.append('neutron-' + uuidutils.generate_uuid())
         self.create_lrouter_ports.append(('lrp-' + uuidutils.generate_uuid(),
@@ -1642,7 +1649,7 @@ class TestOvnNbSync(base.TestOVNFunctionalBase):
         for port in db_metadata_ports:
             lswitches[port['id']] = 'neutron-' + port['network_id']
             if ports_to_delete:
-                self._delete('ports', port['id'])
+                self._delete('ports', port['id'], as_admin=True)
                 ports_to_delete -= 1
 
         _plugin_nb_ovn = self.mech_driver.nb_ovn
@@ -2249,3 +2256,554 @@ class TestOvnSbSync(base.TestOVNFunctionalBase):
         self._sync_resources()
         segment_hosts = segments_db.get_hosts_mapped_with_segments(self.ctx)
         self.assertEqual({self.host1, host2, host3, host4}, segment_hosts)
+
+
+class TestOvnNbSyncEVPN(base.TestOVNFunctionalBase):
+
+    _extension_drivers = ['port_security', 'revision_plugin']
+
+    def setUp(self):
+        mock.patch.object(
+            maintenance.DBInconsistenciesPeriodics, 'has_lock',
+            mock.PropertyMock(return_value=True)).start()
+        mock.patch.object(
+            ovsdb_monitor.BaseOvnIdl, 'set_lock').start()
+        super().setUp(maintenance_worker=True)
+        self.ctx = context.get_admin_context()
+        self.rp = revision_plugin.RevisionPlugin()
+
+    def get_additional_service_plugins(self):
+        return {'segments': 'segments'}
+
+    def _create_evpn_resources(self):
+        """Create router with EVPN topology in both Neutron DB and OVN."""
+        res = self._create_network(self.fmt, 'evpn-net', True)
+        net = self.deserialize(self.fmt, res)
+        self.evpn_net_id = net['network']['id']
+
+        res = self._create_subnet(self.fmt, self.evpn_net_id, '10.0.0.0/24')
+        subnet = self.deserialize(self.fmt, res)
+        self.evpn_subnet_id = subnet['subnet']['id']
+
+        self.evpn_router = self.l3_plugin.create_router(
+            self.ctx,
+            {'router': {'name': 'evpn-r1', 'admin_state_up': True,
+                        'project_id': self._project_id}})
+        self.evpn_router_id = self.evpn_router['id']
+
+        rif = self.l3_plugin.add_router_interface(
+            self.ctx, self.evpn_router_id,
+            {'subnet_id': self.evpn_subnet_id})
+        self.evpn_rif_port_id = rif['port_id']
+
+        db_helper = evpn_db.EVPNDbHelper()
+        self.evpn_vni = db_helper.allocate_vni_for_router(
+            self.ctx, self.evpn_router_id, 0)
+        self.evpn_vlan = db_helper.get_vlan_for_router(
+            self.ctx, self.evpn_router_id)
+
+        gw_chassis = self.sb_api.get_gateway_chassis_from_cms_options()
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(evpn_commands.CreateEVPNRouterCommand(
+                self.nb_api, self.evpn_router_id,
+                self.evpn_vni, self.evpn_vlan, gw_chassis))
+
+        db_helper.advertise_port(
+            self.ctx, self.evpn_rif_port_id, self.evpn_net_id,
+            self.evpn_router_id)
+
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(evpn_commands.AdvertiseHostCommand(
+                self.nb_api, self.evpn_rif_port_id))
+
+        self.evpn_ls_name = evpn_helpers.evpn_ls_name(self.evpn_vni)
+        self.evpn_hcg_name = evpn_helpers.evpn_hcg_name(
+            self.evpn_router_id)
+        self.evpn_lrp_name = evpn_helpers.evpn_lrp_name(
+            self.evpn_router_id, self.evpn_vni)
+        self.evpn_lsp_name = evpn_helpers.evpn_lsp_name(
+            self.evpn_router_id, self.evpn_vni)
+        self.evpn_advertised_lrp = utils.ovn_lrouter_port_name(
+            self.evpn_rif_port_id)
+
+    def _get_ovn_evpn_ls_names(self):
+        return {row.name for row in self.nb_api.db_find_rows(
+            'Logical_Switch',
+            ('other_config', '!=', {
+                ovn_const.LS_OTHER_CFG_DR_VNI: ''}),
+        ).execute(check_error=True)}
+
+    def _get_ovn_evpn_hcg_names(self):
+        return {row.name for row in self.nb_api.db_find_rows(
+            'HA_Chassis_Group',
+            ('external_ids', '!=', {
+                ovn_const.OVN_ROUTER_ID_EXT_ID_KEY: ''}),
+        ).execute(check_error=True)}
+
+    def _get_ovn_evpn_lrp_names(self):
+        return {row.name for row in self.nb_api.db_find_rows(
+            'Logical_Router_Port',
+            ('external_ids', '!=', {
+                evpn_const.EVPN_LRP_VNI_EXT_ID_KEY: ''}),
+        ).execute(check_error=True)}
+
+    def _get_ovn_evpn_lsp_names(self):
+        return {row.name for row in self.nb_api.db_find_rows(
+            'Logical_Switch_Port',
+            ('type', '=', 'router'),
+            ('options', '!=', {'router-port': ''}),
+        ).execute(check_error=True)
+            if row.options.get('router-port', '').startswith('evpn-lrp-')}
+
+    def _get_ovn_advertised_lrp_names(self):
+        return {row.name for row in self.nb_api.db_find_rows(
+            'Logical_Router_Port',
+            ('options', '!=', {
+                bgp_const.LR_OPTIONS_DYNAMIC_ROUTING_REDISTRIBUTE: ''}),
+        ).execute(check_error=True)}
+
+    def _validate_evpn_objects_exist(self):
+        self.assertIn(self.evpn_ls_name, self._get_ovn_evpn_ls_names())
+        self.assertIn(self.evpn_hcg_name, self._get_ovn_evpn_hcg_names())
+        self.assertIn(self.evpn_lrp_name, self._get_ovn_evpn_lrp_names())
+        self.assertIn(self.evpn_lsp_name, self._get_ovn_evpn_lsp_names())
+        self.assertIn(self.evpn_advertised_lrp,
+                      self._get_ovn_advertised_lrp_names())
+
+        lr_name = utils.ovn_name(self.evpn_router_id)
+        lr = self.nb_api.lr_get(lr_name).execute(check_error=True)
+        self.assertEqual('true', lr.options.get(
+            bgp_const.LR_OPTIONS_DYNAMIC_ROUTING))
+
+        lrp = self.nb_api.lrp_get(
+            self.evpn_lrp_name).execute(check_error=True)
+        self.assertEqual('true', lrp.options.get(
+            bgp_const.LRP_OPTIONS_DYNAMIC_ROUTING_MAINTAIN_VRF))
+
+    def _sync_evpn(self, mode):
+        synchronizer = evpn_db_sync.EvpnOvnSynchronizer(
+            self.plugin, self.mech_driver, mode)
+        self.addCleanup(synchronizer.stop)
+        synchronizer.do_sync()
+
+    def test_evpn_sync_no_discrepancy(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+        self._validate_evpn_objects_exist()
+
+    def test_evpn_sync_repair_missing_ls(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.ls_del(self.evpn_ls_name, if_exists=True))
+
+        self.assertNotIn(self.evpn_ls_name, self._get_ovn_evpn_ls_names())
+        self.assertNotIn(self.evpn_lsp_name, self._get_ovn_evpn_lsp_names())
+
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+
+        self.assertIn(self.evpn_ls_name, self._get_ovn_evpn_ls_names())
+        self.assertIn(self.evpn_hcg_name, self._get_ovn_evpn_hcg_names())
+        self.assertIn(self.evpn_lrp_name, self._get_ovn_evpn_lrp_names())
+        self.assertIn(self.evpn_lsp_name, self._get_ovn_evpn_lsp_names())
+
+    def test_evpn_sync_repair_missing_lsp(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.lsp_del(
+                self.evpn_lsp_name, if_exists=True))
+
+        self.assertIn(self.evpn_ls_name, self._get_ovn_evpn_ls_names())
+        self.assertNotIn(self.evpn_lsp_name, self._get_ovn_evpn_lsp_names())
+
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+
+        self._validate_evpn_objects_exist()
+
+    def test_evpn_sync_repair_missing_advertise_host(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.db_remove(
+                'Logical_Router_Port', self.evpn_advertised_lrp,
+                'options',
+                bgp_const.LR_OPTIONS_DYNAMIC_ROUTING_REDISTRIBUTE,
+                if_exists=True))
+
+        self.assertNotIn(self.evpn_advertised_lrp,
+                         self._get_ovn_advertised_lrp_names())
+
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+
+        self.assertIn(self.evpn_advertised_lrp,
+                      self._get_ovn_advertised_lrp_names())
+
+    def test_evpn_sync_repair_missing_hcg(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+
+        self.nb_api.db_clear(
+            'Logical_Router_Port', self.evpn_lrp_name,
+            'ha_chassis_group',
+        ).execute(check_error=True)
+        self.nb_api.ha_chassis_group_del(
+            self.evpn_hcg_name, if_exists=True,
+        ).execute(check_error=True)
+
+        self.assertNotIn(self.evpn_hcg_name,
+                         self._get_ovn_evpn_hcg_names())
+
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+
+        self._validate_evpn_objects_exist()
+
+    def test_evpn_sync_repair_wrong_lr_options(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+
+        lr_name = utils.ovn_name(self.evpn_router_id)
+        self.nb_api.db_remove(
+            'Logical_Router', lr_name, 'options',
+            bgp_const.LR_OPTIONS_DYNAMIC_ROUTING,
+            if_exists=True,
+        ).execute(check_error=True)
+
+        lr = self.nb_api.lr_get(lr_name).execute(check_error=True)
+        self.assertNotIn(bgp_const.LR_OPTIONS_DYNAMIC_ROUTING, lr.options)
+
+        self.nb_api.lsp_del(
+            self.evpn_lsp_name, if_exists=True,
+        ).execute(check_error=True)
+
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+
+        self._validate_evpn_objects_exist()
+
+    def test_evpn_sync_repair_wrong_lrp_options(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+
+        self.nb_api.db_set(
+            'Logical_Router_Port', self.evpn_lrp_name,
+            ('options', {
+                bgp_const.LRP_OPTIONS_DYNAMIC_ROUTING_MAINTAIN_VRF: 'false',
+            }),
+        ).execute(check_error=True)
+
+        lrp = self.nb_api.lrp_get(
+            self.evpn_lrp_name).execute(check_error=True)
+        self.assertEqual('false', lrp.options.get(
+            bgp_const.LRP_OPTIONS_DYNAMIC_ROUTING_MAINTAIN_VRF))
+
+        self.nb_api.lsp_del(
+            self.evpn_lsp_name, if_exists=True,
+        ).execute(check_error=True)
+
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+
+        self._validate_evpn_objects_exist()
+
+    def test_evpn_sync_repair_orphan_cleanup(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+
+        orphan_ls = 'evpn-ls-999999'
+        orphan_hcg = 'evpn-hcg-' + uuidutils.generate_uuid()
+        orphan_lsp = 'evpn-lsp-orphan'
+        orphan_lsp_ls = 'evpn-lsp-orphan-parent-ls'
+        orphan_lrp = 'lrp-orphan-advertised'
+        lr_name = utils.ovn_name(self.evpn_router_id)
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.ls_add(
+                orphan_ls, may_exist=True,
+                other_config={ovn_const.LS_OTHER_CFG_DR_VNI: '999999'}))
+            txn.add(self.nb_api.ha_chassis_group_add(
+                orphan_hcg, may_exist=True,
+                external_ids={
+                    ovn_const.OVN_ROUTER_ID_EXT_ID_KEY: 'fake-id'}))
+            txn.add(self.nb_api.ls_add(orphan_lsp_ls, may_exist=True))
+            txn.add(self.nb_api.lsp_add(
+                orphan_lsp_ls, orphan_lsp, type='router',
+                options={'router-port': 'evpn-lrp-orphan'}))
+            txn.add(self.nb_api.lrp_add(
+                lr_name, orphan_lrp,
+                mac='00:00:00:00:00:99',
+                networks=['192.168.99.1/24'],
+                options={
+                    bgp_const.LR_OPTIONS_DYNAMIC_ROUTING_REDISTRIBUTE:
+                        'connected-as-host'}))
+
+        self.assertIn(orphan_ls, self._get_ovn_evpn_ls_names())
+        self.assertIn(orphan_hcg, self._get_ovn_evpn_hcg_names())
+        self.assertIn(orphan_lsp, self._get_ovn_evpn_lsp_names())
+        self.assertIn(orphan_lrp, self._get_ovn_advertised_lrp_names())
+
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+
+        self.assertNotIn(orphan_ls, self._get_ovn_evpn_ls_names())
+        self.assertNotIn(orphan_hcg, self._get_ovn_evpn_hcg_names())
+        self.assertNotIn(orphan_lsp, self._get_ovn_evpn_lsp_names())
+        self.assertNotIn(orphan_lrp, self._get_ovn_advertised_lrp_names())
+        self._validate_evpn_objects_exist()
+
+    def test_evpn_sync_log_does_not_repair(self):
+        self._create_evpn_resources()
+        self._validate_evpn_objects_exist()
+
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.ls_del(self.evpn_ls_name, if_exists=True))
+
+        self.assertNotIn(self.evpn_ls_name, self._get_ovn_evpn_ls_names())
+
+        self._sync_evpn(n_lib_ovn_const.OVN_DB_SYNC_MODE_LOG)
+
+        self.assertNotIn(self.evpn_ls_name, self._get_ovn_evpn_ls_names())
+
+
+class TestOvnNbSyncPVLAN(base.TestOVNFunctionalBase):
+    """Functional tests for PVLAN sync in ovn-db-sync."""
+
+    _extension_drivers = ['port_security', 'qos']
+
+    def setUp(self):
+        self._mock_has_lock = mock.patch.object(
+            maintenance.DBInconsistenciesPeriodics, 'has_lock',
+            mock.PropertyMock(return_value=True))
+        self.mock_has_lock = self._mock_has_lock.start()
+        self._mock_set_lock = mock.patch.object(
+            ovsdb_monitor.BaseOvnIdl, 'set_lock')
+        self.mock_set_lock = self._mock_set_lock.start()
+        super().setUp(maintenance_worker=True)
+        self.ctx = context.get_admin_context()
+
+    def get_additional_service_plugins(self):
+        p = super().get_additional_service_plugins()
+        p.update({'pvlan': 'pvlan'})
+        return p
+
+    def _get_pg(self, pg_name):
+        """Look up a Port_Group by name from OVN NB."""
+        for row in self.nb_api.tables['Port_Group'].rows.values():
+            if row.name == pg_name:
+                return row
+        return None
+
+    def _get_pg_acl_dicts(self, pg):
+        """Convert PG ACLs to comparable dicts."""
+        return [{'priority': a.priority, 'action': a.action,
+                 'direction': a.direction, 'match': a.match}
+                for a in pg.acls]
+
+    def _create_drop_pg(self):
+        """Create the PVLAN drop PG via the IDL.
+
+        Uses the IDL (like every other OVN operation in this test
+        module) instead of ``ovsdb-client transact`` so that the IDL
+        cache is updated synchronously.
+        """
+        drop_name = pvlan_ovn.DROP_PORT_GROUP_NAME
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.pg_add(
+                name=drop_name, acls=[], may_exist=True))
+        with self.nb_api.transaction(check_error=True) as txn:
+            for direction, match in [
+                ('to-lport',
+                 'outport == @%s && ip' % drop_name),
+                ('from-lport',
+                 'inport == @%s && ip' % drop_name),
+            ]:
+                txn.add(self.nb_api.pg_acl_add(
+                    drop_name, direction,
+                    pvlan_ovn.DROP_ALL_PRIORITY,
+                    match, 'drop', may_exist=True))
+
+    def _create_pvlan_network(self):
+        """Create a PVLAN network via the API."""
+        res = self._create_network(self.fmt, 'pvlan-net', True,
+                                   arg_list=('pvlan',), pvlan=True)
+        network = self.deserialize(self.fmt, res)['network']
+        network_id = network['id']
+
+        res = self._create_subnet(
+            self.fmt, network_id, '10.0.0.0/24')
+        self.deserialize(self.fmt, res)
+
+        # The OVN client creates the per-network PGs (isolated,
+        # promiscuous) during network creation when pvlan=True.
+        # Only the global drop PG needs to be created separately.
+        self._create_drop_pg()
+
+        return network_id
+
+    def _run_sync(self):
+        nb_synchronizer = ovn_db_sync.OvnNbSynchronizer(
+            self.plugin, self.mech_driver,
+            n_lib_ovn_const.OVN_DB_SYNC_MODE_REPAIR)
+        self.addCleanup(nb_synchronizer.stop)
+        nb_synchronizer.sync_pvlan(self.ctx)
+
+    def test_sync_pvlan_drop_pg_recreated(self):
+        """Drop PG is recreated if missing."""
+        self._create_drop_pg()
+        drop_pg = self._get_pg(pvlan_ovn.DROP_PORT_GROUP_NAME)
+        self.assertIsNotNone(drop_pg)
+
+        # Delete the drop PG
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.pg_del(
+                pvlan_ovn.DROP_PORT_GROUP_NAME,
+                if_exists=True))
+        self.assertIsNone(
+            self._get_pg(pvlan_ovn.DROP_PORT_GROUP_NAME))
+
+        self._run_sync()
+
+        drop_pg = self._get_pg(pvlan_ovn.DROP_PORT_GROUP_NAME)
+        self.assertIsNotNone(drop_pg)
+        acls = self._get_pg_acl_dicts(drop_pg)
+        self.assertEqual(2, len(acls))
+
+    def test_sync_pvlan_drop_pg_acls_repaired(self):
+        """Missing ACLs on drop PG are re-added."""
+        self._create_drop_pg()
+        drop_name = pvlan_ovn.DROP_PORT_GROUP_NAME
+
+        # Delete the to-lport ACL
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.pg_acl_del(
+                drop_name, direction='to-lport'))
+        drop_pg = self._get_pg(drop_name)
+        self.assertEqual(1, len(drop_pg.acls))
+
+        self._run_sync()
+
+        drop_pg = self._get_pg(drop_name)
+        acls = self._get_pg_acl_dicts(drop_pg)
+        self.assertEqual(2, len(acls))
+        directions = {a['direction'] for a in acls}
+        self.assertEqual({'to-lport', 'from-lport'}, directions)
+
+    def test_sync_pvlan_drop_pg_extra_acl_removed(self):
+        """Extra ACLs on drop PG are removed."""
+        self._create_drop_pg()
+        drop_name = pvlan_ovn.DROP_PORT_GROUP_NAME
+
+        # Add a bogus ACL
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.pg_acl_add(
+                drop_name, 'to-lport', 999,
+                'ip', 'allow'))
+        drop_pg = self._get_pg(drop_name)
+        self.assertEqual(3, len(drop_pg.acls))
+
+        self._run_sync()
+
+        drop_pg = self._get_pg(drop_name)
+        self.assertEqual(2, len(drop_pg.acls))
+
+    def test_sync_pvlan_network_pgs_recreated(self):
+        """Isolated and promiscuous PGs are recreated."""
+        network_id = self._create_pvlan_network()
+        nid = network_id.replace('-', '_')
+        iso_name = 'pvlan_isolated_%s' % nid
+        prm_name = 'pvlan_promiscuous_%s' % nid
+
+        self.assertIsNotNone(self._get_pg(iso_name))
+        self.assertIsNotNone(self._get_pg(prm_name))
+
+        # Delete isolated PG
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.pg_del(
+                iso_name, if_exists=True))
+        self.assertIsNone(self._get_pg(iso_name))
+
+        self._run_sync()
+
+        iso_pg = self._get_pg(iso_name)
+        self.assertIsNotNone(iso_pg)
+        self.assertEqual(1, len(iso_pg.acls))
+
+    def test_sync_pvlan_all_correct_no_changes(self):
+        """When everything is correct, no PGs are modified."""
+        network_id = self._create_pvlan_network()
+        nid = network_id.replace('-', '_')
+        iso_name = 'pvlan_isolated_%s' % nid
+        prm_name = 'pvlan_promiscuous_%s' % nid
+
+        iso_before = self._get_pg(iso_name)
+        prm_before = self._get_pg(prm_name)
+
+        self._run_sync()
+
+        iso_after = self._get_pg(iso_name)
+        prm_after = self._get_pg(prm_name)
+        # UUIDs should be the same (not recreated)
+        self.assertEqual(iso_before.uuid, iso_after.uuid)
+        self.assertEqual(prm_before.uuid, prm_after.uuid)
+
+    def _save_sg_port_groups(self):
+        """Capture UUID and ACLs for every SG port group."""
+        sg_rows = {}
+        for row in self.nb_api.tables['Port_Group'].rows.values():
+            if ovn_const.OVN_SG_EXT_ID_KEY not in row.external_ids:
+                continue
+            sg_rows[row.name] = {
+                'uuid': row.uuid,
+                'acls': sorted(
+                    [{'priority': a.priority, 'action': a.action,
+                      'direction': a.direction, 'match': a.match}
+                     for a in row.acls],
+                    key=lambda a: (a['direction'], a['priority'],
+                                   a['match'])),
+            }
+        return sg_rows
+
+    def test_sync_pvlan_prm_repair_restores_community_acls(self):
+        """Promiscuous PG repair restores community ACLs."""
+        network_id = self._create_pvlan_network()
+        nid = network_id.replace('-', '_')
+        prm_name = 'pvlan_promiscuous_%s' % nid
+
+        self._create_port(
+            self.fmt, network_id,
+            arg_list=('pvlan_type', 'pvlan_community'),
+            pvlan_type='community', pvlan_community='web')
+
+        prm_pg = self._get_pg(prm_name)
+        acls_before = self._get_pg_acl_dicts(prm_pg)
+        self.assertEqual(4, len(acls_before))
+
+        comm_pg_name = 'pvlan_community_web_%s' % nid
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.pg_acl_del(
+                prm_name, direction='from-lport',
+                priority=pvlan_ovn.PROMISCUOUS_PRIORITY,
+                match='inport == @%s' % comm_pg_name))
+        self.assertEqual(3, len(self._get_pg(prm_name).acls))
+
+        self._run_sync()
+
+        acls_after = self._get_pg_acl_dicts(self._get_pg(prm_name))
+        self.assertCountEqual(acls_before, acls_after)
+
+    def test_sync_pvlan_does_not_change_secgroups(self):
+        """Security group PGs and ACLs are untouched by sync_pvlan."""
+        network_id = self._create_pvlan_network()
+
+        # Create a port so the default SG port group has a member.
+        self._create_port(self.fmt, network_id)
+
+        before = self._save_sg_port_groups()
+        # Verify it's not empty:
+        self.assertTrue(before)
+        self._run_sync()
+        after = self._save_sg_port_groups()
+        self.assertEqual(before.keys(), after.keys())
+        for pg_name, pg in before.items():
+            self.assertEqual(pg['uuid'], after[pg_name]['uuid'])
+            self.assertEqual(pg['acls'], after[pg_name]['acls'])
