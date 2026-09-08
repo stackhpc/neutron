@@ -408,10 +408,12 @@ class TestFrrVtyshDriverOperation(base.BaseSudoTestCase):
             self.port_b.link.address).split('/')[0]
         lladdr_a = ip_lib.get_ipv6_lladdr(
             self.port_a.link.address).split('/')[0]
+        self.port_a.addr.wait_until_address_ready(lladdr_a)
+        self.port_b.addr.wait_until_address_ready(lladdr_b)
         net_helpers.assert_ping(
-            self.ns_a, lladdr_b, device=self.port_a.name)
+            self.ns_a, lladdr_b, device=self.port_a.name, retry_count=3)
         net_helpers.assert_ping(
-            self.ns_b, lladdr_a, device=self.port_b.name)
+            self.ns_b, lladdr_a, device=self.port_b.name, retry_count=3)
 
     def test_routes_get_advertised(self):
         vni = 10
