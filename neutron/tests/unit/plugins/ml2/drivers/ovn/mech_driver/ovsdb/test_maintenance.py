@@ -234,6 +234,12 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
             self.fake_ovn_client._plugin.get_network.return_value = self.net
             self.periodic._fix_create_update(self.ctx, row)
 
+            # The Logical_Switch must be retrieved by name; a register
+            # created before persist_uuid was used does not have the
+            # network ID as register UUID.
+            self.fake_ovn_client._nb_idl.get_lswitch.assert_called_once_with(
+                utils.ovn_name(self.net['id']))
+
             # Since the revision number was < 0, make sure create_network()
             # is invoked with the latest version of the object in the neutron
             # database
@@ -252,6 +258,31 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
 
     def test_fix_network_update(self):
         self._test_fix_create_update_network(ovn_rev=5, neutron_rev=7)
+
+    def test_fix_network_legacy_lswitch(self):
+        # A Logical_Switch created before persist_uuid was used is only
+        # found by its name; the maintenance task must not create a second
+        # register for it.
+        _nb_idl = self.fake_ovn_client._nb_idl
+        with db_api.CONTEXT_WRITER.using(self.ctx):
+            self.net['revision_number'] = 7
+            ovn_revision_numbers_db.create_initial_revision(
+                self.ctx, self.net['id'], constants.TYPE_NETWORKS,
+                revision_number=5)
+            row = ovn_revision_numbers_db.get_revision_row(self.ctx,
+                                                           self.net['id'])
+            fake_ls = mock.Mock(external_ids={
+                constants.OVN_REV_NUM_EXT_ID_KEY: 5})
+            _nb_idl.get_lswitch.side_effect = (
+                lambda name: fake_ls
+                if name == utils.ovn_name(self.net['id']) else None)
+
+            self.fake_ovn_client._plugin.get_network.return_value = self.net
+            self.periodic._fix_create_update(self.ctx, row)
+
+            self.fake_ovn_client.create_network.assert_not_called()
+            self.fake_ovn_client.update_network.assert_called_once_with(
+                self.ctx, self.net)
 
     def _test_fix_create_update_port(self, ovn_rev, neutron_rev):
         _nb_idl = self.fake_ovn_client._nb_idl
