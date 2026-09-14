@@ -82,7 +82,7 @@ class NetnsCleanupTest(base.BaseSudoTestCase):
             cmd = ['ps', '-f', '-u', 'root']
             err_str += utils.execute(cmd, run_as_root=True)
 
-            raise Exception(err_str)
+            raise RuntimeError(err_str)
 
         netns_cleanup.cleanup_network_namespaces(self.conf)
 

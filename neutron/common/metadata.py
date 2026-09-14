@@ -273,7 +273,8 @@ class MetadataProxyHandlerBaseSocketServer(
         if resp.status_code in (400, 404, 409, 502, 503, 504):
             # TODO(ralonsoh): add info in the returned HTTP message to the VM.
             return self._http_response(resp, req)
-        raise Exception(_('Unexpected response code: %s') % resp.status_code)
+        raise RuntimeError(_('Unexpected response code: %s') %
+                           resp.status_code)
 
     def handle(self):
         try:

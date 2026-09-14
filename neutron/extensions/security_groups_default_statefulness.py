@@ -28,8 +28,7 @@ class Security_groups_default_statefulness(
     def get_resources(cls):
         plugin = directory.get_plugin()
         collection_name = apidef.COLLECTION_NAME.replace('_', '-')
-        params = apidef.RESOURCE_ATTRIBUTE_MAP.get(
-            apidef.COLLECTION_NAME, dict())
+        params = apidef.RESOURCE_ATTRIBUTE_MAP.get(apidef.COLLECTION_NAME, {})
         controller = base.create_resource(
             apidef.COLLECTION_NAME,
             apidef.RESOURCE_NAME,

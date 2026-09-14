@@ -155,7 +155,7 @@ class HaRouter(router.RouterInfo):
             msg = ("Unable to process HA router %s without HA port" %
                    self.router_id)
             LOG.exception(msg)
-            raise Exception(msg)
+            raise RuntimeError(msg)
         super().initialize(process_monitor)
 
         self.set_ha_port()

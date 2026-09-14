@@ -36,9 +36,8 @@ KEEPALIVED_GLOBAL_CONFIG = textwrap.dedent("""\
     global_defs {
         notification_email_from %(email_from)s
         router_id %(router_id)s
-    }""") % dict(
-        email_from=keepalived.KEEPALIVED_EMAIL_FROM,
-        router_id=keepalived.KEEPALIVED_ROUTER_ID)
+    }""") % {'email_from': keepalived.KEEPALIVED_EMAIL_FROM,
+             'router_id': keepalived.KEEPALIVED_ROUTER_ID}
 VRRP_ID = 1
 VRRP_INTERVAL = 5
 

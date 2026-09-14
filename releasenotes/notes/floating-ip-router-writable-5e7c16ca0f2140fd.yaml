@@ -1,0 +1,12 @@
+---
+features:
+  - |
+    Added support for the ``floating-ip-router-writable`` API extension.
+    The extension allows callers to explicitly select the router that hosts a
+    floating IP by setting ``router_id`` when associating or updating the
+    floating IP. The selected router must be visible to the caller and have an
+    external gateway on the floating IP network.
+    Operators must configure routes across every transit hop.
+    Neutron does not validate reachability to the fixed IP subnet and does not
+    protect intermediate router interfaces or static routes from changes that
+    can interrupt connectivity.

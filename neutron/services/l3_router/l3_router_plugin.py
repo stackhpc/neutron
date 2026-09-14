@@ -20,6 +20,7 @@ from neutron_lib.api.definitions import extraroute_atomic
 from neutron_lib.api.definitions import fip_pf_detail
 from neutron_lib.api.definitions import fip_port_details
 from neutron_lib.api.definitions import floatingip_pools
+from neutron_lib.api.definitions import floatingip_router_writable
 from neutron_lib.api.definitions import l3 as l3_apidef
 from neutron_lib.api.definitions import l3_ext_gw_mode
 from neutron_lib.api.definitions import l3_ext_ha_mode
@@ -108,6 +109,7 @@ class L3RouterPlugin(service_base.ServicePluginBase,
                                     fip_port_details.ALIAS,
                                     fip_pf_detail.ALIAS,
                                     floatingip_pools.ALIAS,
+                                    floatingip_router_writable.ALIAS,
                                     qos_gateway_ip.ALIAS,
                                     l3_port_ip_change_not_allowed.ALIAS,
                                     r_admin_state_down_before_update.ALIAS,

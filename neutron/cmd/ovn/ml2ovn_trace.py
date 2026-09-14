@@ -106,9 +106,9 @@ class ServerInterface(Interface):
     def instance(self):
         matching_vms = self.cloud.search_servers(self.query)
         if len(matching_vms) < 1:
-            raise Exception(_('Server not found'))
+            raise RuntimeError(_('Server not found'))
         if len(matching_vms) > 1:
-            raise Exception(_('Multiple VMs match %s') % self.query)
+            raise RuntimeError(_('Multiple VMs match %s') % self.query)
         return matching_vms[0]
 
     @cached_property
@@ -116,7 +116,7 @@ class ServerInterface(Interface):
         if self.network_param:
             return self.network_param
         if len(self.instance.addresses) != 1:
-            raise Exception(_("Could not determine server network"))
+            raise RuntimeError(_("Could not determine server network"))
         return next(iter(key for key in self.instance.addresses))
 
     @cached_property
@@ -186,8 +186,8 @@ class MAC(Interface):
 
 
 _FROM_TO_TYPES = {'server': ServerInterface, 'router': RouterInterface}
-_MAC_TYPES = dict(mac=MAC, **_FROM_TO_TYPES)
-_IP_TYPES = dict(ip=IP, **_FROM_TO_TYPES)
+_MAC_TYPES = {'mac': MAC, **_FROM_TO_TYPES}
+_IP_TYPES = {'ip': IP, **_FROM_TO_TYPES}
 
 
 def _parse_obj_value(value, types, default_type):

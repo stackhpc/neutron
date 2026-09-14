@@ -306,35 +306,64 @@ core reviewer removal. Members who have previously been a core reviewer may be
 fast-tracked back into a core reviewer role if their involvement picks back up
 and the existing core reviewers support their re-instatement.
 
-Neutron Core Reviewer Membership Expectations
----------------------------------------------
+Neutron Core Reviewer membership expectations or how to become a Core member
+----------------------------------------------------------------------------
 
-Neutron core reviewers have the following expectations:
+The OpenStack Technical Committee provides general criteria when considering
+new cores at `Criteria When Considering New Cores
+<https://docs.openstack.org/project-team-guide/ptl.html#criteria-when-considering-new-cores>`_.
+The following is a short summary of what is expected from a Neutron core
+member:
 
-* Reasonable attendance at the weekly Neutron IRC meetings.
-* Participation in Neutron discussions on the mailing list, as well as
-   in-channel in #openstack-neutron.
-* Participation in Neutron related design summit sessions at the OpenStack
-  Summits.
+* **Attend meetings and participate in project communication.** Consistent
+  participation in Neutron's regular meetings is critical. The main meetings
+  are:
 
-Please note in-person attendance at design summits, mid-cycles, and other code
-sprints is not a requirement to be a Neutron core reviewer. The Neutron team
-will do its best to facilitate virtual attendance at all events. Travel is not
-to be taken lightly, and we realize the costs involved for those who partake
-in attending these events.
+  - `Neutron Team Meeting <https://meetings.opendev.org/#Neutron_Team_Meeting>`_ — general discussion about all things related to the Neutron project, including community goals, blueprint progress, and bugs. An ``On Demand Agenda`` at the end allows anyone to add topics for discussion.
+  - `Neutron Drivers Team Meeting <https://meetings.opendev.org/#Neutron_drivers_Meeting>`_ — where new RFEs are discussed by the Neutron drivers team.
+  - `Neutron CI Team Meeting <https://meetings.opendev.org/#Neutron_CI_team>`_ — weekly discussion of upstream CI issues; a good place to join if you want to help keep the gate green.
 
-In addition to the above, code reviews are the most important requirement of
-Neutron core reviewers. Neutron follows the documented OpenStack `code review
-guidelines <https://wiki.openstack.org/wiki/ReviewChecklist>`_. We encourage
-all people to review Neutron patches, but core reviewers are required to
-maintain a level of review numbers relatively close to other core reviewers.
-There are no hard statistics around code review numbers, but in general we
-use 30, 60, 90 and 180 day stats when examining review stats.
+  In addition, active participation on IRC in ``#openstack-neutron`` and on
+  the `openstack-discuss mailing list <https://lists.openstack.org/mailman3/lists/openstack-discuss.lists.openstack.org/>`_
+  (using the ``[neutron]`` prefix for threads) is expected.
 
-* `30 day review stats <https://www.stackalytics.io/report/contribution?module=neutron-group&project_type=openstack&days=30>`_
-* `60 day review stats <https://www.stackalytics.io/report/contribution?module=neutron-group&project_type=openstack&days=60>`_
-* `90 day review stats <https://www.stackalytics.io/report/contribution?module=neutron-group&project_type=openstack&days=90>`_
-* `180 day review stats <https://www.stackalytics.io/report/contribution?module=neutron-group&project_type=openstack&days=180>`_
+* **Volunteer to fix bugs in Neutron.** Regularly triaging and resolving bugs
+  on `Launchpad <https://bugs.launchpad.net/neutron>`__ demonstrates both
+  knowledge of the codebase and a commitment to the project's health. Looking
+  at the `low hanging fruit <https://bugs.launchpad.net/neutron/+bugs?field.tag=low-hanging-fruit>`_
+  tag is a good way to get started.
+
+* **Volunteer for the bug deputy role.** The Neutron team maintains a rotating
+  `bug deputy <https://docs.openstack.org/neutron/latest/contributor/policies/bugs.html#neutron-bug-deputy>`_
+  role, where a volunteer triages and manages incoming bug reports for a week.
+  The rotation schedule is published on the `Network Meetings wiki
+  <https://wiki.openstack.org/wiki/Network/Meetings#Bug_deputy>`_ page.
+
+* **Spend time doing valuable code reviews.** High-quality, constructive code
+  reviews are the most critical activity on the road to joining the core team.
+  Reviews should be well-thought-out and consistent with the documented review
+  guidelines. See `Peer Review <https://docs.opendev.org/opendev/infra-manual/latest/developers.html#peer-review>`_
+  for guidance on how to provide effective reviews.
+
+* **Attend virtual design summits `PTG <https://ptg.opendev.org/>`_**.
+  Participation in Neutron related design summit sessions at the **virtual**
+  OpenStack Project Teams Gathering is expected. Please note that in-person
+  attendance at design summits, mid-cycles, and other code sprints is not a
+  requirement to be a Neutron core reviewer. The Neutron team will do its best
+  to facilitate virtual attendance at all events. Travel is not to be taken
+  lightly, and we realize the costs involved for those who partake in attending
+  these events.
+
+Membership in the Neutron core team is not just about the number of reviews —
+it is equally important that reviews are high quality. Well-thought-out
+recommendations build credibility over time and earn the trust of existing
+core reviewers. There is no hard line for the expected number of reviews, but
+members are generally expected to be in the same ballpark as the majority of
+the rest of the team. Review statistics can be found on Stackalytics:
+
+* `90 day review stats <https://insights.linuxfoundation.org/project/OpenStack/repository-group/neutron/contributors?timeRange=past90days>`_
+* `180 day review stats <https://insights.linuxfoundation.org/project/OpenStack/repository-group/neutron/contributors?timeRange=past180days>`_
+* `365 day review stats <https://insights.linuxfoundation.org/project/OpenStack/repository-group/neutron/contributors?timeRange=past365days>`_
 
 There are soft-touch items around being a Neutron core reviewer as well.
 Gaining trust with the existing Neutron core reviewers is important. Being

@@ -68,7 +68,7 @@ def run_migrations_offline():
     """
     set_mysql_engine()
 
-    kwargs = dict()
+    kwargs = {}
     if neutron_config.database.connection:
         kwargs['url'] = neutron_config.database.connection
     else:

@@ -116,7 +116,7 @@ class ExtensionController(wsgi.Controller):
         extensions = []
         for _alias, ext in self.extension_manager.extensions.items():
             extensions.append(self._translate(ext))
-        return dict(extensions=extensions)
+        return {'extensions': extensions}
 
     def show(self, request, id):
         # NOTE(dprince): the extensions alias is used as the 'id' for show
@@ -124,7 +124,7 @@ class ExtensionController(wsgi.Controller):
         if not ext:
             raise webob.exc.HTTPNotFound(
                 _("Extension with alias %s does not exist") % id)
-        return dict(extension=self._translate(ext))
+        return {'extension': self._translate(ext)}
 
     def delete(self, request, id):
         msg = _('Resource not found.')
@@ -156,7 +156,7 @@ class ExtensionMiddleware(base.ConfigurableMiddleware):
             LOG.debug('Extended resource: %s',
                       resource.collection)
             for action, method in resource.collection_actions.items():
-                conditions = dict(method=[method])
+                conditions = {'method': [method]}
                 path = f"/{resource.collection}/{action}"
                 with mapper.submapper(controller=resource.controller,
                                       action=action,
@@ -167,7 +167,7 @@ class ExtensionMiddleware(base.ConfigurableMiddleware):
                                    "%s.:(format)" % path)
 
             for action, method in resource.collection_methods.items():
-                conditions = dict(method=[method])
+                conditions = {'method': [method]}
                 path = "/%s" % resource.collection
                 with mapper.submapper(controller=resource.controller,
                                       action=action,
@@ -225,11 +225,11 @@ class ExtensionMiddleware(base.ConfigurableMiddleware):
                                action.collection,
                                action='action',
                                controller=controller,
-                               conditions=dict(method=['POST']))
+                               conditions={'method': ['POST']})
                 mapper.connect("/%s/:(id)/action" % action.collection,
                                action='action',
                                controller=controller,
-                               conditions=dict(method=['POST']))
+                               conditions={'method': ['POST']})
                 action_controllers[action.collection] = controller
 
         return action_controllers
@@ -581,7 +581,7 @@ class RequestExtension:
     def __init__(self, method, url_route, handler):
         self.url_route = url_route
         self.handler = handler
-        self.conditions = dict(method=[method])
+        self.conditions = {'method': [method]}
         self.key = f"{method}-{url_route}"
 
 

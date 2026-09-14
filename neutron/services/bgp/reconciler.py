@@ -17,6 +17,7 @@ import threading
 
 from oslo_log import log
 
+from neutron.common.ovn import constants as ovn_const
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.services.bgp import commands
 from neutron.services.bgp import constants
@@ -40,12 +41,16 @@ class BGPTopologyReconciler:
                     self.reconcile_gateway_ip,
                 constants.BGPReconcilerResource.CHASSIS:
                     self.reconcile_chassis,
+                constants.BGPReconcilerResource.FLOATING_IP:
+                    self.reconcile_floating_ip,
             },
             constants.Action.DELETE: {
                 constants.BGPReconcilerResource.PROVIDER_SWITCH:
                     self.delete_provider_switch,
                 constants.BGPReconcilerResource.CHASSIS:
                     self.delete_chassis,
+                constants.BGPReconcilerResource.FLOATING_IP:
+                    self.reconcile_floating_ip,
             },
         }
         self.nb_api = None
@@ -75,6 +80,7 @@ class BGPTopologyReconciler:
             events.ProviderSwitchEvent(self),
             events.GatewayIPCreatedEvent(self),
             events.GatewayIPUpdatedEvent(self),
+            events.FIPChangedEvent(self),
         ]
 
     @property
@@ -125,6 +131,17 @@ class BGPTopologyReconciler:
         commands.ReconcileGatewayIPCommand(
             self.nb_api,
             dhcp_opt,
+        ).execute(check_error=True)
+
+    def reconcile_floating_ip(self, nat_row):
+        try:
+            n_net_id = nat_row.external_ids[ovn_const.OVN_FIP_NET_ID]
+        except KeyError:
+            LOG.warning("NAT row %s missing %s, skipping arp_proxy reconcile",
+                        nat_row.uuid, ovn_const.OVN_FIP_NET_ID)
+            return
+        commands.ReconcileFIPArpProxyCommand(
+            self.nb_api, n_net_id,
         ).execute(check_error=True)
 
     def delete_provider_switch(self, switch):

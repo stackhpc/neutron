@@ -675,7 +675,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
             ri.internal_network_removed(port)
             self.assertEqual(1, self.mock_driver.unplug.call_count)
         else:
-            raise Exception("Invalid action %s" % action)
+            raise RuntimeError("Invalid action %s" % action)
 
     @staticmethod
     def _fixed_ip_cidr(fixed_ip):
@@ -965,7 +965,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
                     mock.ANY, ri.snat_ports)
                 self.assertTrue(ri.fip_ns.delete_rtr_2_fip_link.called)
         else:
-            raise Exception("Invalid action %s" % action)
+            raise RuntimeError("Invalid action %s" % action)
 
     def _test_external_gateway_updated(self, dual_stack=False):
         agent = l3_agent.L3NATAgent(HOSTNAME, self.conf)
@@ -3635,7 +3635,7 @@ class TestBasicRouterOperations(BasicRouterOperationsFramework):
         # pep8 failure.
         try:
             agent._router_added(router['id'], router)
-            raise Exception("agent._router_added() should have raised an "
+            raise RuntimeError("agent._router_added() should have raised an "
                             "exception")
         except Exception:
             pass

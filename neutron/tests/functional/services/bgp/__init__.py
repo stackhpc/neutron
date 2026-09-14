@@ -18,6 +18,7 @@ import os
 import fixtures as test_fixtures
 from oslo_config import cfg
 from oslo_utils import timeutils
+from ovsdbapp.backend.ovs_idl import command as ovs_cmd
 from ovsdbapp.backend.ovs_idl import connection
 from ovsdbapp.backend.ovs_idl import idlutils
 from ovsdbapp import event
@@ -31,6 +32,29 @@ from neutron.tests.functional.services.bgp import fixtures as bgp_fixtures
 
 
 get_unique_name = n_base.get_unique_name
+
+
+class AddNATToRouterCommand(ovs_cmd.BaseCommand):
+    """Create a NAT row and add it to a router in a single transaction.
+
+    ovsdbapp's lr_nat_add does not accept external_ids. This command
+    creates the NAT with all columns atomically, which is required so
+    that FIPChangedEvent.match_fn can read OVN_FIP_NET_ID on ROW_CREATE,
+    and so OVSDB does not garbage-collect the unreferenced NAT row.
+    """
+
+    def __init__(self, api, router, **columns):
+        super().__init__(api)
+        self.router = router
+        self.columns = columns
+
+    def run_idl(self, txn):
+        lr = self.api.lookup('Logical_Router', self.router)
+        nat = txn.insert(self.api.tables['NAT'])
+        for col, val in self.columns.items():
+            setattr(nat, col, val)
+        lr.addvalue('nat', nat)
+        self.result = nat.uuid
 
 
 class OvsTestIdl(connection.OvsdbIdl):

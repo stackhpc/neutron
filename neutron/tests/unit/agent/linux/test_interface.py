@@ -95,8 +95,9 @@ class TestABCDriver(TestBase):
         self.assertEqual('tapabcdef01-12', device_name)
 
     def test_init_router_port(self):
-        addresses = [dict(scope='global',
-                          dynamic=False, cidr='172.16.77.240/24')]
+        addresses = [{'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '172.16.77.240/24'}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
         self.ip_dev().route.list_onlink_routes.return_value = []
 
@@ -115,8 +116,9 @@ class TestABCDriver(TestBase):
              mock.call().route.add_onlink_route('172.20.0.0/24')])
 
     def test_init_router_port_delete_onlink_routes(self):
-        addresses = [dict(scope='global',
-                          dynamic=False, cidr='172.16.77.240/24')]
+        addresses = [{'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '172.16.77.240/24'}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
         self.ip_dev().route.list_onlink_routes.return_value = [
             {'cidr': '172.20.0.0/24'}]
@@ -130,8 +132,9 @@ class TestABCDriver(TestBase):
              mock.call().route.delete_onlink_route('172.20.0.0/24')])
 
     def test_l3_init_with_preserve(self):
-        addresses = [dict(scope='global',
-                          dynamic=False, cidr='192.168.1.3/32')]
+        addresses = [{'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '192.168.1.3/32'}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
 
         bc = BaseChild(self.conf)
@@ -147,8 +150,8 @@ class TestABCDriver(TestBase):
 
     def _test_l3_init_clean_connections(self, clean_connections):
         addresses = [
-            dict(scope='global', dynamic=False, cidr='10.0.0.1/24'),
-            dict(scope='global', dynamic=False, cidr='10.0.0.3/32')]
+            {'scope': 'global', 'dynamic': False, 'cidr': '10.0.0.1/24'},
+            {'scope': 'global', 'dynamic': False, 'cidr': '10.0.0.3/32'}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
 
         bc = BaseChild(self.conf)
@@ -169,9 +172,9 @@ class TestABCDriver(TestBase):
         self._test_l3_init_clean_connections(False)
 
     def test_init_router_port_ipv6_with_gw_ip(self):
-        addresses = [dict(scope='global',
-                          dynamic=False,
-                          cidr='2001:db8:a::123/64')]
+        addresses = [{'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '2001:db8:a::123/64'}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
         self.ip_dev().route.list_onlink_routes.return_value = []
 
@@ -194,10 +197,14 @@ class TestABCDriver(TestBase):
         self.ip_dev.assert_has_calls(expected_calls)
 
     def test_init_router_port_ext_gw_with_dual_stack(self):
-        old_addrs = [dict(ip_version=constants.IP_VERSION_4, scope='global',
-                          dynamic=False, cidr='172.16.77.240/24'),
-                     dict(ip_version=constants.IP_VERSION_6, scope='global',
-                          dynamic=False, cidr='2001:db8:a::123/64')]
+        old_addrs = [{'ip_version': constants.IP_VERSION_4,
+                      'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '172.16.77.240/24'},
+                     {'ip_version': constants.IP_VERSION_6,
+                      'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '2001:db8:a::123/64'}]
         self.ip_dev().addr.list = mock.Mock(return_value=old_addrs)
         self.ip_dev().route.list_onlink_routes.return_value = []
         bc = BaseChild(self.conf)
@@ -218,8 +225,9 @@ class TestABCDriver(TestBase):
             any_order=True)
 
     def test_init_router_port_with_ipv6_delete_onlink_routes(self):
-        addresses = [dict(scope='global',
-                          dynamic=False, cidr='2001:db8:a::123/64')]
+        addresses = [{'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '2001:db8:a::123/64'}]
         route = '2001:db8:a::/64'
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
         self.ip_dev().route.list_onlink_routes.return_value = [{'cidr': route}]
@@ -233,9 +241,9 @@ class TestABCDriver(TestBase):
              mock.call().route.delete_onlink_route(route)])
 
     def test_l3_init_with_duplicated_ipv6(self):
-        addresses = [dict(scope='global',
-                          dynamic=False,
-                          cidr='2001:db8:a::123/64')]
+        addresses = [{'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '2001:db8:a::123/64'}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
         bc = BaseChild(self.conf)
         ns = '12345678-1234-5678-90ab-ba0987654321'
@@ -243,9 +251,9 @@ class TestABCDriver(TestBase):
         self.assertFalse(self.ip_dev().addr.add.called)
 
     def test_l3_init_with_duplicated_ipv6_uncompact(self):
-        addresses = [dict(scope='global',
-                          dynamic=False,
-                          cidr='2001:db8:a::123/64')]
+        addresses = [{'scope': 'global',
+                      'dynamic': False,
+                      'cidr': '2001:db8:a::123/64'}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
         bc = BaseChild(self.conf)
         ns = '12345678-1234-5678-90ab-ba0987654321'
@@ -258,9 +266,7 @@ class TestABCDriver(TestBase):
         device_name = 'tap0'
         cidr = '2001:db8:a::123/64'
         ns = '12345678-1234-5678-90ab-ba0987654321'
-        addresses = [dict(scope='global',
-                          dynamic=True,
-                          cidr=cidr)]
+        addresses = [{'scope': 'global', 'dynamic': True, 'cidr': cidr}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
         bc = BaseChild(self.conf)
         bc.init_l3(device_name, [cidr], namespace=ns)
@@ -274,9 +280,7 @@ class TestABCDriver(TestBase):
         device_name = 'tap0'
         cidr = 'fe80::a8bb:ccff:fedd:eeff/64'
         ns = '12345678-1234-5678-90ab-ba0987654321'
-        addresses = [dict(scope='link',
-                          dynamic=False,
-                          cidr=cidr)]
+        addresses = [{'scope': 'link', 'dynamic': False, 'cidr': cidr}]
         self.ip_dev().addr.list = mock.Mock(return_value=addresses)
         bc = BaseChild(self.conf)
         bc.init_l3(device_name, [cidr], namespace=ns)
@@ -329,12 +333,10 @@ class TestABCDriver(TestBase):
         in_cidr = '2001:db8::/64'
         out_cidr = '2001:db7::/64'
         ns = '12345678-1234-5678-90ab-ba0987654321'
-        in_addresses = [dict(scope='global',
-                        dynamic=False,
-                        cidr=in_cidr)]
-        out_addresses = [dict(scope='global',
-                         dynamic=False,
-                         cidr=out_cidr)]
+        in_addresses = [{'scope': 'global', 'dynamic': False, 'cidr': in_cidr}]
+        out_addresses = [{'scope': 'global',
+                          'dynamic': False,
+                          'cidr': out_cidr}]
         # Initially set the address list to be empty
         self.ip_dev().addr.list = mock.Mock(return_value=[])
 
@@ -364,9 +366,9 @@ class TestABCDriver(TestBase):
 
     def test_get_ipv6_llas(self):
         ns = '12345678-1234-5678-90ab-ba0987654321'
-        addresses = [dict(scope='link',
-                          dynamic=False,
-                          cidr='fe80:cafe::/64')]
+        addresses = [{'scope': 'link',
+                      'dynamic': False,
+                      'cidr': 'fe80:cafe::/64'}]
         self.get_devices_with_ip.return_value = addresses
         device_name = self.ip_dev().name
         bc = BaseChild(self.conf)

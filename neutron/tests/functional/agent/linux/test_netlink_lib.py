@@ -49,7 +49,7 @@ class NetlinkLibTestCase(functional_base.BaseSudoTestCase):
                     cmd, run_as_root=True, check_exit_code=True,
                     privsep_exec=True, extra_ok_codes=[1])
             except RuntimeError:
-                raise Exception('Error while creating entry')
+                raise RuntimeError('Error while creating entry')
 
     def _delete_entry(self, delete_entries, remain_entries, zone):
         nl_lib.delete_entries(entries=delete_entries)
@@ -69,11 +69,11 @@ class NetlinkLibTestCase(functional_base.BaseSudoTestCase):
                     cmd, run_as_root=True, check_exit_code=True,
                     privsep_exec=True, extra_ok_codes=[1])
             except RuntimeError:
-                raise Exception('Error while listing entries')
+                raise RuntimeError('Error while listing entries')
             if not current_entries:
                 return start
             start += 1
-        raise Exception("Can not find usable zone_id")
+        raise RuntimeError("Can not find usable zone_id")
 
     def test_list_entries(self):
         _zone = self._find_unused_zone_id(10, 30)

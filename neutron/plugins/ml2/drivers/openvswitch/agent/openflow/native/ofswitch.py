@@ -165,9 +165,8 @@ class OpenFlowSwitchMixin:
         if cookie == ovs_lib.COOKIE_ANY:
             cookie = 0
             if cookie_mask != 0:
-                raise Exception(_("cookie=COOKIE_ANY but cookie_mask set to "
-                                  "%s") %
-                                cookie_mask)
+                raise RuntimeError(_("cookie=COOKIE_ANY but cookie_mask set "
+                                  "to %s") % cookie_mask)
         elif cookie == COOKIE_DEFAULT:
             cookie = self._default_cookie
             cookie_mask = ovs_lib.UINT64_BITMASK
@@ -298,8 +297,10 @@ class BundledOpenFlowBridge:
             under = getattr(self.br, name)
             if self.active_bundle is None:
                 return under
-            return functools.partial(under, active_bundle=dict(
-                id=self.active_bundle, bundle_flags=self.bundle_flags))
+            return functools.partial(
+                under,
+                active_bundle={'id': self.active_bundle,
+                               'bundle_flags': self.bundle_flags})
         raise AttributeError(_("Only install_* or uninstall_* methods "
                                "can be used"))
 

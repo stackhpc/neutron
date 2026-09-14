@@ -161,7 +161,7 @@ class MeteringAgent(MeteringPluginRpc, manager.Manager):
             data['router_id'] = router_id
             self.configure_project_id_based_on_router(data, router_id)
         else:
-            raise Exception(_("Unexpected key [%s] format.") % key)
+            raise RuntimeError(_("Unexpected key [%s] format.") % key)
 
     def configure_project_id_shared_labels(self, data, key):
         if driver.BASE_PROJECT_TRAFFIC_COUNTER_KEY in key:

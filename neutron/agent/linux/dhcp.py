@@ -1630,7 +1630,7 @@ class DeviceManager:
 
             # Add subnet IDs for new DHCP-enabled subnets.
             wanted_fixed_ips.extend(
-                dict(subnet_id=s)
+                {'subnet_id': s}
                 for s in dhcp_enabled_subnet_ids - port_subnet_ids)
 
             # Update the port to have the calculated subnets and fixed
@@ -1670,15 +1670,14 @@ class DeviceManager:
         if self.driver.use_gateway_ips:
             unique_ip_subnets = []
         else:
-            unique_ip_subnets = [dict(subnet_id=s) for s in dhcp_subnets]
+            unique_ip_subnets = [{'subnet_id': s} for s in dhcp_subnets]
 
-        port_dict = dict(
-            name='',
-            admin_state_up=True,
-            device_id=device_id,
-            network_id=network.id,
-            project_id=network.project_id,
-            fixed_ips=unique_ip_subnets)
+        port_dict = {'name': '',
+                     'admin_state_up': True,
+                     'device_id': device_id,
+                     'network_id': network.id,
+                     'project_id': network.project_id,
+                     'fixed_ips': unique_ip_subnets}
         return self.plugin.create_dhcp_port({'port': port_dict})
 
     def _check_dhcp_port_subnet(self, dhcp_port, dhcp_subnets, network):
@@ -1740,9 +1739,9 @@ class DeviceManager:
         self._check_dhcp_port_subnet(dhcp_port, dhcp_subnets, network)
 
         # Convert subnet_id to subnet dict
-        fixed_ips = [dict(subnet_id=fixed_ip.subnet_id,
-                          ip_address=fixed_ip.ip_address,
-                          subnet=dhcp_subnets[fixed_ip.subnet_id])
+        fixed_ips = [{'subnet_id': fixed_ip.subnet_id,
+                      'ip_address': fixed_ip.ip_address,
+                      'subnet': dhcp_subnets[fixed_ip.subnet_id]}
                      for fixed_ip in dhcp_port.fixed_ips
                      # we don't care about any ips on subnets irrelevant
                      # to us (e.g. auto ipv6 addresses)

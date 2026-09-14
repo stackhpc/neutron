@@ -111,7 +111,7 @@ class BaseIptablesFirewallTestCase(base.BaseTestCase):
                           for port_id in self._dev_zone_map}
         self.firewall.ipconntrack = ip_conntrack.IpConntrackManager(
               get_rules_for_table_func, filtered_ports=filtered_ports,
-              unfiltered_ports=dict())
+              unfiltered_ports={})
 
     def _fake_port(self):
         return {'device': 'tapfake_dev',
@@ -1949,7 +1949,7 @@ class IptablesFirewallTestCase(BaseIptablesFirewallTestCase):
     def test_filter_defer_with_exception(self):
         try:
             with self.firewall.defer_apply():
-                raise Exception("same exception")
+                raise RuntimeError("same exception")
         except Exception:
             pass
         self.iptables_inst.assert_has_calls([mock.call.defer_apply_on(),
@@ -2397,7 +2397,7 @@ class IptablesFirewallEnhancedIpsetTestCase(BaseIptablesFirewallTestCase):
 
     def test_single_fallback_accept_rule(self):
         p1, p2 = self._fake_port(), self._fake_port()
-        self.firewall._setup_chains_apply(dict(p1=p1, p2=p2), {})
+        self.firewall._setup_chains_apply({'p1': p1, 'p2': p2}, {})
         v4_adds = self.firewall.iptables.ipv4['filter'].add_rule.mock_calls
         v6_adds = self.firewall.iptables.ipv6['filter'].add_rule.mock_calls
         sg_chain_v4_accept = [call for call in v4_adds

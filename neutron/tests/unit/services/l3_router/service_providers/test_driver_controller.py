@@ -57,7 +57,7 @@ class TestDriverController(testlib_api.SqlTestCase):
         router_db = mock.Mock()
         flavor_id = uuidutils.generate_uuid()
         router_id = uuidutils.generate_uuid()
-        router = dict(id=router_id, flavor_id=flavor_id)
+        router = {'id': router_id, 'flavor_id': flavor_id}
         self.dc._set_router_provider('router', 'PRECOMMIT_CREATE', self,
                                      payload=events.DBEventPayload(
                                          self.ctx,
@@ -74,7 +74,7 @@ class TestDriverController(testlib_api.SqlTestCase):
         flavor_id = uuidutils.generate_uuid()
         r1 = uuidutils.generate_uuid()
         r2 = uuidutils.generate_uuid()
-        router = dict(id=r1, flavor_id=flavor_id)
+        router = {'id': r1, 'flavor_id': flavor_id}
         self.dc._set_router_provider('router', 'PRECOMMIT_CREATE', self,
                                      payload=events.DBEventPayload(
                                          self.ctx,
@@ -92,7 +92,7 @@ class TestDriverController(testlib_api.SqlTestCase):
         router_db = mock.Mock()
         flavor_id = uuidutils.generate_uuid()
         router_id = uuidutils.generate_uuid()
-        router = dict(id=router_id, flavor_id=flavor_id)
+        router = {'id': router_id, 'flavor_id': flavor_id}
         self.dc._set_router_provider('router', 'PRECOMMIT_CREATE', self,
                                      payload=events.DBEventPayload(
                                          self.ctx,
@@ -183,22 +183,27 @@ class TestDriverController(testlib_api.SqlTestCase):
         router_id8 = uuidutils.generate_uuid()
         router_id9 = uuidutils.generate_uuid()
         cases = [
-            ('dvrha', dict(id=router_id1, distributed=True, ha=True)),
-            ('dvr', dict(id=router_id2, distributed=True, ha=False)),
-            ('ha', dict(id=router_id3, distributed=False, ha=True)),
-            ('single_node', dict(id=router_id4, distributed=False,
-                                 ha=False)),
-            ('ha', dict(id=router_id5, ha=True,
-                        distributed=constants.ATTR_NOT_SPECIFIED)),
-            ('dvr', dict(id=router_id6, distributed=True,
-                         ha=constants.ATTR_NOT_SPECIFIED)),
-            ('single_node', dict(id=router_id7, ha=False,
-                                 distributed=constants.ATTR_NOT_SPECIFIED)),
-            ('single_node', dict(id=router_id8, distributed=False,
-                                 ha=constants.ATTR_NOT_SPECIFIED)),
-            ('single_node', dict(id=router_id9,
-                                 distributed=constants.ATTR_NOT_SPECIFIED,
-                                 ha=constants.ATTR_NOT_SPECIFIED)),
+            ('dvrha', {'id': router_id1, 'distributed': True, 'ha': True}),
+            ('dvr', {'id': router_id2, 'distributed': True, 'ha': False}),
+            ('ha', {'id': router_id3, 'distributed': False, 'ha': True}),
+            ('single_node', {'id': router_id4,
+                             'distributed': False,
+                             'ha': False}),
+            ('ha', {'id': router_id5,
+                    'ha': True,
+                    'distributed': constants.ATTR_NOT_SPECIFIED}),
+            ('dvr', {'id': router_id6,
+                     'distributed': True,
+                     'ha': constants.ATTR_NOT_SPECIFIED}),
+            ('single_node', {'id': router_id7,
+                             'ha': False,
+                             'distributed': constants.ATTR_NOT_SPECIFIED}),
+            ('single_node', {'id': router_id8,
+                             'distributed': False,
+                             'ha': constants.ATTR_NOT_SPECIFIED}),
+            ('single_node', {'id': router_id9,
+                             'distributed': constants.ATTR_NOT_SPECIFIED,
+                             'ha': constants.ATTR_NOT_SPECIFIED}),
         ]
         for driver, body in cases:
             self.dc._set_router_provider('router', 'PRECOMMIT_CREATE', self,
@@ -221,7 +226,7 @@ class TestDriverController(testlib_api.SqlTestCase):
     def test__clear_router_provider(self, mock_cb):
         # ensure correct drivers are looked up based on attrs
         router_id1 = uuidutils.generate_uuid()
-        body = dict(id=router_id1, distributed=True, ha=True)
+        body = {'id': router_id1, 'distributed': True, 'ha': True}
         self.dc._set_router_provider('router', 'PRECOMMIT_CREATE', self,
                                      payload=events.DBEventPayload(
                                          self.ctx,

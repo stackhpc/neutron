@@ -443,10 +443,10 @@ class Resource(Application):
 
         try:
             LOG.info("%(url)s returned with HTTP %(status)d",
-                     dict(url=request.url, status=response.status_int))
+                     {'url': request.url, 'status': response.status_int})
         except AttributeError as e:
             LOG.info("%(url)s returned a fault: %(exception)s",
-                     dict(url=request.url, exception=e))
+                     {'url': request.url, 'exception': e})
 
         return response
 
@@ -538,7 +538,7 @@ class Controller:
                                       content_type=content_type,
                                       body=body)
             LOG.debug("%(url)s returned with HTTP %(status)d",
-                      dict(url=req.url, status=response.status_int))
+                      {'url': req.url, 'status': response.status_int})
             return response
         return result
 

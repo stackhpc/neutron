@@ -43,6 +43,7 @@ from neutron.api import wsgi
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import extensions
 from neutron.common.ovn import utils
+from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.db.availability_zone import router as router_az_db
 from neutron.db import dns_db
 from neutron.db import extraroute_db
@@ -113,6 +114,13 @@ class OVNL3RouterPlugin(service_base.ServicePluginBase,
         return self._l3_rpc_notifier
 
     @staticmethod
+    def _disable_fip_router_writable_extension(aliases):
+        if not ovn_conf.is_ovn_router_indirect_snat_enabled():
+            LOG.info('Disabled floating-ip-router-writable extension because '
+                     'ovn_router_indirect_snat is disabled.')
+            aliases.remove('floating-ip-router-writable')
+
+    @staticmethod
     def _disable_qos_extensions_by_extension_drivers(aliases):
         qos_service_plugin = directory.get_plugin(plugin_constants.QOS)
         qos_fip_in_aliases = qos_fip_apidef.ALIAS in aliases
@@ -126,6 +134,7 @@ class OVNL3RouterPlugin(service_base.ServicePluginBase,
     def supported_extension_aliases(self):
         if not hasattr(self, '_aliases'):
             self._aliases = self._supported_extension_aliases[:]
+            self._disable_fip_router_writable_extension(self._aliases)
             self._disable_qos_extensions_by_extension_drivers(self._aliases)
             self._aliases.append(l3_ha_prio_apidef.ALIAS)
         return self._aliases

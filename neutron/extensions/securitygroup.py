@@ -324,7 +324,7 @@ class Securitygroup(api_extensions.ExtensionDescriptor):
         plugin = directory.get_plugin()
         for resource_name in ['security_group', 'security_group_rule']:
             collection_name = resource_name.replace('_', '-') + "s"
-            params = RESOURCE_ATTRIBUTE_MAP.get(resource_name + "s", dict())
+            params = RESOURCE_ATTRIBUTE_MAP.get(resource_name + "s", {})
             resource_registry.register_resource_by_name(resource_name)
             controller = base.create_resource(collection_name,
                                               resource_name,

@@ -126,7 +126,7 @@ class FakePortDB:
         return None
 
     def get_ports(self, context, filters=None):
-        query_filters = dict()
+        query_filters = {}
         if filters:
             query_filters.update(filters)
 
@@ -1580,24 +1580,24 @@ class VacantBindingIndexTestCase(L3HATestCaseMixin):
 
     binding_scenarios = [
         ('Delete first binding_index',
-         dict(binding_index=1)),
+         {'binding_index': 1}),
 
         ('Delete middle binding_index',
-         dict(binding_index=2)),
+         {'binding_index': 2}),
 
         ('Delete last binding_index',
-         dict(binding_index=3)),
+         {'binding_index': 3}),
 
         ('Do not remove any bindings',
-         dict(binding_index=None)),
+         {'binding_index': None}),
     ]
 
     manual_scheduling_scenarios = [
         ('with manual scheduling',
-         dict(is_manual_scheduling=True)),
+         {'is_manual_scheduling': True}),
 
         ('without manual scheduling',
-         dict(is_manual_scheduling=False)),
+         {'is_manual_scheduling': False}),
     ]
 
     scenarios = testscenarios.multiply_scenarios(
@@ -2001,60 +2001,59 @@ class TestGetL3AgentsWithFilter(testlib_api.SqlTestCase,
 
     scenarios = [
         ('no filter',
-            dict(agent_modes=[],
-                 host=['host_1'],
-                 expected_agent_modes=['legacy', 'dvr_snat', 'dvr',
-                                       'dvr_no_external', 'fake_mode',
-                                       'legacy'],
-                 expected_host=['host_1'])),
+            {'agent_modes': [], 'host': ['host_1'],
+             'expected_agent_modes': ['legacy', 'dvr_snat', 'dvr',
+                                      'dvr_no_external', 'fake_mode',
+                                      'legacy'],
+             'expected_host': ['host_1']}),
 
         ('legacy',
-            dict(agent_modes=['legacy'],
-                 host=['host_1'],
-                 expected_agent_modes=['legacy', 'legacy'],
-                 expected_host=['host_1'])),
+            {'agent_modes': ['legacy'],
+             'host': ['host_1'],
+             'expected_agent_modes': ['legacy', 'legacy'],
+             'expected_host': ['host_1']}),
 
         ('dvr_snat',
-            dict(agent_modes=['dvr_snat'],
-                 host=['host_2'],
-                 expected_agent_modes=['dvr_snat'],
-                 expected_host=['host_2'])),
+            {'agent_modes': ['dvr_snat'],
+             'host': ['host_2'],
+             'expected_agent_modes': ['dvr_snat'],
+             'expected_host': ['host_2']}),
 
         ('dvr',
-            dict(agent_modes=['dvr'],
-                 host=['host_3'],
-                 expected_agent_modes=['dvr'],
-                 expected_host=['host_3'])),
+            {'agent_modes': ['dvr'],
+             'host': ['host_3'],
+             'expected_agent_modes': ['dvr'],
+             'expected_host': ['host_3']}),
 
         ('dvr_no_external',
-            dict(agent_modes=['dvr_no_external'],
-                 host=['host_4'],
-                 expected_agent_modes=['dvr_no_external'],
-                 expected_host=['host_4'])),
+            {'agent_modes': ['dvr_no_external'],
+             'host': ['host_4'],
+             'expected_agent_modes': ['dvr_no_external'],
+             'expected_host': ['host_4']}),
 
         ('dvr_snat and dvr',
-            dict(agent_modes=['dvr_snat', 'dvr'],
-                 host=['host_5'],
-                 expected_agent_modes=['dvr_snat', 'dvr'],
-                 expected_host=['host_5'])),
+            {'agent_modes': ['dvr_snat', 'dvr'],
+             'host': ['host_5'],
+             'expected_agent_modes': ['dvr_snat', 'dvr'],
+             'expected_host': ['host_5']}),
 
         ('dvr_snat and dvr_no_external',
-            dict(agent_modes=['dvr_snat', 'dvr_no_external'],
-                 host=['host_5'],
-                 expected_agent_modes=['dvr_snat', 'dvr_no_external'],
-                 expected_host=['host_5'])),
+            {'agent_modes': ['dvr_snat', 'dvr_no_external'],
+             'host': ['host_5'],
+             'expected_agent_modes': ['dvr_snat', 'dvr_no_external'],
+             'expected_host': ['host_5']}),
 
         ('dvr_snat, dvr and dvr_no_external',
-            dict(agent_modes=['dvr_snat', 'dvr', 'dvr_no_external'],
-                 host=['host_6'],
-                 expected_agent_modes=['dvr_snat', 'dvr', 'dvr_no_external'],
-                 expected_host=['host_6'])),
+            {'agent_modes': ['dvr_snat', 'dvr', 'dvr_no_external'],
+             'host': ['host_6'],
+             'expected_agent_modes': ['dvr_snat', 'dvr', 'dvr_no_external'],
+             'expected_host': ['host_6']}),
 
         ('invalid',
-            dict(agent_modes=['invalid'],
-                 host=['host_invalid'],
-                 expected_agent_modes=[],
-                 expected_host=[])),
+            {'agent_modes': ['invalid'],
+             'host': ['host_invalid'],
+             'expected_agent_modes': [],
+             'expected_host': []}),
     ]
 
     def setUp(self):

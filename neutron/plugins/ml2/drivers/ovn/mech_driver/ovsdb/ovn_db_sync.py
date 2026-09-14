@@ -61,9 +61,11 @@ class OvnNbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
     ]
     _required_ml2_ext_drivers = ['qos']
 
-    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False):
+    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False,
+                 plugin_conf=None):
         super().__init__(
-            core_plugin, ovn_driver, mode, is_maintenance)
+            core_plugin, ovn_driver, mode, is_maintenance,
+            plugin_conf=plugin_conf)
         self.l3_plugin = directory.get_plugin(plugin_constants.L3)
         self.pf_plugin = directory.get_plugin(plugin_constants.PORTFORWARDING)
         if not self.pf_plugin:
@@ -1402,9 +1404,9 @@ class OvnNbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
         LOG.debug('OVN-NB Sync metadata ports started')
         for net in self.core_plugin.get_networks(ctx):
             metadata_ports = self.core_plugin.get_ports(
-                ctx, filters=dict(
-                    network_id=[net['id']],
-                    device_owner=[constants.DEVICE_OWNER_DISTRIBUTED]))
+                ctx, filters={'network_id': [net['id']],
+                              'device_owner': [
+                                  constants.DEVICE_OWNER_DISTRIBUTED]})
 
             if not metadata_ports:
                 LOG.warning('Missing metadata port found in Neutron for '
@@ -1822,9 +1824,11 @@ class OvnSbSynchronizer(db_sync_base.BaseOvnDbSynchronizer):
     ]
     _required_ml2_ext_drivers = ['qos']
 
-    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False):
+    def __init__(self, core_plugin, ovn_driver, mode, is_maintenance=False,
+                 plugin_conf=None):
         super().__init__(
-            core_plugin, ovn_driver, mode, is_maintenance)
+            core_plugin, ovn_driver, mode, is_maintenance,
+            plugin_conf=plugin_conf)
         self.l3_plugin = directory.get_plugin(plugin_constants.L3)
         self.agent_cache = neutron_agent.AgentCache(self.ovn_driver)
 

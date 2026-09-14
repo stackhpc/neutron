@@ -17,6 +17,7 @@ from unittest import mock
 
 from oslo_config import cfg
 from oslo_utils import strutils
+from oslo_utils import uuidutils
 
 from futurist import periodics
 from neutron_lib.api.definitions import external_net as extnet_apidef
@@ -28,7 +29,6 @@ from neutron_lib import constants as n_const
 from neutron_lib import context as n_context
 from neutron_lib.exceptions import l3 as lib_l3_exc
 from neutron_lib.utils import net as net_utils
-from oslo_utils import uuidutils
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils

@@ -25,12 +25,13 @@ from neutron.conf.agent.ovn.evpn import config as evpn_conf
 from neutron.tests import base
 
 
-def _build_test_evpn_router_config(vni):
+def _build_test_evpn_router_config(vni, bgp_password=None):
     return interface.EVPNRouterConfig(
         asn=65000,
         bgp_router_id='10.0.0.1',
         vrf_name=f'vrf-{vni}',
         vni=vni,
+        bgp_password=bgp_password,
     )
 
 
@@ -56,6 +57,16 @@ class TestFrrCommandBuilder(base.BaseTestCase):
         self.assertIn('address-family ipv6 unicast', result)
         self.assertIn('address-family l2vpn evpn', result)
         self.assertIn('advertise-all-vni', result)
+        self.assertNotIn('password', result)
+
+    def test_add_bgp_router_cmds_with_password(self):
+        password = 's3cret'
+        config = _build_test_evpn_router_config(100, bgp_password=password)
+        peer_iface = 'eth1'
+        result = self.builder.add_bgp_router_cmds(config, peer_iface)
+
+        self.assertIn(
+            'neighbor %s password %s' % (peer_iface, password), result)
 
     def test_add_evpn_router_cmds(self):
         config = _build_test_evpn_router_config(100)

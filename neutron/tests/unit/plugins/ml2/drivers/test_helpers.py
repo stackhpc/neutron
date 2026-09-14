@@ -58,13 +58,13 @@ class HelpersTest(testlib_api.SqlTestCase):
                          self.driver.primary_keys)
 
     def test_allocate_specific_unallocated_segment_in_pools(self):
-        expected = dict(physical_network=TENANT_NET, vlan_id=VLAN_MIN)
+        expected = {'physical_network': TENANT_NET, 'vlan_id': VLAN_MIN}
         observed = self.driver.allocate_fully_specified_segment(self.context,
                                                                 **expected)
         self.check_raw_segment(expected, observed)
 
     def test_allocate_specific_allocated_segment_in_pools(self):
-        raw_segment = dict(physical_network=TENANT_NET, vlan_id=VLAN_MIN)
+        raw_segment = {'physical_network': TENANT_NET, 'vlan_id': VLAN_MIN}
         self.driver.allocate_fully_specified_segment(self.context,
                                                      **raw_segment)
         observed = self.driver.allocate_fully_specified_segment(self.context,
@@ -75,20 +75,20 @@ class HelpersTest(testlib_api.SqlTestCase):
         # Test case: allocate a specific unallocated segment in pools but
         # the segment is allocated concurrently between select and update
 
-        raw_segment = dict(physical_network=TENANT_NET, vlan_id=VLAN_MIN)
+        raw_segment = {'physical_network': TENANT_NET, 'vlan_id': VLAN_MIN}
         with mock.patch.object(query.Query, 'update', return_value=0):
             observed = self.driver.allocate_fully_specified_segment(
                 self.context, **raw_segment)
             self.assertIsNone(observed)
 
     def test_allocate_specific_unallocated_segment_outside_pools(self):
-        expected = dict(physical_network=TENANT_NET, vlan_id=VLAN_OUTSIDE)
+        expected = {'physical_network': TENANT_NET, 'vlan_id': VLAN_OUTSIDE}
         observed = self.driver.allocate_fully_specified_segment(self.context,
                                                                 **expected)
         self.check_raw_segment(expected, observed)
 
     def test_allocate_specific_allocated_segment_outside_pools(self):
-        raw_segment = dict(physical_network=TENANT_NET, vlan_id=VLAN_OUTSIDE)
+        raw_segment = {'physical_network': TENANT_NET, 'vlan_id': VLAN_OUTSIDE}
         self.driver.allocate_fully_specified_segment(self.context,
                                                      **raw_segment)
         observed = self.driver.allocate_fully_specified_segment(self.context,
@@ -99,20 +99,20 @@ class HelpersTest(testlib_api.SqlTestCase):
         # Test case: allocate a specific allocated segment in pools but
         # the segment is concurrently unallocated after select or update
 
-        expected = dict(physical_network=TENANT_NET, vlan_id=VLAN_MIN)
+        expected = {'physical_network': TENANT_NET, 'vlan_id': VLAN_MIN}
         with mock.patch.object(self.driver.model, 'save'):
             observed = self.driver.allocate_fully_specified_segment(
                 self.context, **expected)
             self.check_raw_segment(expected, observed)
 
     def test_allocate_partial_segment_without_filters(self):
-        expected = dict(physical_network=TENANT_NET)
+        expected = {'physical_network': TENANT_NET}
         observed = self.driver.allocate_partially_specified_segment(
             self.context)
         self.check_raw_segment(expected, observed)
 
     def test_allocate_partial_segment_with_filter(self):
-        expected = dict(physical_network=TENANT_NET)
+        expected = {'physical_network': TENANT_NET}
         observed = self.driver.allocate_partially_specified_segment(
             self.context, **expected)
         self.check_raw_segment(expected, observed)
@@ -125,13 +125,13 @@ class HelpersTest(testlib_api.SqlTestCase):
         self.assertIsNone(observed)
 
     def test_allocate_partial_segment_outside_pools(self):
-        raw_segment = dict(physical_network='other_phys_net')
+        raw_segment = {'physical_network': 'other_phys_net'}
         observed = self.driver.allocate_partially_specified_segment(
             self.context, **raw_segment)
         self.assertIsNone(observed)
 
     def test_allocate_partial_segment_first_attempt_fails(self):
-        expected = dict(physical_network=TENANT_NET)
+        expected = {'physical_network': TENANT_NET}
         with mock.patch.object(query.Query, 'update', side_effect=[0, 1]):
             self.assertRaises(
                 exc.RetryRequest,

@@ -1341,6 +1341,21 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
             external_network_id=external_network_id,
             port_id=internal_port['id'])
 
+    def _validate_requested_floatingip_router(self, context, router_id,
+                                              external_network_id):
+        """Validate an explicitly selected floating IP hosting router."""
+        self._get_router(context, router_id)
+
+        gw_ports = port_obj.Port.get_objects(
+            context.elevated(), network_id=external_network_id,
+            device_id=router_id, device_owner=constants.DEVICE_OWNER_ROUTER_GW)
+        if not gw_ports:
+            msg = (_('Router %(router_id)s has no external gateway on '
+                     'network %(network_id)s') %
+                   {'router_id': router_id,
+                    'network_id': external_network_id})
+            raise n_exc.Conflict(resource='floatingip', msg=msg)
+
     def _port_ipv4_fixed_ips(self, port):
         return [ip for ip in port['fixed_ips']
                 if netaddr.IPAddress(ip['ip_address']).version == 4]
@@ -1405,9 +1420,16 @@ class L3_NAT_dbonly_mixin(l3.RouterPluginBase,
         (internal_port, internal_subnet_id,
          internal_ip_address) = self._internal_fip_assoc_data(
              context, fip, floatingip_obj.project_id)
-        router_id = self._get_router_for_floatingip(
-            context, internal_port,
-            internal_subnet_id, floatingip_obj.floating_network_id)
+        requested_router_id = fip.get(l3_apidef.ROUTER_ID)
+        if requested_router_id:
+            self._validate_requested_floatingip_router(
+                context, requested_router_id,
+                floatingip_obj.floating_network_id)
+            router_id = requested_router_id
+        else:
+            router_id = self._get_router_for_floatingip(
+                context, internal_port,
+                internal_subnet_id, floatingip_obj.floating_network_id)
 
         if self.is_router_distributed(context, router_id):
             if not plugin_utils.can_port_be_bound_to_virtual_bridge(

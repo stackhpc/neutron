@@ -24,8 +24,10 @@ from neutron_lib.services.trunk import constants as trunk_const
 from oslo_config import cfg
 
 from neutron.common.ovn import constants
+from neutron.common.ovn import utils as ovn_utils
 from neutron.conf.plugins.ml2 import config as ml2_conf
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
+from neutron.db import ovn_revision_numbers_db as db_rev
 from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import ovn_client
 from neutron.tests import base
@@ -828,7 +830,7 @@ class TestOVNClient(TestOVNClientBase):
         self._setup_delete_port_mocks(ovn_port, ls)
 
         ctx = ncontext.Context()
-        self.ovn_client._delete_port(ctx, port_id)
+        self.ovn_client._delete_port(ctx, port_id, None)
 
         self.nb_idl.unset_lswitch_port_to_virtual_type.assert_called_once_with(
             'virtual-port', port_id, if_exists=True)
@@ -850,7 +852,7 @@ class TestOVNClient(TestOVNClientBase):
         self._setup_delete_port_mocks(ovn_port, ls)
 
         ctx = ncontext.Context()
-        self.ovn_client._delete_port(ctx, port_id)
+        self.ovn_client._delete_port(ctx, port_id, None)
 
         self.nb_idl.unset_lswitch_port_to_virtual_type.assert_not_called()
 
@@ -867,7 +869,7 @@ class TestOVNClient(TestOVNClientBase):
         self._setup_delete_port_mocks(ovn_port, ls=None)
 
         ctx = ncontext.Context()
-        self.ovn_client._delete_port(ctx, port_id)
+        self.ovn_client._delete_port(ctx, port_id, None)
 
         calls = [c for c in self.nb_idl.lookup.call_args_list
                  if c[0][0] == 'Logical_Switch']
@@ -892,7 +894,7 @@ class TestOVNClient(TestOVNClientBase):
         self._setup_delete_port_mocks(ovn_port, ls)
 
         ctx = ncontext.Context()
-        self.ovn_client._delete_port(ctx, port_id)
+        self.ovn_client._delete_port(ctx, port_id, None)
 
         self.nb_idl.unset_lswitch_port_to_virtual_type.assert_not_called()
 
@@ -993,6 +995,649 @@ class TestOVNClient(TestOVNClientBase):
         plugin.get_port.assert_called_once_with(ctx, 'vip-port')
         self.nb_idl.check_revision_number.assert_not_called()
         self.nb_idl.db_set.assert_not_called()
+
+    # --- Multiple-segments-per-host tests ---
+
+    def _make_segment(self, seg_id, network_type='vlan',
+                      physical_network='physnet1', segmentation_id=100):
+        return {'id': seg_id,
+                'network_type': network_type,
+                'physical_network': physical_network,
+                'segmentation_id': segmentation_id}
+
+    def _make_network(self, net_id='fake-net-id', name='test-net',
+                      mtu=1500, project_id='fake-project'):
+        return {'id': net_id,
+                'name': name,
+                'mtu': mtu,
+                'project_id': project_id,
+                'revision_number': 1}
+
+    @mock.patch.object(db_rev, 'bump_revision')
+    @mock.patch.object(ovn_utils, 'ovs_persist_uuid_supported',
+                       return_value=True)
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=True)
+    def test_create_port_without_segment_id(self, mock_needs_ls,
+                                            mock_persist, mock_bump):
+        """create_port without segment_id uses network logical switch."""
+        port = fakes.FakePort.create_one_port(
+            attrs={'name': 'test-port'}).info()
+        port_info = mock.Mock(
+            addresses=['aa:bb:cc:dd:ee:ff 10.0.0.5'],
+            parent_name=[], tag=[], options={},
+            type='', port_security=[],
+            dhcpv4_options={}, dhcpv6_options={})
+        with mock.patch.object(
+                self.ovn_client, 'get_external_ids_from_port',
+                return_value=(port_info, {})), \
+            mock.patch.object(
+                 self.ovn_client, 'is_dns_required_for_port',
+                 return_value=False):
+            self.ovn_client.create_port(mock.MagicMock(), port)
+
+        create_call = self.nb_idl.create_lswitch_port.call_args
+        self.assertEqual(
+            ovn_utils.ovn_name(port['network_id']),
+            create_call.kwargs['lswitch_name'])
+        # No segment ext_id key
+        self.assertNotIn(
+            constants.OVN_PORT_SEGMENT_EXT_ID_KEY,
+            create_call.kwargs['external_ids'])
+
+    @mock.patch.object(db_rev, 'bump_revision')
+    @mock.patch.object(ovn_utils, 'ovs_persist_uuid_supported',
+                       return_value=True)
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    def test_create_port_with_segment_id(self, mock_needs_ls,
+                                         mock_persist, mock_bump):
+        """create_port with segment_id uses segment logical switch."""
+        port = fakes.FakePort.create_one_port(
+            attrs={'name': 'test-port'}).info()
+        seg_id = 'fake-seg-id'
+        port_info = mock.Mock(
+            addresses=['aa:bb:cc:dd:ee:ff 10.0.0.5'],
+            parent_name=[], tag=[], options={},
+            type='', port_security=[],
+            dhcpv4_options={}, dhcpv6_options={})
+        with mock.patch.object(
+                self.ovn_client, 'get_external_ids_from_port',
+                return_value=(port_info, {})), \
+            mock.patch.object(
+                 self.ovn_client, 'is_dns_required_for_port',
+                 return_value=False):
+            self.ovn_client.create_port(
+                mock.MagicMock(), port, segment_id=seg_id)
+
+        create_call = self.nb_idl.create_lswitch_port.call_args
+        self.assertEqual(
+            ovn_utils.ovn_name(seg_id),
+            create_call.kwargs['lswitch_name'])
+        self.assertEqual(
+            seg_id,
+            create_call.kwargs['external_ids'][
+                constants.OVN_PORT_SEGMENT_EXT_ID_KEY])
+
+    @mock.patch.object(db_rev, 'bump_revision')
+    @mock.patch.object(ovn_utils, 'ovs_persist_uuid_supported',
+                       return_value=True)
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    def test_create_port_with_segment_id_skips_qos(self, mock_needs_ls,
+                                                   mock_persist,
+                                                   mock_bump):
+        """create_port with segment_id does not create QoS."""
+        port = fakes.FakePort.create_one_port(
+            attrs={'name': 'test-port'}).info()
+        port_info = mock.Mock(
+            addresses=['aa:bb:cc:dd:ee:ff 10.0.0.5'],
+            parent_name=[], tag=[], options={},
+            type='', port_security=[],
+            dhcpv4_options={}, dhcpv6_options={})
+        with mock.patch.object(
+                self.ovn_client, 'get_external_ids_from_port',
+                return_value=(port_info, {})), \
+            mock.patch.object(
+                 self.ovn_client, 'is_dns_required_for_port',
+                 return_value=False), \
+            mock.patch.object(
+                 self.ovn_client._qos_driver,
+                 'create_port') as mock_qos_create:
+            self.ovn_client.create_port(
+                mock.MagicMock(), port, segment_id='seg-1')
+
+        mock_qos_create.assert_not_called()
+
+    @mock.patch.object(db_rev, 'bump_revision')
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    @mock.patch.object(ovn_utils, 'is_vlan_segment', return_value=True)
+    def test_create_provnet_port_vlan_segment(self, mock_is_vlan,
+                                              mock_needs_ls, mock_bump):
+        """create_provnet_port for VLAN segment creates segment lswitch."""
+        network = self._make_network()
+        segment = self._make_segment('seg-1')
+        ctx = mock.MagicMock()
+
+        with mock.patch.object(
+                self.ovn_client, 'create_metadata_port'):
+            self.ovn_client.create_provnet_port(
+                ctx, network['id'], segment, network=network)
+
+        # Should create segment logical switch
+        self.nb_idl.ls_add.assert_called_once()
+        ls_call = self.nb_idl.ls_add.call_args
+        self.assertEqual('seg-1', ls_call.kwargs['network_id'])
+
+        # Localnet port tag should be [] (not VLAN tag) for segment switch
+        create_port_call = self.nb_idl.create_lswitch_port.call_args
+        self.assertEqual([], create_port_call.kwargs['tag_request'])
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=True)
+    @mock.patch.object(ovn_utils, 'is_vlan_segment', return_value=False)
+    def test_create_provnet_port_non_vlan_segment(self, mock_is_vlan,
+                                                  mock_needs_ls):
+        """create_provnet_port for non-VLAN uses network logical switch."""
+        network = self._make_network()
+        segment = self._make_segment('seg-1', network_type='geneve',
+                                     physical_network='physnet1')
+        ctx = mock.MagicMock()
+
+        self.ovn_client.create_provnet_port(
+            ctx, network['id'], segment, network=network)
+
+        # Should NOT create segment logical switch
+        self.nb_idl.ls_add.assert_not_called()
+        # Localnet port should target network logical switch
+        create_port_call = self.nb_idl.create_lswitch_port.call_args
+        self.assertEqual(
+            ovn_utils.ovn_name(network['id']),
+            create_port_call.kwargs['lswitch_name'])
+
+    @mock.patch.object(db_rev, 'delete_revision')
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    def test_delete_provnet_port_vlan_segment(self, mock_needs_ls,
+                                              mock_del_rev):
+        """delete_provnet_port for VLAN segment deletes segment lswitch."""
+        segment = self._make_segment('seg-1')
+        metadata_port = {'id': 'meta-port-id'}
+        self.ovn_client._find_metadata_port = mock.Mock(
+            return_value=metadata_port)
+
+        self.ovn_client.delete_provnet_port('fake-net-id', segment)
+
+        # Should delete the metadata port
+        plugin = self.get_plugin.return_value
+        plugin.delete_port.assert_called_once_with(
+            mock.ANY, 'meta-port-id')
+        # Should delete segment logical switch
+        self.nb_idl.ls_del.assert_called_once_with(
+            ovn_utils.ovn_name('seg-1'), if_exists=True)
+        # Should delete segment revision
+        mock_del_rev.assert_called_once_with(
+            mock.ANY, 'seg-1', constants.TYPE_SEGMENTS)
+
+    @mock.patch.object(db_rev, 'delete_revision')
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    def test_delete_provnet_port_for_net_delete(self, mock_needs_ls,
+                                                mock_del_rev):
+        """delete_provnet_port with for_net_delete skips metadata port."""
+        segment = self._make_segment('seg-1')
+
+        self.ovn_client.delete_provnet_port(
+            'fake-net-id', segment, for_net_delete=True)
+
+        # Should NOT delete metadata port
+        plugin = self.get_plugin.return_value
+        plugin.delete_port.assert_not_called()
+        # Should delete segment logical switch
+        self.nb_idl.ls_del.assert_called_once_with(
+            ovn_utils.ovn_name('seg-1'), if_exists=True)
+        # Should delete segment revision
+        mock_del_rev.assert_called_once_with(
+            mock.ANY, 'seg-1', constants.TYPE_SEGMENTS)
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=True)
+    def test_delete_provnet_port_non_vlan(self, mock_needs_ls):
+        """delete_provnet_port for non-VLAN deletes localnet port."""
+        segment = self._make_segment('seg-1', network_type='geneve')
+
+        self.ovn_client.delete_provnet_port('fake-net-id', segment)
+
+        # Should delete localnet port from network logical switch
+        self.nb_idl.delete_lswitch_port.assert_called_once_with(
+            lport_name=ovn_utils.ovn_provnet_port_name('seg-1'),
+            lswitch_name=ovn_utils.ovn_name('fake-net-id'))
+        # Should NOT delete segment logical switch
+        self.nb_idl.ls_del.assert_not_called()
+
+    def test__find_metadata_port_with_segment(self):
+        """_find_metadata_port with segment_id uses segment device_id."""
+        ctx = mock.MagicMock()
+        cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
+        plugin = self.get_plugin.return_value
+        plugin.get_ports.return_value = [{'id': 'meta-port'}]
+
+        result = self.ovn_client._find_metadata_port(
+            ctx, 'fake-net-id', segment_id='seg-1')
+
+        self.assertEqual({'id': 'meta-port'}, result)
+        plugin.get_ports.assert_called_once_with(
+            ctx, filters={
+                'network_id': ['fake-net-id'],
+                'device_id': [constants.OVN_METADATA_PREFIX + 'seg-1'],
+                'device_owner': [const.DEVICE_OWNER_DISTRIBUTED]},
+            limit=1)
+
+    def test__find_metadata_port_without_segment(self):
+        """_find_metadata_port without segment_id uses network device_id."""
+        ctx = mock.MagicMock()
+        cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
+        plugin = self.get_plugin.return_value
+        plugin.get_ports.return_value = [{'id': 'meta-port'}]
+
+        result = self.ovn_client._find_metadata_port(
+            ctx, 'fake-net-id')
+
+        self.assertEqual({'id': 'meta-port'}, result)
+        plugin.get_ports.assert_called_once_with(
+            ctx, filters={
+                'network_id': ['fake-net-id'],
+                'device_id': [constants.OVN_METADATA_PREFIX + 'fake-net-id'],
+                'device_owner': [const.DEVICE_OWNER_DISTRIBUTED]},
+            limit=1)
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    @mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.get_network',
+                return_value={})
+    def test_create_network_vlan_only(self, mock_get_net, mock_needs_ls):
+        """create_network for VLAN-only skips network ls_add."""
+        network = self._make_network()
+        segments = [
+            self._make_segment('seg-1', segmentation_id=100),
+            self._make_segment('seg-2', segmentation_id=200),
+        ]
+        ctx = mock.MagicMock()
+
+        with mock.patch(
+                'neutron.db.segments_db.get_network_segments',
+                return_value=segments), \
+            mock.patch.object(
+                 self.ovn_client, 'create_provnet_port') as mock_provnet, \
+            mock.patch.object(db_rev, 'bump_revision') as mock_bump, \
+            mock.patch.object(
+                 self.ovn_client, 'create_metadata_port'):
+            self.ovn_client.create_network(ctx, network)
+
+        # Should NOT create network logical switch
+        self.nb_idl.ls_add.assert_not_called()
+        # Should create provnet port for each segment
+        self.assertEqual(2, mock_provnet.call_count)
+        # Should bump revision per segment (dependent_resource)
+        self.assertEqual(2, mock_bump.call_count)
+        for i, call in enumerate(mock_bump.call_args_list):
+            self.assertEqual(
+                segments[i], call.kwargs['dependent_resource'])
+            self.assertEqual(
+                constants.TYPE_SEGMENTS,
+                call.kwargs['dependent_resource_type'])
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=True)
+    @mock.patch('neutron.plugins.ml2.plugin.Ml2Plugin.get_network',
+                return_value={})
+    def test_create_network_regular(self, mock_get_net, mock_needs_ls):
+        """create_network for regular network creates network ls_add."""
+        network = self._make_network()
+        segments = [self._make_segment('seg-1', network_type='geneve',
+                                       physical_network='physnet1')]
+        ctx = mock.MagicMock()
+
+        with mock.patch(
+                'neutron.db.segments_db.get_network_segments',
+                return_value=segments), \
+            mock.patch.object(
+                 self.ovn_client, 'create_provnet_port'), \
+            mock.patch.object(db_rev, 'bump_revision') as mock_bump, \
+            mock.patch.object(
+                 self.ovn_client, 'create_metadata_port'):
+            self.ovn_client.create_network(ctx, network)
+
+        # Should create network logical switch
+        self.nb_idl.ls_add.assert_called_once()
+        ls_call = self.nb_idl.ls_add.call_args
+        self.assertEqual(network['id'], ls_call.kwargs['network_id'])
+        # Should bump network revision (not per-segment)
+        mock_bump.assert_called_once_with(
+            ctx, network, constants.TYPE_NETWORKS)
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    def test_update_network_dispatches_vlan(self, mock_needs_ls):
+        """update_network calls update_network_vlan_segments for VLAN."""
+        network = self._make_network()
+        segments = [self._make_segment('seg-1')]
+        ctx = mock.MagicMock()
+
+        with mock.patch(
+                'neutron.db.segments_db.get_network_segments',
+                return_value=segments), \
+            mock.patch.object(
+                 self.ovn_client,
+                 'update_network_vlan_segments') as mock_vlan, \
+            mock.patch.object(
+                 self.ovn_client,
+                 '_update_network_regular') as mock_regular:
+            self.ovn_client.update_network(ctx, network)
+
+        mock_vlan.assert_called_once_with(ctx, network, segments)
+        mock_regular.assert_not_called()
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=True)
+    def test_update_network_dispatches_regular(self, mock_needs_ls):
+        """update_network calls _update_network_regular for mixed."""
+        network = self._make_network()
+        segments = [self._make_segment('seg-1', network_type='geneve')]
+        ctx = mock.MagicMock()
+
+        with mock.patch(
+                'neutron.db.segments_db.get_network_segments',
+                return_value=segments), \
+            mock.patch.object(
+                 self.ovn_client,
+                 'update_network_vlan_segments') as mock_vlan, \
+            mock.patch.object(
+                 self.ovn_client,
+                 '_update_network_regular') as mock_regular:
+            self.ovn_client.update_network(ctx, network)
+
+        mock_regular.assert_called_once_with(
+            ctx, network, None, segments)
+        mock_vlan.assert_not_called()
+
+    def test_update_network_vlan_segments(self):
+        """update_network_vlan_segments updates each segment switch."""
+        network = self._make_network()
+        segments = [
+            self._make_segment('seg-1', segmentation_id=100),
+            self._make_segment('seg-2', segmentation_id=200),
+        ]
+        ctx = mock.MagicMock()
+        plugin = self.get_plugin.return_value
+        plugin.get_subnets_by_network.return_value = []
+
+        # Make check_revision_number return committed
+        check_cmd = mock.MagicMock()
+        check_cmd.result = constants.TXN_COMMITTED
+        self.nb_idl.check_revision_number.return_value = check_cmd
+
+        with mock.patch.object(db_rev, 'bump_revision') as mock_bump:
+            self.ovn_client.update_network_vlan_segments(
+                ctx, network, segments)
+
+        # Should db_set each segment logical switch
+        self.assertEqual(2, self.nb_idl.db_set.call_count)
+        for i, call in enumerate(self.nb_idl.db_set.call_args_list):
+            self.assertEqual(
+                ovn_utils.ovn_name(segments[i]['id']),
+                call.args[1])
+
+        # Should bump revision per segment
+        self.assertEqual(2, mock_bump.call_count)
+        for i, call in enumerate(mock_bump.call_args_list):
+            self.assertEqual(
+                segments[i], call.kwargs['dependent_resource'])
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    def test_update_metadata_port_vlan_only(self, mock_needs_ls):
+        """update_metadata_port for VLAN-only uses segment_id."""
+        network = self._make_network()
+        subnet = {'id': 'sub-1', 'segment_id': 'seg-1',
+                  'enable_dhcp': True}
+        ctx = mock.MagicMock()
+        cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
+
+        metadata_port = {'id': 'meta-port',
+                         'fixed_ips': [{'subnet_id': 'sub-1',
+                                        'ip_address': '10.0.0.2'}]}
+        with mock.patch.object(
+                self.ovn_client, 'create_metadata_port',
+                return_value=metadata_port) as mock_create_meta:
+            result = self.ovn_client.update_metadata_port(
+                ctx, network, subnet=subnet)
+
+        self.assertTrue(result)
+        # Should call create_metadata_port with segment_id
+        mock_create_meta.assert_called_once_with(
+            ctx, network, subnet['segment_id'])
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=True)
+    def test_update_metadata_port_regular(self, mock_needs_ls):
+        """update_metadata_port for regular network uses no segment_id."""
+        network = self._make_network()
+        subnet = {'id': 'sub-1', 'segment_id': None,
+                  'enable_dhcp': True}
+        ctx = mock.MagicMock()
+        cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
+
+        metadata_port = {'id': 'meta-port',
+                         'fixed_ips': [{'subnet_id': 'sub-1',
+                                        'ip_address': '10.0.0.2'}]}
+        with mock.patch.object(
+                self.ovn_client, 'create_metadata_port',
+                return_value=metadata_port) as mock_create_meta:
+            result = self.ovn_client.update_metadata_port(
+                ctx, network, subnet=subnet)
+
+        self.assertTrue(result)
+        # Should call create_metadata_port without segment_id
+        mock_create_meta.assert_called_once_with(ctx, network)
+
+    def test_create_metadata_port_with_segment(self):
+        """create_metadata_port with segment_id creates segment port."""
+        network = self._make_network()
+        ctx = mock.MagicMock()
+        cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
+
+        # No existing metadata port
+        self.ovn_client._find_metadata_port = mock.Mock(return_value=None)
+        new_port = {'id': 'new-meta-port', 'network_id': network['id']}
+
+        with mock.patch(
+                'neutron_lib.plugins.utils.create_port',
+                return_value=new_port) as mock_p_create, \
+            mock.patch.object(
+                self.ovn_client, 'create_port') as mock_create_port:
+            result = self.ovn_client.create_metadata_port(
+                ctx, network, segment_id='seg-1')
+
+        self.assertEqual(new_port, result)
+        # device_id should use segment_id
+        port_arg = mock_p_create.call_args[0][2]
+        self.assertEqual(
+            constants.OVN_METADATA_PREFIX + 'seg-1',
+            port_arg['port']['device_id'])
+        # fixed_ips should be empty for segment metadata ports
+        self.assertEqual([], port_arg['port']['fixed_ips'])
+        # Should call create_port with segment_id
+        mock_create_port.assert_called_once_with(
+            ctx, new_port, segment_id='seg-1')
+
+    def test_create_metadata_port_without_segment(self):
+        """create_metadata_port without segment_id uses network_id."""
+        network = self._make_network()
+        ctx = mock.MagicMock()
+        cfg.CONF.set_override('ovn_metadata_enabled', True, group='ovn')
+        plugin = self.get_plugin.return_value
+        plugin.get_subnets.return_value = [
+            {'id': 'sub-1', 'enable_dhcp': True}]
+
+        self.ovn_client._find_metadata_port = mock.Mock(return_value=None)
+        new_port = {'id': 'new-meta-port', 'network_id': network['id']}
+
+        with mock.patch(
+                'neutron_lib.plugins.utils.create_port',
+                return_value=new_port) as mock_p_create, \
+            mock.patch.object(
+                self.ovn_client, 'create_port') as mock_create_port:
+            result = self.ovn_client.create_metadata_port(
+                ctx, network)
+
+        self.assertEqual(new_port, result)
+        # device_id should use network_id
+        port_arg = mock_p_create.call_args[0][2]
+        self.assertEqual(
+            constants.OVN_METADATA_PREFIX + network['id'],
+            port_arg['port']['device_id'])
+        # fixed_ips should include subnets
+        self.assertEqual(
+            [{'subnet_id': 'sub-1'}],
+            port_arg['port']['fixed_ips'])
+        # Should NOT call create_port (no segment_id)
+        mock_create_port.assert_not_called()
+
+    @mock.patch.object(db_rev, 'bump_revision')
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    def test_update_port_routed_network_filters_subnets(
+            self, mock_needs_ls, mock_bump):
+        """update_port metadata port only processes matching segment."""
+        net_id = 'fake-net-id'
+        # Metadata port bound to seg-1, with fixed_ips on two subnets
+        port = {
+            'id': 'meta-port-id',
+            'name': '',
+            'network_id': net_id,
+            'device_owner': const.DEVICE_OWNER_DISTRIBUTED,
+            'device_id': constants.OVN_METADATA_PREFIX + 'seg-1',
+            'fixed_ips': [
+                {'subnet_id': 'sub-1', 'ip_address': '10.0.0.2'},
+                {'subnet_id': 'sub-2', 'ip_address': '10.0.1.2'},
+            ],
+            'admin_state_up': True,
+            'allowed_address_pairs': [],
+            'revision_number': 1,
+        }
+        ctx = mock.MagicMock()
+        check_cmd = mock.MagicMock()
+        check_cmd.result = constants.TXN_COMMITTED
+        self.nb_idl.check_revision_number.return_value = check_cmd
+
+        ovn_port = mock.MagicMock()
+        ovn_port.type = ''
+        ovn_port.external_ids = {
+            constants.OVN_PORT_SEGMENT_EXT_ID_KEY: 'seg-1'}
+        self.nb_idl.lookup.return_value = ovn_port
+
+        plugin = self.get_plugin.return_value
+        plugin.get_network.return_value = {'id': net_id}
+        # sub-1 matches seg-1, sub-2 belongs to seg-2
+        sub1 = {'id': 'sub-1', 'segment_id': 'seg-1',
+                'enable_dhcp': True}
+        sub2 = {'id': 'sub-2', 'segment_id': 'seg-2',
+                'enable_dhcp': True}
+        plugin.get_subnets.return_value = [sub1, sub2]
+
+        with mock.patch.object(
+                self.ovn_client, 'get_external_ids_from_port',
+                return_value=(mock.Mock(
+                    addresses=['aa:bb:cc:dd:ee:ff 10.0.0.2'],
+                    parent_name=[], tag=[], options={},
+                    type='', port_security=[],
+                ), {})), \
+            mock.patch.object(
+                self.ovn_client, 'update_port_dhcp_options',
+                return_value=([], [])), \
+            mock.patch.object(
+                self.ovn_client, 'is_dns_required_for_port',
+                return_value=False), \
+            mock.patch.object(
+                self.ovn_client,
+                '_update_subnet_dhcp_options') as mock_dhcp:
+            self.ovn_client.update_port(ctx, port)
+
+        # Only sub-1 (matching seg-1) should be processed
+        mock_dhcp.assert_called_once()
+        call_args = mock_dhcp.call_args
+        self.assertEqual('sub-1', call_args[0][1]['id'])
+
+    @mock.patch.object(ovn_utils, 'network_needs_lswitch',
+                       return_value=False)
+    def test__delete_port_with_segment(self, mock_needs_ls):
+        """_delete_port in routed network uses segment logical switch."""
+        ovn_port = mock.MagicMock()
+        ovn_port.type = ''
+        ovn_port.external_ids = {
+            constants.OVN_NETWORK_NAME_EXT_ID_KEY:
+                ovn_utils.ovn_name('fake-net-id'),
+            constants.OVN_PORT_SEGMENT_EXT_ID_KEY: 'seg-1',
+        }
+        self.nb_idl.lookup.return_value = ovn_port
+        ls = mock.MagicMock()
+        ls.ports = []
+        self.nb_idl.ls_get.return_value.execute.return_value = ls
+        ctx = mock.MagicMock()
+
+        self.ovn_client._delete_port(ctx, 'fake-port-id', None)
+
+        # Should delete from segment logical switch
+        self.nb_idl.delete_lswitch_port.assert_called_once_with(
+            'fake-port-id', ovn_utils.ovn_name('seg-1'))
+
+    def test__delete_port_no_check_rev_cmd(self):
+        """_delete_port handles check_rev_cmd=None safely."""
+        ovn_port = mock.MagicMock()
+        ovn_port.type = ''
+        ovn_port.external_ids = {
+            constants.OVN_NETWORK_NAME_EXT_ID_KEY:
+                ovn_utils.ovn_name('fake-net-id'),
+        }
+        self.nb_idl.lookup.return_value = ovn_port
+        ls = mock.MagicMock()
+        ls.ports = []
+        self.nb_idl.ls_get.return_value.execute.return_value = ls
+        ctx = mock.MagicMock()
+
+        # Should not raise even with check_rev_cmd=None
+        self.ovn_client._delete_port(ctx, 'fake-port-id', None)
+
+    @mock.patch.object(db_rev, 'bump_revision')
+    @mock.patch.object(db_rev, 'delete_revision')
+    def test_delete_port_keep_revision(self, mock_del_rev, mock_bump):
+        """delete_port with keep_revision bumps instead of deleting."""
+        check_cmd = mock.MagicMock()
+        check_cmd.result = constants.TXN_COMMITTED
+        self.nb_idl.check_revision_number.return_value = check_cmd
+
+        port_object = {'id': 'fake-port-id', 'network_id': 'fake-net-id'}
+        ovn_port = mock.MagicMock()
+        ovn_port.type = ''
+        ovn_port.external_ids = {
+            constants.OVN_NETWORK_NAME_EXT_ID_KEY:
+                ovn_utils.ovn_name('fake-net-id'),
+        }
+        self.nb_idl.lookup.return_value = ovn_port
+        ls = mock.MagicMock()
+        ls.ports = []
+        self.nb_idl.ls_get.return_value.execute.return_value = ls
+        ctx = mock.MagicMock()
+
+        self.ovn_client.delete_port(
+            ctx, 'fake-port-id', port_object=port_object,
+            keep_revision=True)
+
+        mock_bump.assert_called_once_with(
+            ctx, port_object, constants.TYPE_PORTS)
+        mock_del_rev.assert_not_called()
 
 
 class TestOVNClientFairMeter(TestOVNClientBase,

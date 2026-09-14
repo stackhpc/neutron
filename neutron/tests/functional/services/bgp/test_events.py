@@ -27,7 +27,7 @@ from neutron.services.bgp import events
 from neutron.tests.functional.services import bgp as bgp_base
 
 
-class GatewayIPEventTestCaseBase(bgp_base.BaseBgpNbIdlTestCase):
+class EventTestCaseBase(bgp_base.BaseBgpNbIdlTestCase):
     def setUp(self):
         super().setUp()
         self.reconciler = mock.Mock(nb_api=self.nb_api)
@@ -47,7 +47,7 @@ class GatewayIPEventTestCaseBase(bgp_base.BaseBgpNbIdlTestCase):
                     ovn_const.OVN_NETTYPE_EXT_ID_KEY: n_lib_const.TYPE_FLAT}))
 
 
-class GatewayIPCreatedEventTestCase(GatewayIPEventTestCaseBase):
+class GatewayIPCreatedEventTestCase(EventTestCaseBase):
     def _create_event(self):
         return events.GatewayIPCreatedEvent(self.reconciler)
 
@@ -95,7 +95,7 @@ class GatewayIPCreatedEventTestCase(GatewayIPEventTestCaseBase):
                     'no router'))
 
 
-class GatewayIPUpdatedEventTestCase(GatewayIPEventTestCaseBase):
+class GatewayIPUpdatedEventTestCase(EventTestCaseBase):
     def _create_event(self):
         return events.GatewayIPUpdatedEvent(self.reconciler)
 
@@ -134,3 +134,102 @@ class GatewayIPUpdatedEventTestCase(GatewayIPEventTestCaseBase):
         call_args = self.reconciler.reconcile.call_args[0]
         self.assertEqual({'router': '10.0.0.2'}, call_args[2].options)
         self.assertEqual('10.0.0.0/24', call_args[2].cidr)
+
+
+class FIPChangedEventTestCase(EventTestCaseBase):
+    def _create_event(self):
+        return events.FIPChangedEvent(self.reconciler)
+
+    def _create_router_with_fip(self, net_id, external_ip):
+        router_name = 'neutron-' + uuidutils.generate_uuid()
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.lr_add(router_name))
+            txn.add(bgp_base.AddNATToRouterCommand(
+                self.nb_api, router_name,
+                type='dnat_and_snat',
+                logical_ip='10.0.0.100',
+                external_ip=external_ip,
+                external_ids={ovn_const.OVN_FIP_NET_ID: net_id},
+            ))
+        return router_name
+
+    def test_fip_changed_event_fires_on_nat_create(self):
+        net_id = uuidutils.generate_uuid()
+        self._create_provider_switch(net_id)
+
+        self._create_router_with_fip(net_id, '172.24.4.10')
+
+        common_utils.wait_until_true(
+            lambda: self.reconciler.reconcile.called,
+            sleep=0.2,
+            timeout=5,
+            exception=AssertionError(
+                'FIPChangedEvent did not trigger reconcile on create'))
+
+        passed_nat = self.reconciler.reconcile.call_args[0][2]
+        self.assertEqual('dnat_and_snat', passed_nat.type)
+        self.assertEqual('172.24.4.10', passed_nat.external_ip)
+
+    def test_fip_changed_event_fires_on_nat_delete(self):
+        net_id = uuidutils.generate_uuid()
+        self._create_provider_switch(net_id)
+
+        router_name = self._create_router_with_fip(net_id, '172.24.4.10')
+
+        self.reconciler.reconcile.reset_mock()
+
+        self.nb_api.lr_nat_del(
+            router_name,
+            nat_type='dnat_and_snat',
+            match_ip='172.24.4.10',
+        ).execute(check_error=True)
+
+        common_utils.wait_until_true(
+            lambda: self.reconciler.reconcile.called,
+            sleep=0.2,
+            timeout=5,
+            exception=AssertionError(
+                'FIPChangedEvent did not trigger reconcile on delete'))
+
+    def test_fip_changed_event_does_not_fire_for_non_flat_network(self):
+        net_id = uuidutils.generate_uuid()
+        ls_name = f'neutron-{net_id}'
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.ls_add(ls_name))
+            txn.add(self.nb_api.db_set(
+                'Logical_Switch', ls_name,
+                external_ids={
+                    ovn_const.OVN_NETTYPE_EXT_ID_KEY: 'vlan'}))
+
+        self._create_router_with_fip(net_id, '172.24.4.10')
+
+        with testtools.ExpectedException(AssertionError):
+            common_utils.wait_until_true(
+                lambda: self.reconciler.reconcile.called,
+                sleep=0.2,
+                timeout=2,
+                exception=AssertionError(
+                    'Reconcile should not be called for non-flat network'))
+
+    def test_fip_changed_event_does_not_fire_for_snat(self):
+        net_id = uuidutils.generate_uuid()
+        self._create_provider_switch(net_id)
+
+        router_name = 'neutron-' + uuidutils.generate_uuid()
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.lr_add(router_name))
+            txn.add(bgp_base.AddNATToRouterCommand(
+                self.nb_api, router_name,
+                type='snat',
+                logical_ip='10.0.0.0/24',
+                external_ip='172.24.4.10',
+                external_ids={ovn_const.OVN_FIP_NET_ID: net_id},
+            ))
+
+        with testtools.ExpectedException(AssertionError):
+            common_utils.wait_until_true(
+                lambda: self.reconciler.reconcile.called,
+                sleep=0.2,
+                timeout=2,
+                exception=AssertionError(
+                    'Reconcile should not be called for snat'))

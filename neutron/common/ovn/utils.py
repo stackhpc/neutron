@@ -25,6 +25,7 @@ from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import port_security as psec
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import provider_net
+from neutron_lib.api.definitions import segment as segment_def
 from neutron_lib.api import validators
 from neutron_lib import constants as const
 from neutron_lib import context as n_context
@@ -275,6 +276,56 @@ def ovn_provnet_port_name(network_id):
 def ovn_extport_chassis_group_name(port_id):
     # The name of the HA Chassis Group entry will be neutron-extport-<UUID>
     return constants.OVN_HA_CH_GROUP_EXTPORT_PREFIX + '%s' % port_id
+
+
+def is_vlan_segment(segment):
+    """Identify VLAN segments requiring separate logical switches.
+
+    VLAN segments have both physical_network AND segmentation_id populated,
+    distinguishing them from flat networks (which only have physical_network).
+
+    :param segment: Segment dictionary
+    :return: True if segment is a VLAN segment, False otherwise
+    """
+    return segment.get(segment_def.NETWORK_TYPE) == const.TYPE_VLAN
+
+
+def network_needs_lswitch(context, network_id=None, network=None):
+    """Determine if network needs its own logical switch.
+
+    Called in one of two modes:
+    - network_id provided, network is None: fetches network from DB
+      (single DB access) and extracts segment info from it
+    - network provided, network_id is None: uses the provided
+      network dict directly (no DB access)
+
+    :param context: Neutron context for DB operations
+    :param network_id: Network ID to fetch network from DB
+    :param network: Network dict (avoids DB lookup)
+    :return: True if network needs its own logical switch
+    """
+    if not ovn_conf.is_logical_switch_per_vlan_segment_enabled():
+        return True
+
+    if not network:
+        plugin = directory.get_plugin()
+        network = plugin.get_network(context, network_id)
+
+    if is_external_network(network):
+        return True
+
+    # Multi-segment: 'segments' key with provider-prefixed keys
+    net_segments = network.get('segments')
+    if net_segments:
+        return any(s for s in net_segments
+                   if (s.get(provider_net.NETWORK_TYPE) !=
+                       const.TYPE_VLAN))
+
+    # Single-segment: flat provider-prefixed keys
+    net_type = network.get(provider_net.NETWORK_TYPE)
+    if net_type is None:
+        return True
+    return net_type != const.TYPE_VLAN
 
 
 def ovn_vhu_sockpath(sock_dir, port_id):

@@ -85,13 +85,13 @@ class ServiceTypeManagerTestCase(testlib_api.SqlTestCase):
 
         res = self.manager.get_service_providers(
             ctx,
-            filters=dict(service_type=[constants.FIREWALL])
+            filters={'service_type': [constants.FIREWALL]}
         )
         self.assertEqual(1, len(res))
 
         res = self.manager.get_service_providers(
             ctx,
-            filters=dict(service_type=[constants.FIREWALL])
+            filters={'service_type': [constants.FIREWALL]}
         )
         self.assertEqual(1, len(res))
 

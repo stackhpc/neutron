@@ -13,9 +13,6 @@
 #    under the License.
 import copy
 
-from neutron.objects.qos import binding as qos_binding
-from neutron.objects.qos import policy as qos_policy
-from neutron.objects.qos import rule as qos_rule
 from neutron_lib.api.definitions import l3 as l3_api
 from neutron_lib.api.definitions import provider_net as pnet_api
 from neutron_lib import constants
@@ -28,6 +25,9 @@ from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import utils
 from neutron.common import utils as n_utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
+from neutron.objects.qos import binding as qos_binding
+from neutron.objects.qos import policy as qos_policy
+from neutron.objects.qos import rule as qos_rule
 
 
 LOG = logging.getLogger(__name__)

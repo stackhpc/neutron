@@ -389,11 +389,10 @@ class TestIpWrapper(base.BaseTestCase):
         self.call_params = {}
 
         def fake_create_interface(ifname, namespace, kind, **kwargs):
-            self.call_params = dict(
-                ifname=ifname,
-                namespace=namespace,
-                kind=kind,
-                **kwargs)
+            self.call_params = {'ifname': ifname,
+                                'namespace': namespace,
+                                'kind': kind,
+                                **kwargs}
 
         create.side_effect = fake_create_interface
         expected_call_params = {
@@ -424,11 +423,10 @@ class TestIpWrapper(base.BaseTestCase):
         self.call_params = {}
 
         def fake_create_interface(ifname, namespace, kind, **kwargs):
-            self.call_params = dict(
-                ifname=ifname,
-                namespace=namespace,
-                kind=kind,
-                **kwargs)
+            self.call_params = {'ifname': ifname,
+                                'namespace': namespace,
+                                'kind': kind,
+                                **kwargs}
 
         create.side_effect = fake_create_interface
         expected_call_params = {
@@ -488,11 +486,10 @@ class TestIpWrapper(base.BaseTestCase):
         self.call_params = {}
 
         def fake_create_interface(ifname, namespace, kind, **kwargs):
-            self.call_params = dict(
-                ifname=ifname,
-                namespace=namespace,
-                kind=kind,
-                **kwargs)
+            self.call_params = {'ifname': ifname,
+                                'namespace': namespace,
+                                'kind': kind,
+                                **kwargs}
 
         create.side_effect = fake_create_interface
         expected_call_params = {
@@ -827,10 +824,16 @@ class TestIpAddrCommand(TestIPCmdBase):
     def test_wait_until_address_ready_success_one_timeout(self, mock_wuntil):
         tentative_address = 'fe80::3023:39ff:febc:22ae'
         self.addr_cmd.list = mock.Mock(return_value=[
-            dict(scope='link', dadfailed=False, tentative=True, dynamic=False,
-                 cidr=tentative_address + '/64'),
-            dict(scope='link', dadfailed=False, tentative=False, dynamic=False,
-                 cidr=tentative_address + '/64')])
+            {'scope': 'link',
+             'dadfailed': False,
+             'tentative': True,
+             'dynamic': False,
+             'cidr': tentative_address + '/64'},
+            {'scope': 'link',
+             'dadfailed': False,
+             'tentative': False,
+             'dynamic': False,
+             'cidr': tentative_address + '/64'}])
         self.assertIsNone(self.addr_cmd.wait_until_address_ready(
             tentative_address, wait_time=3))
         self.assertEqual(1, mock_wuntil.call_count)
@@ -838,8 +841,11 @@ class TestIpAddrCommand(TestIPCmdBase):
     def test_wait_until_address_ready_timeout(self):
         tentative_address = 'fe80::3023:39ff:febc:22ae'
         self.addr_cmd.list = mock.Mock(return_value=[
-            dict(scope='link', dadfailed=False, tentative=True, dynamic=False,
-                 cidr=tentative_address + '/64')])
+            {'scope': 'link',
+             'dadfailed': False,
+             'tentative': True,
+             'dynamic': False,
+             'cidr': tentative_address + '/64'}])
         with testtools.ExpectedException(ip_lib.AddressNotReady):
             self.addr_cmd.wait_until_address_ready(tentative_address,
                                                    wait_time=1)
@@ -946,7 +952,7 @@ class TestIpNetnsCommand(TestIPCmdBase):
     def test_execute_env_var_prepend(self):
         self.parent.namespace = 'ns'
         with mock.patch('neutron.agent.common.utils.execute') as execute:
-            env = dict(FOO=1, BAR=2)
+            env = {'FOO': 1, 'BAR': 2}
             self.netns_cmd.execute(['ip', 'link', 'list'], env)
             execute.assert_called_once_with(
                 ['ip', 'netns', 'exec', 'ns', 'env'] +

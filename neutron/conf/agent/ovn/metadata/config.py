@@ -15,11 +15,11 @@
 import itertools
 import shlex
 
-from neutron.conf.agent.metadata import config as meta_conf
 from oslo_config import cfg
 from oslo_privsep import priv_context
 
 from neutron._i18n import _
+from neutron.conf.agent.metadata import config as meta_conf
 
 OVS_OPTS = [
     cfg.StrOpt('ovsdb_connection',

@@ -41,6 +41,7 @@ from neutron_lib.api.definitions import firewall_v2_stdattrs
 from neutron_lib.api.definitions import flavors
 from neutron_lib.api.definitions import floating_ip_port_forwarding
 from neutron_lib.api.definitions import floatingip_pools
+from neutron_lib.api.definitions import floatingip_router_writable
 from neutron_lib.api.definitions import ip_allocation
 from neutron_lib.api.definitions import l3
 from neutron_lib.api.definitions import \
@@ -128,6 +129,7 @@ ML2_SUPPORTED_API_EXTENSIONS_OVN_L3 = [
     fip_pf_detail.ALIAS,
     fip_port_details.ALIAS,
     floatingip_pools.ALIAS,
+    floatingip_router_writable.ALIAS,
     pagination.ALIAS,
     'qos-fip',
     qos_gateway_ip.ALIAS,

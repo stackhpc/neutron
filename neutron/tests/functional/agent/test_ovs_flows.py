@@ -268,7 +268,7 @@ class ARPSpoofTestCase(OVSAgentTestBase):
                    'fixed_ips': [{'ip_address': ip_addr}],
                    'device_owner': device_owner,
                    'allowed_address_pairs': [
-                        dict(ip_address=ip) for ip in addrs]}
+                        {'ip_address': ip} for ip in addrs]}
         if mac:
             vif.vif_mac = mac
         ovsagt.OVSNeutronAgent.setup_arp_spoofing_protection(

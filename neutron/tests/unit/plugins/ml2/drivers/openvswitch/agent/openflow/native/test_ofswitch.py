@@ -112,7 +112,7 @@ class TestBundledOpenFlowBridge(base.BaseTestCase):
         try:
             with self.br:
                 self.assertIsNotNone(self.br.active_bundle)
-                raise Exception()
+                raise RuntimeError()
         except Exception:
             pass
         # Assert that the active bundle is gone

@@ -12,12 +12,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from neutron_lib.db import constants as db_const
 from neutron_lib.db import model_base
 import sqlalchemy as sa
 from sqlalchemy import orm
 
 from neutron.db.models import l3
-from neutron_lib.db import constants as db_const
 
 
 class ConntrackHelper(model_base.BASEV2, model_base.HasId):

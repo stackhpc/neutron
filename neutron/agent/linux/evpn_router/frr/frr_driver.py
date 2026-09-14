@@ -61,6 +61,7 @@ class FrrCommandBuilder:
             'asn': config.asn,
             'bgp_router_id': config.bgp_router_id,
             'peer_interface': peer_interface,
+            'bgp_password': config.bgp_password,
         }
         bgp_af_context = {
             'peer_interface': peer_interface,

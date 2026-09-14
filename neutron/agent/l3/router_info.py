@@ -185,7 +185,7 @@ class RouterInfo(BaseRouterInfo):
         self._update_routing_table(operation, route, self.ns_name)
 
     def _update_routing_table_ecmp(self, route_list, namespace):
-        multipath = [dict(via=route['nexthop'])
+        multipath = [{'via': route['nexthop']}
                      for route in route_list]
         try:
             ip_lib.add_ip_route(namespace, route_list[0]['destination'],
@@ -1113,8 +1113,8 @@ class RouterInfo(BaseRouterInfo):
 
     def _get_port_devicename_scopemark(
             self, ports, name_generator, interface_name=None):
-        devicename_scopemark = {lib_constants.IP_VERSION_4: dict(),
-                                lib_constants.IP_VERSION_6: dict()}
+        devicename_scopemark = {lib_constants.IP_VERSION_4: {},
+                                lib_constants.IP_VERSION_6: {}}
         for p in ports:
             if interface_name is None:
                 device_name = name_generator(p['id'])

@@ -413,7 +413,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         # reserve the port, so the ip is reused on a subsequent add
         device_id = utils.get_dhcp_agent_device_id(network_id,
                                                    agent['host'])
-        filters = dict(device_id=[device_id])
+        filters = {'device_id': [device_id]}
         ports = self.get_ports(context, filters=filters)
         # NOTE(kevinbenton): there should only ever be one port per
         # DHCP agent per network so we don't have to worry about one
@@ -421,7 +421,7 @@ class DhcpAgentSchedulerDbMixin(dhcpagentscheduler
         for port in ports:
             port['device_id'] = constants.DEVICE_ID_RESERVED_DHCP_PORT
             try:
-                self.update_port(context, port['id'], dict(port=port))
+                self.update_port(context, port['id'], {'port': port})
             except n_exc.PortNotFound:
                 LOG.debug("DHCP port %s has been deleted concurrently",
                           port['id'])

@@ -3470,6 +3470,100 @@ class L3NatTestCaseBase(L3NatTestCaseMixin):
                 self._get_router_for_floatingip_without_device_owner_check):
             self._test_floatingip_via_router_interface(exc.HTTPCreated.code)
 
+    @contextlib.contextmanager
+    def _indirect_fip_topology(self, external_network_id):
+        with self.subnet(cidr='10.1.0.0/24') as internal_subnet, \
+                self.subnet(cidr='198.18.0.0/24') as transit_subnet:
+            internal_router = self._make_router(self.fmt, None)
+            gateway_router = self._make_router(self.fmt, None)
+            internal_router_id = internal_router['router']['id']
+            gateway_router_id = gateway_router['router']['id']
+            self._router_interface_action(
+                'add', internal_router_id, internal_subnet['subnet']['id'],
+                None)
+            self._router_interface_action(
+                'add', internal_router_id, transit_subnet['subnet']['id'],
+                None)
+            transit_port = self._make_port(
+                self.fmt, transit_subnet['subnet']['network_id'])
+            self._router_interface_action(
+                'add', gateway_router_id, None, transit_port['port']['id'])
+            self._add_external_gateway_to_router(
+                gateway_router_id, external_network_id)
+            yield internal_subnet, internal_router_id, gateway_router_id
+
+    def test_floatingip_with_explicit_indirect_router(self):
+        with self.subnet(cidr='10.0.0.0/24') as external_subnet:
+            external_network_id = external_subnet['subnet']['network_id']
+            self._set_net_external(external_network_id)
+            with self._indirect_fip_topology(external_network_id) as (
+                    internal_subnet, _internal_router_id, gateway_router_id), \
+                    self.port(subnet=internal_subnet) as port:
+                plugin = directory.get_plugin(plugin_constants.L3)
+                floatingip = plugin.create_floatingip(
+                    context.get_admin_context(),
+                    {'floatingip': {
+                        'floating_network_id': external_network_id,
+                        'port_id': port['port']['id'],
+                        'project_id': self._project_id,
+                        'router_id': gateway_router_id,
+                    }})
+                self.assertEqual(gateway_router_id, floatingip['router_id'])
+
+    def test_floatingip_with_router_without_external_gateway_returns_409(self):
+        with self.subnet(cidr='10.0.0.0/24') as external_subnet:
+            external_network_id = external_subnet['subnet']['network_id']
+            self._set_net_external(external_network_id)
+            with self._indirect_fip_topology(external_network_id) as (
+                    internal_subnet, internal_router_id, _gateway_router_id), \
+                    self.port(subnet=internal_subnet) as port:
+                plugin = directory.get_plugin(plugin_constants.L3)
+                self.assertRaises(
+                    n_exc.Conflict, plugin.create_floatingip,
+                    context.get_admin_context(),
+                    {'floatingip': {
+                        'floating_network_id': external_network_id,
+                        'port_id': port['port']['id'],
+                        'project_id': self._project_id,
+                        'router_id': internal_router_id,
+                    }})
+
+    def test_floatingip_router_id_update(self):
+        with self.subnet(cidr='10.0.0.0/24') as external_subnet, \
+                self.subnet(cidr='10.1.0.0/24') as internal_subnet:
+            external_network_id = external_subnet['subnet']['network_id']
+            self._set_net_external(external_network_id)
+            with self.router() as first_router, \
+                    self.router() as second_router, \
+                    self.port(subnet=internal_subnet) as port:
+                first_router_id = first_router['router']['id']
+                second_router_id = second_router['router']['id']
+                self._router_interface_action(
+                    'add', first_router_id, internal_subnet['subnet']['id'],
+                    None)
+                second_router_port = self._make_port(
+                    self.fmt, internal_subnet['subnet']['network_id'])
+                self._router_interface_action(
+                    'add', second_router_id, None,
+                    second_router_port['port']['id'])
+                self._add_external_gateway_to_router(
+                    first_router_id, external_network_id)
+                self._add_external_gateway_to_router(
+                    second_router_id, external_network_id)
+                plugin = directory.get_plugin(plugin_constants.L3)
+                floatingip = plugin.create_floatingip(
+                    context.get_admin_context(),
+                    {'floatingip': {
+                        'floating_network_id': external_network_id,
+                        'port_id': port['port']['id'],
+                        'project_id': self._project_id,
+                        'router_id': first_router_id,
+                    }})
+                floatingip = plugin.update_floatingip(
+                    context.get_admin_context(), floatingip['id'],
+                    {'floatingip': {'router_id': second_router_id}})
+                self.assertEqual(second_router_id, floatingip['router_id'])
+
     def test_floatingip_delete_router_intf_with_subnet_id_returns_409(self):
         found = False
         with self.floatingip_with_assoc():

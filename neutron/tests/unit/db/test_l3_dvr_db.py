@@ -611,12 +611,15 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             registry.publish(
                 resources.FLOATING_IP, events.AFTER_CREATE, self,
                 payload=events.DBEventPayload(
-                    context=mock.Mock(), states=(dict(
-                        router_id=router_db['id'], port_id=port['id'],
-                        fixed_ip_address='1.2.3.4', id=fip['id'],
-                        floating_network_id=fip['floating_network_id']),),
+                    context=mock.Mock(),
+                    states=({'router_id': router_db['id'],
+                             'port_id': port['id'],
+                             'fixed_ip_address': '1.2.3.4',
+                             'id': fip['id'],
+                             'floating_network_id':
+                             fip['floating_network_id']},),
                     resource_id=fip['id'],
-                    metadata=dict(association_event=True)))
+                    metadata={'association_event': True}))
             return c_fip
 
     def test_create_floatingip_agent_gw_port_with_dvr_router(self):
@@ -1643,7 +1646,7 @@ class L3DvrTestCase(test_db_base_plugin_v2.NeutronDbPluginV2TestCase):
             mock_router_fip.return_value = 'router_id'
             self.assertRaises(
                 exceptions.BadRequest,
-                self.mixin._get_assoc_data, self.ctx, mock.ANY, mock.Mock())
+                self.mixin._get_assoc_data, self.ctx, {}, mock.Mock())
 
     def test__delete_dvr_internal_ports(self):
         payload = mock.Mock()

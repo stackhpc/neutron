@@ -88,7 +88,7 @@ class OVSOFControllerHelper:
                 self._kill_main()
             retry_count -= 1
             if retry_count < 0:
-                raise Exception('port allocation failed')
+                raise RuntimeError('port allocation failed')
 
     def _kick_main(self):
         with mock.patch.object(ovs_agent, 'main', self._agent_main):
@@ -378,7 +378,7 @@ class OVSAgentTestFramework(base.BaseOVSLinuxTestCase, OVSOFControllerHelper):
                                         agent_id, host=None):
             agent.plugin_rpc.update_device_list.side_effect = (
                 self._mock_update_device)
-            raise Exception('Exception to trigger resync')
+            raise RuntimeError('Exception to trigger resync')
 
         self.agent.plugin_rpc.update_device_list.side_effect = (
             mock_device_raise_exception)

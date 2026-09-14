@@ -88,7 +88,7 @@ class MacvtapManager(amb.CommonAgentManagerBase):
     def __init__(self, interface_mappings):
         self.interface_mappings = interface_mappings
         self.validate_interface_mappings()
-        self.mac_device_name_mappings = dict()
+        self.mac_device_name_mappings = {}
 
     def validate_interface_mappings(self):
         for physnet, interface in self.interface_mappings.items():
@@ -129,7 +129,7 @@ class MacvtapManager(amb.CommonAgentManagerBase):
         devices = set()
         all_device_names = os.listdir(MACVTAP_FS)
         # Refresh the mac_device_name mapping
-        self.mac_device_name_mappings = dict()
+        self.mac_device_name_mappings = {}
         for device_name in all_device_names:
             if device_name.startswith(constants.MACVTAP_DEVICE_PREFIX):
                 mac = ip_lib.get_device_mac(device_name)

@@ -132,6 +132,33 @@ class GatewayIPUpdatedEvent(GatewayIPEvent):
                 row.options['router'] != old.options.get('router'))
 
 
+class FIPEvent(BGPReconcilerResourceEvent):
+    RESOURCE = constants.BGPReconcilerResource.FLOATING_IP
+    TABLE = 'NAT'
+
+    def match_fn(self, event, row, old):
+        if not super().match_fn(event, row, old):
+            return False
+        if row.type != 'dnat_and_snat':
+            return False
+        try:
+            n_net_id = row.external_ids[ovn_const.OVN_FIP_NET_ID]
+        except KeyError:
+            return False
+        try:
+            switch = self.reconciler.nb_api.lookup(
+                'Logical_Switch', ovn_utils.ovn_name(n_net_id))
+        except idlutils.RowNotFound:
+            return False
+        net_type = switch.external_ids.get(ovn_const.OVN_NETTYPE_EXT_ID_KEY)
+        return net_type == n_const.TYPE_FLAT
+
+
+class FIPChangedEvent(FIPEvent):
+    EVENTS = (BGPReconcilerResourceEvent.ROW_CREATE,
+              BGPReconcilerResourceEvent.ROW_DELETE)
+
+
 class BGPChassisEvent(BGPReconcilerResourceEvent):
     EVENTS = (BGPReconcilerResourceEvent.ROW_CREATE,
               BGPReconcilerResourceEvent.ROW_DELETE)

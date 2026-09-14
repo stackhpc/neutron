@@ -17,6 +17,7 @@ from oslo_config import cfg
 from ovsdbapp.backend.ovs_idl import connection
 from ovsdbapp.schema.ovn_southbound import impl_idl as sb_impl_idl
 
+from neutron.common.ovn import constants as ovn_const
 from neutron.common import utils as common_utils
 from neutron.conf.plugins.ml2.drivers.ovn import ovn_conf
 from neutron.conf.services import bgp as bgp_config
@@ -25,6 +26,7 @@ from neutron.services.bgp import helpers
 from neutron.services.bgp import ovn as bgp_ovn
 from neutron.services.bgp import reconciler
 from neutron.tests.functional import base
+from neutron.tests.functional.services import bgp
 
 
 class TestBGPReconciler(base.TestOVNFunctionalBase):
@@ -199,3 +201,55 @@ class TestBGPReconciler(base.TestOVNFunctionalBase):
         )
 
         self.validate_topology([chassis])
+
+    def test_fip_created_updates_arp_proxy(self):
+        self._create_chassis(
+            'chassis', '192.168.1.100',
+            bgp_bridges=self.chassis_bgp_networks)
+
+        net_id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        ls_name = f'neutron-{net_id}'
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.ls_add(ls_name))
+            txn.add(self.nb_api.lsp_add(
+                ls_name, f'{ls_name}-localnet',
+                type='localnet',
+                options={'network_name': 'physnet1'},
+                addresses=['unknown'],
+            ))
+            txn.add(self.nb_api.db_set(
+                'Logical_Switch', ls_name,
+                external_ids={
+                    ovn_const.OVN_NETTYPE_EXT_ID_KEY: 'flat'}))
+
+        self.reconciler.full_sync()
+
+        interconnect_name = helpers.get_provider_interconnect_switch_name(
+            ls_name)
+        lsp_name = helpers.get_lsp_name(
+            interconnect_name, constants.MAIN_ROUTER_NAME)
+
+        router_name = 'neutron-tenant-router'
+        with self.nb_api.transaction(check_error=True) as txn:
+            txn.add(self.nb_api.lr_add(router_name))
+            txn.add(bgp.AddNATToRouterCommand(
+                self.nb_api, router_name,
+                type='dnat_and_snat',
+                logical_ip='10.0.0.100',
+                external_ip='172.24.4.10',
+                external_ids={ovn_const.OVN_FIP_NET_ID: net_id},
+            ))
+
+        def arp_proxy_set():
+            lsp = self.nb_api.lsp_get(lsp_name).execute(check_error=True)
+            return ovn_const.LSP_OPTIONS_ARP_PROXY in lsp.options
+
+        common_utils.wait_until_true(
+            arp_proxy_set,
+            timeout=10,
+            exception=Exception("arp_proxy was not set after FIP creation"))
+
+        lsp = self.nb_api.lsp_get(lsp_name).execute(check_error=True)
+        self.assertEqual(
+            '172.24.4.10',
+            lsp.options.get(ovn_const.LSP_OPTIONS_ARP_PROXY))

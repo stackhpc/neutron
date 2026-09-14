@@ -86,15 +86,15 @@ class Dhcpagentscheduler(api_extensions.APIExtensionDescriptor):
     def get_resources(cls):
         """Returns Ext Resources."""
         exts = []
-        parent = dict(member_name=agent_apidef.RESOURCE_NAME,
-                      collection_name=agent_apidef.COLLECTION_NAME)
+        parent = {'member_name': agent_apidef.RESOURCE_NAME,
+                  'collection_name': agent_apidef.COLLECTION_NAME}
         controller = resource.Resource(NetworkSchedulerController(),
                                        faults.FAULT_MAP)
         exts.append(extensions.ResourceExtension(
             apidef.DHCP_NETS, controller, parent))
 
-        parent = dict(member_name=net_apidef.RESOURCE_NAME,
-                      collection_name=net_apidef.COLLECTION_NAME)
+        parent = {'member_name': net_apidef.RESOURCE_NAME,
+                  'collection_name': net_apidef.COLLECTION_NAME}
 
         controller = resource.Resource(DhcpAgentsHostingNetworkController(),
                                        faults.FAULT_MAP)

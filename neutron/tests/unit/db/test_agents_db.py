@@ -264,29 +264,35 @@ class TestAgentsDbMixin(TestAgentsDbBase):
 
 class TestAgentsDbGetAgents(TestAgentsDbBase):
     scenarios = [
-        ('Get all agents', dict(agents=5, down_agents=2,
-                                agents_alive=None,
-                                expected_agents=5)),
+        ('Get all agents', {'agents': 5,
+                            'down_agents': 2,
+                            'agents_alive': None,
+                            'expected_agents': 5}),
 
-        ('Get alive agents (True)', dict(agents=5, down_agents=2,
-                                         agents_alive='True',
-                                         expected_agents=3)),
+        ('Get alive agents (True)', {'agents': 5,
+                                     'down_agents': 2,
+                                     'agents_alive': 'True',
+                                     'expected_agents': 3}),
 
-        ('Get down agents (False)', dict(agents=5, down_agents=2,
-                                         agents_alive='False',
-                                         expected_agents=2)),
+        ('Get down agents (False)', {'agents': 5,
+                                     'down_agents': 2,
+                                     'agents_alive': 'False',
+                                     'expected_agents': 2}),
 
-        ('Get alive agents (true)', dict(agents=5, down_agents=2,
-                                         agents_alive='true',
-                                         expected_agents=3)),
+        ('Get alive agents (true)', {'agents': 5,
+                                     'down_agents': 2,
+                                     'agents_alive': 'true',
+                                     'expected_agents': 3}),
 
-        ('Get down agents (false)', dict(agents=5, down_agents=2,
-                                         agents_alive='false',
-                                         expected_agents=2)),
+        ('Get down agents (false)', {'agents': 5,
+                                     'down_agents': 2,
+                                     'agents_alive': 'false',
+                                     'expected_agents': 2}),
 
-        ('Get agents invalid alive filter', dict(agents=5, down_agents=2,
-                                                 agents_alive='invalid',
-                                                 expected_agents=None)),
+        ('Get agents invalid alive filter', {'agents': 5,
+                                             'down_agents': 2,
+                                             'agents_alive': 'invalid',
+                                             'expected_agents': None}),
     ]
 
     def setUp(self):
