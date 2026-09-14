@@ -13,8 +13,10 @@
 #
 
 from unittest import mock
+import uuid
 
 from neutron_lib import constants as n_const
+from oslo_utils import uuidutils
 from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron.common.ovn import constants as ovn_const
