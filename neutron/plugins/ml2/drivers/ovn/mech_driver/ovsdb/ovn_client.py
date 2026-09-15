@@ -932,17 +932,18 @@ class OVNClient:
                    'options': options,
                    }
 
-        # If OVN supports gateway_port column for NAT rules set gateway port
-        # uuid to floating IP without gw port reference - LP#2035281.
-        router_db = self._l3_plugin.get_router(admin_context, router_id)
-        gw_port_id = router_db.get('gw_port_id')
-        lrp = self._nb_idl.get_lrouter_port(gw_port_id)
-        # If LRP is not bound to a chassis, it means that router can be
-        # bound instead. In this case we do not want to define
-        # gateway_port LP#2083527.
-        if lrp.options.get(
-                ovn_const.LRP_OPTIONS_RESIDE_REDIR_CH) == 'true':
-            columns['gateway_port'] = lrp.uuid
+        # Set gateway_port on NAT rules when distributed floating IPs are
+        # enabled and the LRP is scheduled on a chassis. History: LP#2035281
+        # added gateway_port support, LP#2083527 added a guard for gateway
+        # routers, and LP#2150866 fixed the guard to check ha_chassis_group.
+        if ovn_conf.is_ovn_distributed_floating_ip():
+            router_db = self._l3_plugin.get_router(admin_context, router_id)
+            gw_port_id = router_db.get('gw_port_id')
+            lrp = self._nb_idl.get_lrouter_port(gw_port_id)
+            # If the gateway LRP is scheduled on a chassis (it has
+            # ha_chassis_group), then assign the gateway_port reference.
+            if lrp and lrp.ha_chassis_group:
+                columns['gateway_port'] = lrp.uuid
 
         if ovn_conf.is_ovn_distributed_floating_ip():
             if self._nb_idl.lsp_get_up(floatingip['port_id']).execute():
@@ -1829,6 +1830,10 @@ class OVNClient:
             port_net = self._plugin.get_network(
                 context.elevated(), port['network_id'])
             physnet = self._get_physnet(port_net)
+            # TODO(ralonsoh): both paths (with and without physnet) now create
+            # a ``HA_Chassis_Group`` per router, set to the
+            # ``Logical_Router_Port``. Optimize this code to call the HCG
+            # creation once, with the needed parameters.
             if physnet is None:
                 # The external network is tunnelled, pin the router to a
                 # chassis.
@@ -2367,11 +2372,11 @@ class OVNClient:
         """Link a unified HCG for all network ext. ports if connected to router
 
         If a network is connected to a router, this method checks if the router
-        has a gateway port and the corresponding "Gateway_Chassis" registers.
-        In that case, it creates a unified "HA_Chassis_Group" for this network
-        and assign it to all external ports. That will collocate the external
-        ports in the same gateway chassis as the router gateway port, allowing
-        N/S communication. See LP#2125553
+        has a gateway port and its ``HA_Chassis_Group``. In that case, it
+        creates a unified ``HA_Chassis_Group`` for this network and assigns it
+        to all external ports. That will collocate the external ports in the
+        same gateway chassis as the router gateway port, allowing N/S
+        communication. See LP#2125553
         """
         if not self._nb_idl.lookup('Logical_Router', utils.ovn_name(router_id),
                                    default=None):
@@ -2385,20 +2390,12 @@ class OVNClient:
             self.unlink_network_ha_chassis_group(network_id)
             return
 
-        if not gw_lrps[0].gateway_chassis:
-            # The gateway port has no "Gateway_Chassis" registers yet (e.g. a
-            # tunnelled/VXLAN external network, which is pinned to a chassis
-            # via the Logical_Router "chassis" option instead and never gets
-            # "Gateway_Chassis" populated). Do nothing rather than wipe out
-            # any existing, valid "HA_Chassis_Group" membership for this
-            # network with an empty one.
+        if not gw_lrps[0].ha_chassis_group:
             return
 
-        # Retrieve all "Gateway_Chassis" and build the "chassis_prio"
-        # dictionary.
         chassis_prio = {}
-        for gc in gw_lrps[0].gateway_chassis:
-            chassis_prio[gc.chassis_name] = gc.priority
+        for hc in gw_lrps[0].ha_chassis_group[0].ha_chassis:
+            chassis_prio[hc.chassis_name] = hc.priority
 
         with self._nb_idl.transaction(check_error=True) as txn:
             # Create the "HA_Chassis_Group" associated to this network.

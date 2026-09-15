@@ -13,12 +13,15 @@
 #
 
 from unittest import mock
+import uuid
 
 from neutron_lib import constants as n_const
+from oslo_utils import uuidutils
 from ovsdbapp.backend.ovs_idl import idlutils
 
 from neutron.common.ovn import constants as ovn_const
 from neutron.common.ovn import exceptions as ovn_exc
+from neutron.common.ovn import utils
 from neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb import commands
 from neutron.tests import base
 from neutron.tests.unit import fake_resources as fakes
@@ -92,6 +95,80 @@ class TestCheckLivenessCommand(TestBaseCommand):
         cmd = commands.CheckLivenessCommand(self.ovn_api)
         cmd.run_idl(self.transaction)
         self.assertNotEqual(cmd.result, old_ng_cfg)
+
+
+class TestAddNetworkCommand(TestBaseCommand):
+
+    def setUp(self):
+        super().setUp()
+        self.net_id = uuidutils.generate_uuid()
+        # The OVSDB backend exposes the tables both as "tables" and
+        # "_tables"; the fake NB IDL only defines the latter.
+        self.ovn_api.tables = self.ovn_api._tables
+        self.ls_table = self.ovn_api.tables['Logical_Switch']
+
+    def _test_network_add(self, persist_uuid):
+        fake_ls = fakes.FakeOvsdbRow.create_one_ovsdb_row()
+        self.transaction.insert.return_value = fake_ls
+        with mock.patch.object(idlutils, 'row_by_value', return_value=None), \
+                mock.patch.object(utils, 'ovs_persist_uuid_supported',
+                                  return_value=persist_uuid):
+            cmd = commands.AddNetworkCommand(self.ovn_api, self.net_id)
+            cmd.run_idl(self.transaction)
+        if persist_uuid:
+            self.transaction.insert.assert_called_once_with(
+                self.ls_table, new_uuid=uuid.UUID(self.net_id),
+                persist_uuid=True)
+        else:
+            self.transaction.insert.assert_called_once_with(self.ls_table)
+        self.assertEqual(utils.ovn_name(self.net_id), fake_ls.name)
+
+    def test_network_add(self):
+        self._test_network_add(True)
+
+    def test_network_add_no_persist_uuid_support(self):
+        self._test_network_add(False)
+
+    def test_network_add_exists_may_exist(self):
+        fake_ls = fakes.FakeOvsdbRow.create_one_ovsdb_row()
+        self.ls_table.rows[uuid.UUID(self.net_id)] = fake_ls
+        cmd = commands.AddNetworkCommand(self.ovn_api, self.net_id,
+                                         may_exist=True)
+        cmd.run_idl(self.transaction)
+        self.assertEqual(fake_ls.uuid, cmd.result.uuid)
+        self.transaction.insert.assert_not_called()
+
+    def test_network_add_exists(self):
+        fake_ls = fakes.FakeOvsdbRow.create_one_ovsdb_row()
+        self.ls_table.rows[uuid.UUID(self.net_id)] = fake_ls
+        cmd = commands.AddNetworkCommand(self.ovn_api, self.net_id)
+        self.assertRaises(RuntimeError, cmd.run_idl, self.transaction)
+        self.transaction.insert.assert_not_called()
+
+    def test_network_add_legacy_lswitch_may_exist(self):
+        # A Logical_Switch created before persist_uuid was used has a random
+        # register UUID and is only found by its name.
+        fake_ls = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': utils.ovn_name(self.net_id)})
+        with mock.patch.object(idlutils, 'row_by_value',
+                               return_value=fake_ls) as mock_row_by_value:
+            cmd = commands.AddNetworkCommand(self.ovn_api, self.net_id,
+                                             may_exist=True)
+            cmd.run_idl(self.transaction)
+        mock_row_by_value.assert_called_once_with(
+            self.ovn_api.idl, 'Logical_Switch', 'name',
+            utils.ovn_name(self.net_id), None)
+        self.assertEqual(fake_ls.uuid, cmd.result.uuid)
+        self.transaction.insert.assert_not_called()
+
+    def test_network_add_legacy_lswitch(self):
+        fake_ls = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'name': utils.ovn_name(self.net_id)})
+        with mock.patch.object(idlutils, 'row_by_value',
+                               return_value=fake_ls):
+            cmd = commands.AddNetworkCommand(self.ovn_api, self.net_id)
+            self.assertRaises(RuntimeError, cmd.run_idl, self.transaction)
+        self.transaction.insert.assert_not_called()
 
 
 class TestAddLSwitchPortCommand(TestBaseCommand):
@@ -471,7 +548,7 @@ class TestLrDelCommand(TestBaseCommand):
 
     def _test_lrouter_del_no_exist(self, if_exists=True):
         with mock.patch.object(self.ovn_api, 'lookup',
-                               side_effect=idlutils.RowNotFound):
+                               side_effect=[None, idlutils.RowNotFound]):
             cmd = commands.LrDelCommand(
                 self.ovn_api, 'fake-lrouter', if_exists=if_exists)
             if if_exists:
@@ -486,15 +563,24 @@ class TestLrDelCommand(TestBaseCommand):
         self._test_lrouter_del_no_exist(if_exists=False)
 
     def test_lrouter_del(self):
+        fake_lrp1 = fakes.FakeOvsdbRow.create_one_ovsdb_row()
+        fake_lrp2 = fakes.FakeOvsdbRow.create_one_ovsdb_row()
         fake_lrouter = fakes.FakeOvsdbRow.create_one_ovsdb_row()
+        fake_lrouter.ports = [fake_lrp1, fake_lrp2]
         fake_hcg = fakes.FakeOvsdbRow.create_one_ovsdb_row()
         self.ovn_api._tables['Logical_Router'].rows[fake_lrouter.uuid] = \
             fake_lrouter
         with mock.patch.object(self.ovn_api, 'lookup',
-                               side_effect=[fake_lrouter, fake_hcg]):
+                               side_effect=[fake_hcg, fake_lrouter,
+                                            fake_lrouter]):
             cmd = commands.LrDelCommand(
                 self.ovn_api, fake_lrouter.name, if_exists=True)
             cmd.run_idl(self.transaction)
+            fake_lrp1.delvalue.assert_called_once_with(
+                'ha_chassis_group', fake_hcg)
+            fake_lrp2.delvalue.assert_called_once_with(
+                'ha_chassis_group', fake_hcg)
+            fake_hcg.delete.assert_called_once_with()
             fake_lrouter.delete.assert_called_once_with()
 
 
@@ -1305,10 +1391,12 @@ class TestDeleteLRouterExtGwCommand(TestBaseCommand):
 class TestScheduleUnhostedGatewaysCommand(TestBaseCommand):
 
     @staticmethod
-    def _insert_gwc(table):
-        fake_gwc = fakes.FakeOvsdbRow.create_one_ovsdb_row()
-        table.rows[fake_gwc.uuid] = fake_gwc
-        return fake_gwc
+    def _insert_hcg(table):
+        fake_hcg = fakes.FakeOvsdbRow.create_one_ovsdb_row()
+        table.rows[fake_hcg.uuid] = fake_hcg
+        fake_hcg.ha_chassis = []
+        fake_hcg.addvalue = lambda _, item: fake_hcg.ha_chassis.append(item)
+        return fake_hcg
 
     def test_schedule_unhosted_gateways_rebalances_lower_prios(self):
         unhosted_gws = ['lrp-foo-1', 'lrp-foo-2', 'lrp-foo-3']
@@ -1328,7 +1416,7 @@ class TestScheduleUnhostedGatewaysCommand(TestBaseCommand):
             ['chassis4', 'chassis3', 'chassis1'],
             ['chassis4', 'chassis3', 'chassis1'],
         ]
-        self.transaction.insert.side_effect = self._insert_gwc
+        self.transaction.insert.side_effect = self._insert_hcg
 
         expected_mapping = {
             'lrp-foo-1': ['chassis1', 'chassis4', 'chassis3'],
@@ -1347,17 +1435,22 @@ class TestScheduleUnhostedGatewaysCommand(TestBaseCommand):
             for g_name in unhosted_gws:
                 lrouter_port = mock.MagicMock()
                 with mock.patch.object(self.ovn_api, 'lookup',
-                                       return_value=lrouter_port):
+                                       side_effect=[lrouter_port, None]):
                     with mock.patch.object(idlutils, 'row_by_value',
                                            side_effect=idlutils.RowNotFound):
                         cmd = commands.ScheduleUnhostedGatewaysCommand(
                             self.ovn_api, g_name, sb_api, plugin,
                             port_physnets, chassis, chassis_mappings, [])
                         cmd.run_idl(self.transaction)
-                        self.assertEqual(
-                            expected_mapping[g_name],
-                            [
-                                self.ovn_api._tables[
-                                    'Gateway_Chassis'].rows[uuid].chassis_name
-                                for uuid in lrouter_port.gateway_chassis
-                            ])
+
+                        ch_prio = []
+                        hcg = self.ovn_api._tables['HA_Chassis_Group'].rows[
+                            lrouter_port.ha_chassis_group]
+                        for ha_chassis in hcg.ha_chassis:
+                            ch_prio.append((ha_chassis.chassis_name,
+                                            ha_chassis.priority))
+
+                        ch_prio = sorted(ch_prio, key=lambda item: item[1],
+                                         reverse=True)
+                        ch_name = [ch for ch, _ in ch_prio]
+                        self.assertEqual(expected_mapping[g_name], ch_name)
