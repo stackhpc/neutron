@@ -71,6 +71,7 @@ OVN_ROUTER_PORT_GW_MTU_OPTION = 'gateway_mtu'
 OVN_OWNED = 'ovn-owned'
 
 OVN_PROVNET_PORT_NAME_PREFIX = 'provnet-'
+OVN_LOCALNET_PORT_EXT_ID_KEY = 'ovn-localnet-port'
 OVN_NAME_PREFIX = 'neutron-'
 OVN_HA_CH_GROUP_EXTPORT_PREFIX = 'neutron-extport-'
 OVN_METADATA_PREFIX = 'ovnmeta-'
@@ -289,6 +290,7 @@ TYPES_PRIORITY_ORDER = (
 DB_CONSISTENCY_CHECK_INTERVAL = 300  # 5 minutes
 MAINTENANCE_TASK_RETRY_LIMIT = 100  # times
 MAINTENANCE_ONE_RUN_TASK_SPACING = 5  # seconds
+MAINTENANCE_NB_IDL_LOCK_NAME = "ovn_db_inconsistencies_periodics"
 
 # The addresses field to set in the logical switch port which has a
 # peer router port (connecting to the logical router).
