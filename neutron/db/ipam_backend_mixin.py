@@ -44,6 +44,7 @@ from neutron.services.segments import exceptions as segment_exc
 
 LOG = logging.getLogger(__name__)
 
+FOO = ""
 
 class IpamBackendMixin(db_base_plugin_common.DbBasePluginCommon):
     """Contains IPAM specific code which is common for both backends.
