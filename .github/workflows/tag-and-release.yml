@@ -1,0 +1,16 @@
+---
+# THIS WORKFLOW IS MANAGED BY STACKHPC RELEASE TRAIN
+# https://github.com/stackhpc/stackhpc-release-train
+# Do not make changes to it manually
+
+name: Tag & Release
+'on':
+  push:
+    branches:
+      - stackhpc/2026.1
+permissions:
+  actions: read
+  contents: write
+jobs:
+  tag-and-release:
+    uses: stackhpc/.github/.github/workflows/tag-and-release.yml@main
