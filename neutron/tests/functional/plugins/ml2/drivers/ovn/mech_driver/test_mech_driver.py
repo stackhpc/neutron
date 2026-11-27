@@ -141,6 +141,13 @@ class TestOvsdbPersistUuid(base.TestOVNFunctionalBase):
         self.assertNotEqual(uuid.UUID(network_id), n1_ls.uuid)
         mock_supported.return_value = True
 
+        # The maintenance task retrieves the Logical_Switch with the network
+        # ID; the lookup must fall back to the name when the register UUID
+        # does not match.
+        self.assertEqual(n1_ls.uuid, self.nb_api.get_lswitch(network_id).uuid)
+        self.assertEqual(n1_ls.uuid, self.nb_api.get_lswitch(ls_name).uuid)
+        self.assertIsNone(self.nb_api.get_lswitch(uuidutils.generate_uuid()))
+
         # The Logical_Switch register UUID does not match the network ID;
         # adding the same network again must not create a second register
         # with the same name.

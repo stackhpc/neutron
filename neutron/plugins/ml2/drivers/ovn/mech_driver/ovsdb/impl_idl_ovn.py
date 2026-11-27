@@ -281,7 +281,10 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
         if worker_class in (worker.MaintenanceWorker,
                             n_service.RpcWorker):
             idl_ = ovsdb_monitor.BaseOvnIdl.from_server(*args)
-            idl_.set_lock(ovn_const.MAINTENANCE_NB_IDL_LOCK_NAME)
+            try:
+                idl_.set_lock(worker_class.lock_name)
+            except AttributeError:
+                pass
         else:
             idl_ = ovsdb_monitor.OvnNbIdl.from_server(*args, driver=driver)
         conn = connection.Connection(idl_, timeout=cfg.get_ovn_ovsdb_timeout())
@@ -820,6 +823,16 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
     def get_lswitch(self, lswitch_name):
         try:
             return self.lookup('Logical_Switch', lswitch_name)
+        except idlutils.RowNotFound:
+            if not uuidutils.is_uuid_like(lswitch_name):
+                return None
+
+        # NOTE: the maintenance task passes the Neutron network ID. Without
+        # OVS commit 55b9507 (3.1.0) the Logical_Switch UUID is not
+        # persisted and does not match the network ID; such register, as
+        # any register created before that, is only found by its name.
+        try:
+            return self.lookup('Logical_Switch', utils.ovn_name(lswitch_name))
         except idlutils.RowNotFound:
             return None
 
